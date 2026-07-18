@@ -1,7 +1,7 @@
 # Ticket 03: Produce DaemonSet + pod-security skeleton manifest
 
 Label: `wayfinder:task`
-Status: open
+Status: resolved
 Blocked by: 01, 02
 
 ## Question

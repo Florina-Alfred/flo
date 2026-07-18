@@ -1,0 +1,126 @@
+# flo client-container DaemonSet skeleton
+#
+# Review skeleton for the robot orchestration client. Decisions encoded here come
+# from the client-container-arch wayfinder map:
+#   - 01 device-access: generic Device Plugin advertises serial/USB/video/I2C/GPIO;
+#       consumer pod stays NON-privileged (capabilities.drop ALL).
+#   - 02 rule-engine: rules ship as a TOML ConfigMap and are hot-reloaded via the
+#       zenoh topic `robot/<id>/local/rules`.
+#   - 04 observability: HTTP health server (axum) on /healthz + /readyz; zenoh
+#       LivelinessToken `robot/<id>/client/liveliness`.
+#
+# TODO before production: pin image, set resource requests/limits, add nodeSelector
+# for robot hardware, wire zenoh router endpoints, add NetworkPolicy (Cilium/Istio).
+
+---
+# Rules config consumed by the in-container rule engine (see map ticket 02).
+# Hot-reloaded at runtime via zenoh topic robot/<robot-id>/local/rules; this
+# ConfigMap is the bootstrap/default ruleset only.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flo-rules
+  namespace: flo
+data:
+  rules.toml: |
+    [[rules]]
+    name = "e-stop-on-bumper"
+    when.all = [
+      { topic = "robot/7/local/bumper", pred = "pressed == true" },
+      { topic = "robot/7/local/imu",     pred = "speed_mps > 0.2" },
+    ]
+    actions = [
+      { topic = "stop/fleet/cmd", qos = "reliable", payload = { stop = true } },
+    ]
+
+    [[rules]]
+    name = "lidar-block-slowdown"
+    when.any = [
+      { topic = "lidar/fleet/scan", pred = "min_range_m < 0.5" },
+    ]
+    actions = [
+      { topic = "robot/7/local/drive", qos = "best_effort", payload = { speed_mps = 0.1 } },
+    ]
+
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: flo-client
+  namespace: flo
+  labels:
+    app: flo-client
+spec:
+  selector:
+    matchLabels:
+      app: flo-client
+  template:
+    metadata:
+      labels:
+        app: flo-client
+    spec:
+      # Pin each pod to a robot node that has the advertised devices.
+      # nodeSelector / nodeAffinity set per-site; omitted for the skeleton.
+      containers:
+        - name: flo
+          image: flo:latest  # TODO: pin digest
+          # Device files are injected by the generic Device Plugin (map 01);
+          # the consumer pod is NON-privileged.
+          resources:
+            limits:
+              # Advertised by squat/generic-device-plugin / smarter-device-manager.
+              # Request exactly the devices this robot needs; example:
+              devic.es/ttyUSB0: "1"
+              devic.es/video0: "1"
+            requests:
+              devic.es/ttyUSB0: "1"
+              devic.es/video0: "1"
+          # Minimal non-privileged posture (map 01). Device access needs only
+          # file perms on the injected char device — no capabilities required.
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          # Rules bootstrap from ConfigMap; runtime updates arrive via zenoh.
+          volumeMounts:
+            - name: rules
+              mountPath: /etc/flo
+              readOnly: true
+            - name: varlog
+              mountPath: /var/log/flo
+          # Observability (map 04): HTTP health server, not exec probe.
+          ports:
+            - name: health
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            periodSeconds: 10
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            periodSeconds: 5
+            failureThreshold: 30
+      volumes:
+        - name: rules
+          configMap:
+            name: flo-rules
+        - name: varlog
+          emptyDir: {}
+      # flo (our code) contains no unsafe; this documents the guarantee at deploy time.
+      # The container itself is unprivileged; the Device Plugin DaemonSet (separate)
+      # runs privileged to advertise devices, per k8s device-plugin design.

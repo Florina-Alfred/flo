@@ -1,7 +1,7 @@
 # Ticket 01: Research k8s device-access mechanisms for sensors/actuators
 
 Label: `wayfinder:research`
-Status: open
+Status: resolved
 Blocked by:
 
 ## Question

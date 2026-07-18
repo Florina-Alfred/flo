@@ -1,7 +1,7 @@
 # Ticket 04: Research zenoh admin-space telemetry + k8s probe integration
 
 Label: `wayfinder:research`
-Status: open
+Status: resolved
 Blocked by:
 
 ## Question
