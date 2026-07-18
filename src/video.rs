@@ -34,6 +34,7 @@ pub struct VideoPeer {
     pc: Arc<RTCPeerConnection>,
     #[allow(dead_code)]
     track: Arc<TrackLocalStaticSample>,
+    transport: Arc<crate::transport::Transport>,
 }
 
 impl VideoPeer {
@@ -104,19 +105,29 @@ impl VideoPeer {
             peer_id: peer_id.to_string(),
             pc,
             track,
+            transport,
         }))
+    }
+
+    /// Borrow the outbound track so a media pipeline can push encoded samples.
+    #[allow(dead_code)]
+    pub fn track(&self) -> Arc<TrackLocalStaticSample> {
+        self.track.clone()
     }
 }
 
 impl SignalHandler for VideoPeer {
     fn on_answer(&self, _from: &str, msg: &SignalMessage) {
         let pc = self.pc.clone();
-        let desc = RTCSessionDescription::answer(msg.sdp.clone()).expect("valid answer sdp");
-        tokio::spawn(async move {
-            if let Err(e) = pc.set_remote_description(desc).await {
-                warn!(error = %e, "set_remote_description(answer) failed");
-            }
-        });
+        if let Ok(desc) = RTCSessionDescription::answer(msg.sdp.clone()) {
+            tokio::spawn(async move {
+                if let Err(e) = pc.set_remote_description(desc).await {
+                    warn!(error = %e, "set_remote_description(answer) failed");
+                }
+            });
+        } else {
+            warn!(sdp_len = msg.sdp.len(), "received malformed answer sdp");
+        }
     }
 
     fn on_ice(&self, _from: &str, candidate: &IceCandidate) {
@@ -134,20 +145,135 @@ impl SignalHandler for VideoPeer {
         });
     }
 
-    fn on_offer(&self, _from: &str, _msg: &SignalMessage) {
-        // v1 is offerer-initiated; answerer role is a later map. Ignore.
+    fn on_offer(&self, from: &str, msg: &SignalMessage) {
+        let pc = self.pc.clone();
+        let tr = self.transport.clone();
+        let me = self.robot_id.clone();
+        let from = from.to_string();
+        let offer = match RTCSessionDescription::offer(msg.sdp.clone()) {
+            Ok(o) => o,
+            Err(e) => {
+                warn!(error = %e, "bad offer sdp");
+                return;
+            }
+        };
+        tokio::spawn(async move {
+            if let Err(e) = pc.set_remote_description(offer).await {
+                warn!(error = %e, "set_remote_description(offer) failed");
+                return;
+            }
+            let answer = match pc.create_answer(None).await {
+                Ok(a) => a,
+                Err(e) => {
+                    warn!(error = %e, "create_answer failed");
+                    return;
+                }
+            };
+            if let Err(e) = pc.set_local_description(answer.clone()).await {
+                warn!(error = %e, "set_local_description(answer) failed");
+                return;
+            }
+            if let Err(e) = crate::signaling::publish_answer(&tr, &me, &from, answer.sdp, vec![]).await
+            {
+                warn!(error = %e, "publish_answer failed");
+            }
+        });
     }
 }
 
-/// Entry point called from `main` when `--video-peer` is set.
+/// Forwarding impl so an `Arc<VideoPeer>` satisfies `SignalHandler` for the
+/// signal receiver (which holds the handler behind an `Arc`).
+impl SignalHandler for Arc<VideoPeer> {
+    fn on_offer(&self, from: &str, msg: &SignalMessage) {
+        VideoPeer::on_offer(self, from, msg);
+    }
+    fn on_answer(&self, from: &str, msg: &SignalMessage) {
+        VideoPeer::on_answer(self, from, msg);
+    }
+    fn on_ice(&self, from: &str, candidate: &IceCandidate) {
+        VideoPeer::on_ice(self, from, candidate);
+    }
+}
+
+/// Entry point called from `main` when `--video-peer` is set (no media capture).
+///
+/// Builds the offerer `VideoPeer`, then subscribes it (behind an `Arc`) to the
+/// signal receiver. The receiver owns the `Arc`, keeping the peer alive for the
+/// session; inbound answers/ICE are applied to its `PeerConnection`.
 pub async fn start_video(
     robot_id: &str,
     peer_id: &str,
     transport: Arc<crate::transport::Transport>,
 ) -> anyhow::Result<()> {
-    let _peer = VideoPeer::offer(robot_id, peer_id, transport).await?;
-    // Keep `_peer` alive for the process lifetime; signaling subscriptions hold Arc.
-    std::mem::forget(_peer);
+    let peer = VideoPeer::offer(robot_id, peer_id, transport.clone()).await?;
+    crate::signaling::run_signal_receiver(&transport, robot_id, peer.clone())
+        .await
+        .map_err(|e| anyhow::anyhow!("signal receiver: {e}"))?;
+    Ok(())
+}
+
+/// Like [`start_video`] but also starts a media capture pipeline that forwards
+/// encoded H.264 samples into the peer's outbound track. Feature-gated: needs
+/// system GStreamer.
+#[cfg(feature = "media")]
+pub async fn start_video_with_source(
+    robot_id: &str,
+    peer_id: &str,
+    transport: Arc<crate::transport::Transport>,
+    source: crate::media::SourceSpec,
+) -> anyhow::Result<()> {
+    let peer = VideoPeer::offer(robot_id, peer_id, transport.clone()).await?;
+    // Start capture; `start_capture` leaks the GStreamer pipeline so it stays
+    // alive for the daemon lifetime (appsink callbacks own the buffers).
+    if let Err(e) = start_capture(peer.clone(), source, 1280, 720, 30).await {
+        warn!(error = %e, "media capture failed to start");
+    }
+    crate::signaling::run_signal_receiver(&transport, robot_id, peer.clone())
+        .await
+        .map_err(|e| anyhow::anyhow!("signal receiver: {e}"))?;
+    Ok(())
+}
+
+/// Build a GStreamer encode pipeline and forward every encoded sample into the
+/// peer's `TrackLocalStaticSample`. The pipeline is leaked (not dropped) so the
+/// daemon keeps producing; this is the intended long-lived strategy for a robot
+/// client. `MediaPipeline` itself is feature-gated.
+#[cfg(feature = "media")]
+pub async fn start_capture(
+    peer: Arc<VideoPeer>,
+    source: crate::media::SourceSpec,
+    width: u32,
+    height: u32,
+    fps: u32,
+) -> anyhow::Result<()> {
+    use crate::media::MediaPipeline;
+    use webrtc::media::Sample as MediaSample;
+
+    let pipeline = MediaPipeline::build(&source, width, height, fps)?;
+    let track = peer.track();
+    let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    pipeline.start(Box::new(move |bytes: &[u8]| {
+        let ts = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let track = track.clone();
+        let sample = MediaSample {
+            data: bytes::Bytes::copy_from_slice(bytes),
+            timestamp: std::time::SystemTime::now(),
+            duration: std::time::Duration::from_secs_f64(1.0 / fps as f64),
+            packet_timestamp: ts,
+            ..Default::default()
+        };
+        tokio::spawn(async move {
+            if let Err(e) = track.write_sample(&sample).await {
+                tracing::warn!(error = %e, "write_sample failed");
+            }
+        });
+    }))?;
+
+    // Keep the GStreamer pipeline alive for the process lifetime. The appsink
+    // callbacks hold the encoded buffers; dropping the pipeline here would stop
+    // the source immediately. A robot client is a long-lived daemon, so leaking
+    // is the pragmatic choice.
+    std::mem::forget(pipeline);
     Ok(())
 }
 

@@ -107,7 +107,9 @@ cargo run --features media --robot-id 8 --video-peer 7
 
 Node 7 captures (synthetic pattern unless `--video-device /dev/video0`), encodes
 H.264, and offers a WebRTC call to 8 over zenoh; 8 answers; video flows 7→8.
-Node 8 logs `▶ video track received`. No camera? The demo uses `videotestsrc`.
+Each node offers and answers, so video flows both ways once both are up.
+The `▶ video track received` line appears on the **receiving** side (the node
+that accepts the other's offer). No camera? The demo uses `videotestsrc`.
 
 Headless encode check (no peer needed):
 

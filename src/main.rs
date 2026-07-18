@@ -184,8 +184,22 @@ async fn run_demo(args: Args, robot_id: String) -> Result<(), Box<dyn std::error
         let rid = robot_id.clone();
         let pid = peer.clone();
         tokio::spawn(async move {
-            if let Err(e) = crate::video::start_video(&rid, &pid, tr).await {
-                tracing::error!(error = %e, "video failed");
+            #[cfg(feature = "media")]
+            {
+                use crate::media::SourceSpec;
+                let source = match &args.video.device {
+                    Some(d) => SourceSpec::V4l2(d.clone()),
+                    None => SourceSpec::Videotest,
+                };
+                if let Err(e) = crate::video::start_video_with_source(&rid, &pid, tr, source).await {
+                    tracing::error!(error = %e, "video failed");
+                }
+            }
+            #[cfg(not(feature = "media"))]
+            {
+                if let Err(e) = crate::video::start_video(&rid, &pid, tr).await {
+                    tracing::error!(error = %e, "video failed");
+                }
             }
         });
     }
@@ -234,8 +248,22 @@ async fn run_production(
         let rid = robot_id.clone();
         let pid = peer.clone();
         tokio::spawn(async move {
-            if let Err(e) = crate::video::start_video(&rid, &pid, tr).await {
-                tracing::error!(error = %e, "video failed");
+            #[cfg(feature = "media")]
+            {
+                use crate::media::SourceSpec;
+                let source = match &args.video.device {
+                    Some(d) => SourceSpec::V4l2(d.clone()),
+                    None => SourceSpec::Videotest,
+                };
+                if let Err(e) = crate::video::start_video_with_source(&rid, &pid, tr, source).await {
+                    tracing::error!(error = %e, "video failed");
+                }
+            }
+            #[cfg(not(feature = "media"))]
+            {
+                if let Err(e) = crate::video::start_video(&rid, &pid, tr).await {
+                    tracing::error!(error = %e, "video failed");
+                }
             }
         });
     }
