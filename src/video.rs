@@ -252,8 +252,9 @@ pub async fn start_capture(
     let pipeline = MediaPipeline::build(&source, width, height, fps)?;
     let track = peer.track();
     let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let ticks_per_frame = 90_000 / fps.max(1);
     pipeline.start(Box::new(move |bytes: &[u8]| {
-        let ts = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let ts = counter.fetch_add(ticks_per_frame, std::sync::atomic::Ordering::SeqCst);
         let track = track.clone();
         let sample = MediaSample {
             data: bytes::Bytes::copy_from_slice(bytes),
