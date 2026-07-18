@@ -24,8 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@a174a5839924ad3c9b41242562a18a0c4e6b233b # stable
         with:
           components: rustfmt
       - name: Check formatting
@@ -36,11 +36,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@a174a5839924ad3c9b41242562a18a0c4e6b233b # stable
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@9d47c6ad4b22b50cec8db428fc8533546f5faeea # v2.7.8
       - name: Clippy (deny warnings)
         run: cargo clippy --all-targets -- -D warnings
 
@@ -53,12 +53,32 @@ jobs:
       matrix:
         rust: [stable, beta, "1.97.1"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@a174a5839924ad3c9b41242562a18a0c4e6b233b # master
         with:
           toolchain: ${{ matrix.rust }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@9d47c6ad4b22b50cec8db428fc8533546f5faeea # v2.7.8
       - name: Cargo check
         run: cargo check --all-targets
       - name: Cargo test
         run: cargo test --bin flo
+
+  release:
+    name: release artifact
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@a174a5839924ad3c9b41242562a18a0c4e6b233b # stable
+      - uses: Swatinem/rust-cache@9d47c6ad4b22b50cec8db428fc8533546f5faeea # v2.7.8
+      - name: Build release binary
+        run: cargo build --release --bin flo
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: flo-${{ github.ref_name }}-linux-x86_64
+          path: target/release/flo
+          retention-days: 30
