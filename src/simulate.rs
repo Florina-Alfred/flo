@@ -32,6 +32,9 @@ pub async fn run_simulate(
     let imu = IMU_KEY.replace("{id}", robot_id);
     let lidar = LIDAR_KEY.to_string();
 
+    // Default demo tick is 1 round / second so the "aha" is easy to read.
+    // For a busier stream, drop the default in `main.rs` (or pass --simulate-period-ms):
+    //     let period_ms = 250; // <- commented-out faster tick; uncomment to speed up
     let mut tick = interval(Duration::from_millis(period_ms.max(100)));
     let mut round: u64 = 0;
     info!(robot_id, period_ms, "simulator started (synthetic sensors)");
