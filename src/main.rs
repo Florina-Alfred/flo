@@ -8,6 +8,7 @@ mod rules;
 mod signaling;
 mod simulate;
 mod transport;
+mod video;
 
 use codec::Codec;
 
