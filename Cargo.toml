@@ -2,6 +2,16 @@
 name = "flo"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.97.1"
+
+description = "Kubernetes robot orchestration in safe Rust with a peer-to-peer WebRTC video pipeline."
+license = "Apache-2.0"
+repository = "https://github.com/Florina-Alfred/flo"
+homepage = "https://github.com/Florina-Alfred/flo"
+documentation = "https://github.com/Florina-Alfred/flo#readme"
+readme = "README.md"
+keywords = ["robotics", "kubernetes", "webrtc", "video", "rust"]
+categories = ["command-line-utilities", "network-programming"]
 
 [dependencies]
 axum = "0.8.9"
