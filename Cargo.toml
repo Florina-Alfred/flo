@@ -13,3 +13,21 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["json"] }
 webrtc = "0.17.1"
 zenoh = { version = "1.9.0", features = ["unstable"] }
+
+bytes = "1"
+
+[dependencies.gstreamer]
+version = "0.25"
+optional = true
+
+[dependencies.gstreamer-app]
+version = "0.25"
+optional = true
+
+[dependencies.gstreamer-video]
+version = "0.25"
+optional = true
+
+[features]
+default = []
+media = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
