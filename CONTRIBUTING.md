@@ -39,12 +39,16 @@ act pull_request -W .github/workflows/ci.yml --container-architecture linux/amd6
 
 ## Releasing to crates.io
 
+The crate publishes as **`flo-rs`** (the bare name `flo` is taken on crates.io by an
+unrelated 2018 crate). The CLI binary users run stays `flo`.
+
 1. Bump `version` in `Cargo.toml`.
 2. Commit and merge to `main`.
 3. Tag the release commit: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 4. The `publish.yml` workflow publishes using the `CARGO_REGISTRY_TOKEN` secret
    (set in repo Settings → Secrets and variables → Actions). The token is never
    committed and GitHub masks it in logs.
+5. After publish, users install with `cargo install flo-rs` and run the `flo` binary.
 
 ## Secrets handling
 

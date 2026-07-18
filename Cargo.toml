@@ -1,5 +1,5 @@
 [package]
-name = "flo"
+name = "flo-rs"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.97.1"
@@ -42,3 +42,8 @@ optional = true
 [features]
 default = []
 media = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
+
+# The published crate is `flo-rs`, but the CLI binary users run stays `flo`.
+[[bin]]
+name = "flo"
+path = "src/main.rs"

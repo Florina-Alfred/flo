@@ -987,7 +987,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "flo"
+name = "flo-rs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
