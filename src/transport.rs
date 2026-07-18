@@ -33,11 +33,29 @@ impl Transport {
     /// Open a Zenoh session using the default config (hybrid topology: peer mesh
     /// locally, routers at cluster/edge — configured via zenoh's config/env).
     pub async fn open() -> zenoh::Result<Self> {
-        let session = zenoh::open(zenoh::Config::default()).await?;
+        Self::open_with(zenoh::Config::default()).await
+    }
+
+    /// Open a Zenoh session with an explicit config. Used by the local demo to pin
+    /// loopback peer discovery (zero-config `cargo run`, no router needed).
+    pub async fn open_with(config: zenoh::Config) -> zenoh::Result<Self> {
+        let session = zenoh::open(config).await?;
         Ok(Self {
             session: Arc::new(session),
             _tokens: Vec::new(),
         })
+    }
+
+    /// Build the zero-config loopback config for the local demo: peer mode with
+    /// multicast scouting on loopback (auto-meshes multiple `cargo run` on one host)
+    /// plus a localhost listen endpoint for robustness on hosts that drop multicast.
+    /// `Config::default()` is already a peer; these mutations only harden discovery.
+    pub fn loopback_config() -> zenoh::Config {
+        let mut c = zenoh::Config::default();
+        let _ = c.insert_json5("mode", "\"peer\"");
+        let _ = c.insert_json5("scouting/multicast/enabled", "true");
+        let _ = c.insert_json5("listen/endpoints/peer", "[\"tcp/127.0.0.1:0\"]");
+        c
     }
 
     /// Declare the per-pod liveliness token so the mesh can detect dead clients.

@@ -144,8 +144,15 @@ pub async fn run_engine(
             let rules = eval_store.current().await;
             for rule in &rules.rules {
                 if when_satisfied(&rule.when, &snap) {
-                    info!(rule = %rule.name, "rule fired");
+                    info!(rule = %rule.name, "▶ rule fired");
                     for action in &rule.actions {
+                        info!(
+                            rule = %rule.name,
+                            action = %action.topic,
+                            qos = ?action.qos,
+                            payload = %action.payload,
+                            "▶ published action"
+                        );
                         fire_action(&eval_transport, action).await;
                     }
                 }
