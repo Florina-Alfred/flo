@@ -46,6 +46,19 @@ Decided at chart time (pinned via grilling):
   `listen/endpoints/peer=["tcp/127.0.0.1:0"]` (containers may drop multicast). Set
   programmatically via `Config::insert_json5` (pure safe Rust, no `unsafe`). See
   `issues/01-zenoh-loopback.md` (resolution) + `.scratch/research-zenoh-loopback.md`.
+- **02 (simulate source):** `src/simulate.rs::run_simulate` publishes synthetic
+  `robot/<id>/local/bumper` (toggling pressed), `robot/<id>/local/imu` (speed 0.4
+  m/s), and `lidar/fleet/scan` (min_range dips below 0.5 m every 4th round) on the
+  existing zenoh topics via `Transport::publish_json`. Engine code untouched. See
+  `issues/02-simulate-source.md`.
+- **03 (default-demo wiring):** `cargo run` (no args) now = demo: `Transport::open`
+  uses `loopback_config()`, `RuleStore::bootstrap_demo(robot_id)` embeds map-02
+  rules, `main.rs` parses `--robot-id`/`--config`/`--simulate*` and runs either demo
+  or production, with a `print_help`/arg parser. Verified: both `e-stop-on-bumper`
+  and `lidar-block-slowdown` fire on the loopback mesh. See `issues/03-default-demo.md`.
+- **04 (onboarding docs):** `GETTING_STARTED.md` at repo root — prerequisites (just
+  cargo), one command, what they'll see, two-terminal mesh recipe, troubleshooting,
+  and "where next". `--help` already polished in 03. See `issues/04-getting-started.md`.
 
 ## Not yet specified
 

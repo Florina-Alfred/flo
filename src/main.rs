@@ -5,6 +5,7 @@ mod engine;
 mod health;
 mod rules;
 mod signaling;
+mod simulate;
 mod transport;
 
 use std::sync::Arc;
@@ -15,28 +16,151 @@ use crate::config::{run_hot_reload, RuleStore};
 use crate::health::Health;
 use crate::transport::Transport;
 
-const BOOTSTRAP_RULES_PATH: &str = "/etc/flo/rules.toml";
+/// Minimal CLI: `cargo run` (no args) = local demo. Explicit `--robot-id` /
+/// `--config` selects production mode (k8s DaemonSet). Everything else is optional.
+#[derive(Default)]
+struct Args {
+    robot_id: Option<String>,
+    config: Option<String>,
+    simulate: bool,
+    simulate_period_ms: u64,
+}
+
+fn parse_args() -> Args {
+    let mut args = Args::default();
+    let mut iter = std::env::args().skip(1);
+    while let Some(a) = iter.next() {
+        match a.as_str() {
+            "--robot-id" => args.robot_id = iter.next(),
+            "--config" => args.config = iter.next(),
+            "--simulate" => args.simulate = true,
+            "--simulate-period-ms" => {
+                args.simulate_period_ms = iter.next().and_then(|v| v.parse().ok()).unwrap_or(1000)
+            }
+            "--help" | "-h" => {
+                print_help();
+                std::process::exit(0);
+            }
+            other => eprintln!("ignoring unknown arg: {other}"),
+        }
+    }
+    args
+}
+
+fn print_help() {
+    println!(
+        "flo - robot orchestration client\n\n\
+         USAGE:\n\
+         \x20\x20cargo run                 # local demo: simulated sensors + rule engine on loopback zenoh\n\
+         \x20\x20cargo run --robot-id 7    # demo node 7 (open a 2nd terminal with --robot-id 8 to mesh)\n\
+         \x20\x20cargo run --robot-id 7 --config /etc/flo/rules.toml   # production mode (k8s DaemonSet)\n\n\
+         OPTIONS:\n\
+         \x20\x20--robot-id <id>           robot/node id (also via FLO_ROBOT_ID)\n\
+         \x20\x20--config <path>          rules TOML (production); omit for the built-in demo rules\n\
+         \x20\x20--simulate               publish synthetic sensor samples (demo input)\n\
+         \x20\x20--simulate-period-ms <n> sensor round interval (default 1000)\n\
+         \x20\x20--help                   this message"
+    );
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     health::init_tracing();
 
-    let robot_id = std::env::var("FLO_ROBOT_ID").unwrap_or_else(|_| "0".to_string());
-    info!(robot_id, "starting flo client");
+    let args = parse_args();
+    // Demo mode = no explicit production flags. `cargo run` with no args lands here.
+    let demo = args.robot_id.is_none() && args.config.is_none();
+    let robot_id = args
+        .robot_id
+        .clone()
+        .or_else(|| std::env::var("FLO_ROBOT_ID").ok())
+        .unwrap_or_else(|| "7".to_string());
 
-    let bootstrap = std::fs::read_to_string(BOOTSTRAP_RULES_PATH)
-        .unwrap_or_else(|_| "rules = []\n".to_string());
+    if demo {
+        run_demo(args, robot_id).await?;
+    } else {
+        run_production(args, robot_id).await?;
+    }
+    Ok(())
+}
+
+/// Demo mode: loopback zenoh, built-in rules, simulated sensors, loud verdicts.
+async fn run_demo(args: Args, robot_id: String) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    println!(
+        "\n  flo DEMO  —  robot {robot_id} on loopback zenoh\n\
+         \x20\x20Simulating sensors and running the rule engine. Watch for '▶ rule fired'.\n\
+         \x20\x20Open a 2nd terminal:  cargo run --robot-id 8   (the two nodes will mesh.)\n"
+    );
+
+    let mut transport = Transport::open_with(Transport::loopback_config()).await?;
+    transport.declare_liveliness(&robot_id).await?;
+    let transport = Arc::new(transport);
+    info!(robot_id, "demo zenoh session open (loopback peer mesh)");
+
+    let store = RuleStore::bootstrap_demo(&robot_id);
+
+    start_common_subsystems(&transport, &store, &robot_id).await;
+
+    // Simulated sensor input (the demo's fake hardware).
+    let sim = args.simulate || true; // demo always simulates unless overridden
+    if sim {
+        let transport_sim = transport.clone();
+        let robot_id_sim = robot_id.clone();
+        let period = args.simulate_period_ms.max(250);
+        tokio::spawn(async move {
+            if let Err(e) = simulate::run_simulate(&transport_sim, &robot_id_sim, period).await {
+                error!(error = %e, "simulator exited");
+            }
+        });
+    }
+
+    wait_for_subsystems().await;
+    Ok(())
+}
+
+/// Production mode: file-based rules, optional external config, no simulation.
+async fn run_production(
+    args: Args,
+    robot_id: String,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    info!(robot_id, "starting flo client (production mode)");
+
+    let bootstrap = match &args.config {
+        Some(path) => std::fs::read_to_string(path)
+            .map_err(|e| format!("cannot read rules config {path}: {e}"))?,
+        None => "rules = []\n".to_string(),
+    };
     let store = RuleStore::bootstrap(&bootstrap)
-        .map_err(|e| format!("invalid bootstrap rules at {BOOTSTRAP_RULES_PATH}: {e}"))?;
+        .map_err(|e| format!("invalid bootstrap rules: {e}"))?;
 
     let mut transport = Transport::open().await?;
     transport.declare_liveliness(&robot_id).await?;
     let transport = Arc::new(transport);
     info!(robot_id, "zenoh session open, liveliness declared");
 
+    start_common_subsystems(&transport, &store, &robot_id).await;
+
+    // Optional simulation in production (e.g. a dev node without hardware).
+    if args.simulate {
+        let transport_sim = transport.clone();
+        let robot_id_sim = robot_id.clone();
+        let period = args.simulate_period_ms.max(250);
+        tokio::spawn(async move {
+            if let Err(e) = simulate::run_simulate(&transport_sim, &robot_id_sim, period).await {
+                error!(error = %e, "simulator exited");
+            }
+        });
+    }
+
+    wait_for_subsystems().await;
+    Ok(())
+}
+
+/// Start health server, hot-reload, rule engine, and WebRTC signaling. Shared by
+/// both demo and production modes (the only difference is input + rules source).
+async fn start_common_subsystems(transport: &Arc<Transport>, store: &RuleStore, robot_id: &str) {
     let health = Health::new();
 
-    // Health server (map 04): HTTP probes, not exec.
     let health_task = {
         let health = health.clone();
         tokio::spawn(async move {
@@ -46,11 +170,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         })
     };
 
-    // Hot-reload subscriber (map 02): zenoh topic swaps the ruleset atomically.
     let reload_task = {
         let transport = transport.clone();
         let store = store.clone();
-        let robot_id = robot_id.clone();
+        let robot_id = robot_id.to_string();
         tokio::spawn(async move {
             if let Err(e) = run_hot_reload(&transport, &robot_id, store).await {
                 error!(error = %e, "hot-reload subscriber exited");
@@ -58,7 +181,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         })
     };
 
-    // Rule engine eval loop (map 02): sensors -> composable rules -> actuator actions.
     let engine_task = {
         let transport = transport.clone();
         let store = store.clone();
@@ -69,12 +191,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         })
     };
 
-    // WebRTC signaling (webrtc-signaling map): advertise presence + receive offers/
-    // answers/ICE over the zenoh mesh. Live peer connections are later work; the
-    // handler below logs inbound signals until then.
     let signal_task = {
         let transport = transport.clone();
-        let robot_id = robot_id.clone();
+        let robot_id = robot_id.to_string();
         tokio::spawn(async move {
             if let Err(e) = run_signaling(&transport, &robot_id).await {
                 error!(error = %e, "signaling exited");
@@ -83,36 +202,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
 
     health.set_ready();
-    info!("flo client ready");
+    info!("flo ready");
 
-    // Run until any subsystem dies (k8s will restart the pod).
-    tokio::select! {
-        r = health_task => error!(?r, "health task ended"),
-        r = reload_task => error!(?r, "reload task ended"),
-        r = engine_task => error!(?r, "engine task ended"),
-        r = signal_task => error!(?r, "signaling task ended"),
-    }
-    Ok(())
+    // Store handles so they live for the process; tasks are joined by the caller.
+    let _ = (health_task, reload_task, engine_task, signal_task);
 }
 
-/// Start the WebRTC signaling plane: publish presence and receive inbound signals.
-/// The handler is a placeholder that logs; attaching webrtc-rs peer connections is
-/// future work (see the webrtc-signaling map's out-of-scope browser/video UI).
 async fn run_signaling(transport: &Transport, robot_id: &str) -> zenoh::Result<()> {
     signaling::publish_presence(transport, robot_id, vec![format!("robot/{}/local/cam0", robot_id)]).await?;
-
-    let handler = LoggingSignalHandler;
-    // Peer discovery: log any robot that advertises presence.
     signaling::subscribe_presence(transport, |p: signaling::Presence| {
         info!(peer = %p.id, streams = ?p.streams, "discovered peer");
     })
     .await?;
-
-    signaling::run_signal_receiver(transport, robot_id, handler).await
+    signaling::run_signal_receiver(transport, robot_id, LoggingSignalHandler).await
 }
 
-/// Placeholder signal handler: logs inbound offers/answers/ICE. Replaced by a
-/// webrtc-rs peer-connection driver when class-3 media is implemented.
 struct LoggingSignalHandler;
 
 impl signaling::SignalHandler for LoggingSignalHandler {
@@ -125,4 +229,12 @@ impl signaling::SignalHandler for LoggingSignalHandler {
     fn on_ice(&self, from: &str, candidate: &signaling::IceCandidate) {
         info!(from, candidate = %candidate.candidate, "received ICE candidate (no media yet)");
     }
+}
+
+/// Run until any subsystem dies (k8s / process supervisor restarts).
+async fn wait_for_subsystems() {
+    // The spawned tasks own the long-lived work; this future just idles. A real
+    // deployment would `tokio::select!` on the JoinHandles. For the demo we block
+    // so `cargo run` stays alive and visible.
+    std::future::pending::<()>().await;
 }

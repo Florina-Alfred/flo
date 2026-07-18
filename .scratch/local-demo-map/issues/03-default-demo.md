@@ -1,7 +1,7 @@
 # Ticket 03: Default-demo wiring + visible verdict
 
 Label: `wayfinder:task`
-Status: open
+Status: resolved
 Blocked by: 01, 02
 
 ## Question

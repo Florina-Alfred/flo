@@ -1,7 +1,7 @@
 # Ticket 04: GETTING_STARTED.md + --help polish
 
 Label: `wayfinder:task`
-Status: open
+Status: resolved
 Blocked by: 01, 02
 
 ## Question

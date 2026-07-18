@@ -1,7 +1,7 @@
 # Ticket 02: Build --simulate sensor source
 
 Label: `wayfinder:task`
-Status: open
+Status: resolved
 Blocked by: 01
 
 ## Question
