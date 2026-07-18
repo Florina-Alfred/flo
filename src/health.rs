@@ -1,17 +1,16 @@
 use std::sync::Arc;
 
-use axum::routing::get;
 use axum::Router;
+use axum::routing::get;
 use tokio::net::TcpListener;
 use tracing::info;
 
 /// Initialize structured logging (fmt + env-filter, JSON when `FLO_JSON_LOGS=1`).
 pub fn init_tracing() {
-    let builder = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        );
+    let builder = tracing_subscriber::fmt().with_env_filter(
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+    );
     if std::env::var("FLO_JSON_LOGS").is_ok() {
         builder.json().init();
     } else {
@@ -31,8 +30,7 @@ impl Health {
         Self::default()
     }
     pub fn set_ready(&self) {
-        self.ready
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.ready.store(true, std::sync::atomic::Ordering::SeqCst);
     }
     fn is_ready(&self) -> bool {
         self.ready.load(std::sync::atomic::Ordering::SeqCst)
@@ -42,10 +40,7 @@ impl Health {
 /// Build the health router: `/healthz` (liveness) and `/readyz` (readiness).
 pub fn router(health: Health) -> Router {
     Router::new()
-        .route(
-            "/healthz",
-            get(|| async { axum::http::StatusCode::OK }),
-        )
+        .route("/healthz", get(|| async { axum::http::StatusCode::OK }))
         .route(
             "/readyz",
             get(move || {
@@ -65,10 +60,8 @@ pub fn router(health: Health) -> Router {
 pub async fn serve(health: Health, addr: &str) -> std::io::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     info!(addr, "health server listening");
-    axum::serve(listener, router(health))
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "health server failed");
-            std::io::Error::other(e)
-        })
+    axum::serve(listener, router(health)).await.map_err(|e| {
+        tracing::error!(error = %e, "health server failed");
+        std::io::Error::other(e)
+    })
 }

@@ -7,9 +7,9 @@ use anyhow::Context;
 use tracing::{info, warn};
 use webrtc::api::APIBuilder;
 use webrtc::ice_transport::ice_candidate::{RTCIceCandidate, RTCIceCandidateInit};
+use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 
 use crate::codec::h264_codec_capability;
@@ -51,10 +51,7 @@ impl VideoPeer {
                 .context("new_peer_connection")?,
         );
 
-        let track = h264_track(
-            format!("{robot_id}-cam0"),
-            format!("{robot_id}-stream0"),
-        );
+        let track = h264_track(format!("{robot_id}-cam0"), format!("{robot_id}-stream0"));
         pc.add_track(track.clone()).await.context("add_track")?;
 
         // Trickle ICE candidates to the peer over zenoh.
@@ -173,7 +170,8 @@ impl SignalHandler for VideoPeer {
                 warn!(error = %e, "set_local_description(answer) failed");
                 return;
             }
-            if let Err(e) = crate::signaling::publish_answer(&tr, &me, &from, answer.sdp, vec![]).await
+            if let Err(e) =
+                crate::signaling::publish_answer(&tr, &me, &from, answer.sdp, vec![]).await
             {
                 warn!(error = %e, "publish_answer failed");
             }
@@ -285,7 +283,10 @@ mod tests {
     #[test]
     fn h264_track_has_correct_codec() {
         let t = h264_track("cam0".into(), "stream0".into());
-        assert_eq!(t.codec().mime_type, webrtc::api::media_engine::MIME_TYPE_H264);
+        assert_eq!(
+            t.codec().mime_type,
+            webrtc::api::media_engine::MIME_TYPE_H264
+        );
         assert_eq!(t.codec().clock_rate, 90_000);
     }
 }

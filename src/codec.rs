@@ -22,7 +22,9 @@ impl std::str::FromStr for Codec {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
             "h264" => Ok(Codec::H264),
-            other => Err(format!("unsupported --video-codec '{other}' (v1 supports: h264)")),
+            other => Err(format!(
+                "unsupported --video-codec '{other}' (v1 supports: h264)"
+            )),
         }
     }
 }
