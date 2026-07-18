@@ -1,0 +1,83 @@
+use std::sync::Arc;
+
+use zenoh::qos::{CongestionControl, Priority, Reliability};
+use zenoh::Session;
+
+use crate::rules::Qos;
+
+/// Stable key-expression namespaces locked in the transport map.
+/// Local node traffic stays under `robot/<id>/local/**`; fleet-wide traffic under
+/// `fleet/**`; QoS class is marked by `stop/**` (class 1) and `lidar/**` (class 2).
+pub const LIVELINESS_KEY: &str = "robot/{id}/client/liveliness";
+pub const RULES_KEY: &str = "robot/{id}/local/rules";
+
+/// Handle to the Zenoh session. A single `Session` multiplexes both QoS classes —
+/// QoS is per-put, per the locked decision. The class 1/2 publisher builders below
+/// encode the locked QoS knobs; `publish` applies them by QoS class.
+pub struct Transport {
+    pub session: Arc<Session>,
+    /// Liveliness tokens declared for this client. Held for the session's lifetime
+    /// so the token stays declared; dropping it would undeclare the token.
+    _tokens: Vec<zenoh::liveliness::LivelinessToken>,
+}
+
+impl Transport {
+    /// Open a Zenoh session using the default config (hybrid topology: peer mesh
+    /// locally, routers at cluster/edge — configured via zenoh's config/env).
+    pub async fn open() -> zenoh::Result<Self> {
+        let session = zenoh::open(zenoh::Config::default()).await?;
+        Ok(Self {
+            session: Arc::new(session),
+            _tokens: Vec::new(),
+        })
+    }
+
+    /// Declare the per-pod liveliness token so the mesh can detect dead clients.
+    /// The token is held inside `Transport` for the session's lifetime.
+    pub async fn declare_liveliness(&mut self, robot_id: &str) -> zenoh::Result<()> {
+        let key = LIVELINESS_KEY.replace("{id}", robot_id);
+        let token = self.session.liveliness().declare_token(&key).await?;
+        self._tokens.push(token);
+        Ok(())
+    }
+
+    /// Publish `payload` to `topic` with the QoS class from the locked decision:
+    /// Reliable => class 1 (STOP: Reliable + Block + InteractiveHigh);
+    /// BestEffort => class 2 (lidar: BestEffort + Drop + DataLow).
+    pub async fn publish(
+        &self,
+        topic: &str,
+        qos: Qos,
+        payload: &serde_json::Value,
+    ) -> zenoh::Result<()> {
+        let bytes = serde_json::to_vec(payload)
+            .map_err(|e| Box::new(e) as zenoh::Error)?;
+        let put = self.session.put(topic, bytes);
+        let put = match qos {
+            Qos::Reliable => put
+                .reliability(Reliability::Reliable)
+                .congestion_control(CongestionControl::Block)
+                .priority(Priority::InteractiveHigh),
+            Qos::BestEffort => put
+                .reliability(Reliability::BestEffort)
+                .congestion_control(CongestionControl::Drop)
+                .priority(Priority::DataLow),
+        };
+        put.await.map(|_| ())
+    }
+
+    /// Subscribe to a key-expression. The `on_sample` callback runs on Zenoh's
+    /// runtime for each received `Sample`; the subscription is kept alive in the
+    /// background until the session closes (zenoh owns it after `background()`).
+    pub async fn subscribe<F>(&self, key_expr: &str, on_sample: F) -> zenoh::Result<()>
+    where
+        F: Fn(zenoh::sample::Sample) + Send + Sync + 'static,
+    {
+        self.session
+            .declare_subscriber(key_expr)
+            .callback(on_sample)
+            .background()
+            .await
+    }
+}
+
