@@ -11,6 +11,14 @@ use crate::rules::Qos;
 pub const LIVELINESS_KEY: &str = "robot/{id}/client/liveliness";
 pub const RULES_KEY: &str = "robot/{id}/local/rules";
 
+/// WebRTC signaling key-expression templates (class-3 video), locked in the
+/// webrtc-signaling map. Signaling rides the same zenoh mesh as everything else.
+/// `<self>` = this robot's id, `<peer>` = the other robot's id.
+pub const SIGNAL_PRESENCE_KEY: &str = "robot/{id}/signal/presence";
+pub const SIGNAL_OFFER_KEY: &str = "robot/{self}/signal/{peer}/offer";
+pub const SIGNAL_ANSWER_KEY: &str = "robot/{self}/signal/{peer}/answer";
+pub const SIGNAL_ICE_KEY: &str = "robot/{self}/signal/{peer}/ice";
+
 /// Handle to the Zenoh session. A single `Session` multiplexes both QoS classes —
 /// QoS is per-put, per the locked decision. The class 1/2 publisher builders below
 /// encode the locked QoS knobs; `publish` applies them by QoS class.
@@ -64,6 +72,18 @@ impl Transport {
                 .priority(Priority::DataLow),
         };
         put.await.map(|_| ())
+    }
+
+    /// Publish arbitrary JSON to a key-expression at best-effort (used for the
+    /// WebRTC signaling control plane; not a class 1/2 actuator action).
+    pub async fn publish_json(
+        &self,
+        key_expr: &str,
+        payload: &serde_json::Value,
+    ) -> zenoh::Result<()> {
+        let bytes = serde_json::to_vec(payload)
+            .map_err(|e| Box::new(e) as zenoh::Error)?;
+        self.session.put(key_expr, bytes).await.map(|_| ())
     }
 
     /// Subscribe to a key-expression. The `on_sample` callback runs on Zenoh's

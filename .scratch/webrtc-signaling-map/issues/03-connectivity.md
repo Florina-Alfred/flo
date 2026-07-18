@@ -1,7 +1,7 @@
 # Ticket 03: Research k8s P2P WebRTC connectivity (STUN/TURN vs mesh)
 
 Label: `wayfinder:research`
-Status: open
+Status: resolved
 Blocked by:
 
 ## Question
