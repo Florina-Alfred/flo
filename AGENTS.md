@@ -18,9 +18,18 @@ only `ubuntu-latest`; no larger/self-hosted runners.
   Jobs: `fmt`, `clippy` (`-D warnings`), `test` matrix (`stable`, `beta`, `1.97.1`).
   This is the required status-check gate for merging into `main`.
 - `.github/workflows/security.yml` — **full security + release**, runs ONLY on `main`
-  (push) and `v*` tags. Jobs: `cargo-audit`, `cargo-deny`, `trivy` (SARIF), `codeql`
+  (push) and `v*` tags. Jobs: `cargo-audit` (hard gate), `cargo-deny`, `trivy` (SARIF,
+  all severities), `codeql`
   (rust), and a tag-triggered `release` artifact build (30-day retention).
 - The `media` feature is excluded from CI (needs system GStreamer); default features only.
+- `.github/workflows/publish.yml` — publishes to **crates.io** on `v*` tags only, using
+  the `CARGO_REGISTRY_TOKEN` encrypted repo secret (Settings → Secrets and variables →
+  Actions). The token is never committed; GitHub masks it in logs. `.env` files are NOT
+  used for secrets.
+
+### Review before merge
+Every PR into `main` must pass an **independent code review by a different agent** before
+merge — use the `code-review` skill (two axes: Standards + Spec). See `CONTRIBUTING.md`.
 
 ### Supply-chain hardening
 - Every third-party action is pinned to a **full commit SHA** (verified via
