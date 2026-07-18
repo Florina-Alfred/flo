@@ -4,6 +4,7 @@ mod config;
 mod engine;
 mod health;
 mod rules;
+mod signaling;
 mod transport;
 
 use std::sync::Arc;
@@ -68,6 +69,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         })
     };
 
+    // WebRTC signaling (webrtc-signaling map): advertise presence + receive offers/
+    // answers/ICE over the zenoh mesh. Live peer connections are later work; the
+    // handler below logs inbound signals until then.
+    let signal_task = {
+        let transport = transport.clone();
+        let robot_id = robot_id.clone();
+        tokio::spawn(async move {
+            if let Err(e) = run_signaling(&transport, &robot_id).await {
+                error!(error = %e, "signaling exited");
+            }
+        })
+    };
+
     health.set_ready();
     info!("flo client ready");
 
@@ -76,6 +90,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         r = health_task => error!(?r, "health task ended"),
         r = reload_task => error!(?r, "reload task ended"),
         r = engine_task => error!(?r, "engine task ended"),
+        r = signal_task => error!(?r, "signaling task ended"),
     }
     Ok(())
+}
+
+/// Start the WebRTC signaling plane: publish presence and receive inbound signals.
+/// The handler is a placeholder that logs; attaching webrtc-rs peer connections is
+/// future work (see the webrtc-signaling map's out-of-scope browser/video UI).
+async fn run_signaling(transport: &Transport, robot_id: &str) -> zenoh::Result<()> {
+    signaling::publish_presence(transport, robot_id, vec![format!("robot/{}/local/cam0", robot_id)]).await?;
+
+    let handler = LoggingSignalHandler;
+    // Peer discovery: log any robot that advertises presence.
+    signaling::subscribe_presence(transport, |p: signaling::Presence| {
+        info!(peer = %p.id, streams = ?p.streams, "discovered peer");
+    })
+    .await?;
+
+    signaling::run_signal_receiver(transport, robot_id, handler).await
+}
+
+/// Placeholder signal handler: logs inbound offers/answers/ICE. Replaced by a
+/// webrtc-rs peer-connection driver when class-3 media is implemented.
+struct LoggingSignalHandler;
+
+impl signaling::SignalHandler for LoggingSignalHandler {
+    fn on_offer(&self, from: &str, msg: &signaling::SignalMessage) {
+        info!(from, sdp_len = msg.sdp.len(), ice = msg.ice.len(), "received offer (no media yet)");
+    }
+    fn on_answer(&self, from: &str, msg: &signaling::SignalMessage) {
+        info!(from, sdp_len = msg.sdp.len(), "received answer (no media yet)");
+    }
+    fn on_ice(&self, from: &str, candidate: &signaling::IceCandidate) {
+        info!(from, candidate = %candidate.candidate, "received ICE candidate (no media yet)");
+    }
 }
