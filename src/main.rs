@@ -111,11 +111,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .or_else(|| std::env::var("FLO_ROBOT_ID").ok())
         .unwrap_or_else(|| "7".to_string());
 
+    #[cfg(feature = "media")]
+    if args.video.self_test {
+        return run_video_self_test(&args.video.codec);
+    }
+
     if demo {
         run_demo(args, robot_id).await?;
     } else {
         run_production(args, robot_id).await?;
     }
+    Ok(())
+}
+
+#[cfg(feature = "media")]
+fn run_video_self_test(_codec: &crate::codec::Codec) -> anyhow::Result<()> {
+    use crate::media::{MediaPipeline, SourceSpec};
+    let pipeline = MediaPipeline::build(&SourceSpec::Videotest, 1280, 720, 30)?;
+    let found = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = found.clone();
+    pipeline.start(Box::new(move |bytes: &[u8]| {
+        // Annex-B start code: 00 00 00 01
+        if bytes.windows(4).any(|w| w == [0x00, 0x00, 0x00, 0x01]) {
+            seen.store(true, std::sync::atomic::Ordering::SeqCst);
+            tracing::info!(len = bytes.len(), "▶ encoded H.264 sample (Annex-B start code ok)");
+        }
+    }))?;
+    // Run a few seconds to pull samples.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    pipeline.stop();
+    anyhow::ensure!(
+        found.load(std::sync::atomic::Ordering::SeqCst),
+        "no encoded H.264 samples produced"
+    );
+    println!("SELF-TEST OK: gstreamer encode produced H.264");
     Ok(())
 }
 
@@ -145,6 +174,18 @@ async fn run_demo(args: Args, robot_id: String) -> Result<(), Box<dyn std::error
         tokio::spawn(async move {
             if let Err(e) = simulate::run_simulate(&transport_sim, &robot_id_sim, period).await {
                 error!(error = %e, "simulator exited");
+            }
+        });
+    }
+
+    // Outbound WebRTC video if a peer was requested.
+    if let Some(peer) = &args.video.peer {
+        let tr = transport.clone();
+        let rid = robot_id.clone();
+        let pid = peer.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::video::start_video(&rid, &pid, tr).await {
+                tracing::error!(error = %e, "video failed");
             }
         });
     }
@@ -183,6 +224,18 @@ async fn run_production(
         tokio::spawn(async move {
             if let Err(e) = simulate::run_simulate(&transport_sim, &robot_id_sim, period).await {
                 error!(error = %e, "simulator exited");
+            }
+        });
+    }
+
+    // Outbound WebRTC video if a peer was requested.
+    if let Some(peer) = &args.video.peer {
+        let tr = transport.clone();
+        let rid = robot_id.clone();
+        let pid = peer.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::video::start_video(&rid, &pid, tr).await {
+                tracing::error!(error = %e, "video failed");
             }
         });
     }
