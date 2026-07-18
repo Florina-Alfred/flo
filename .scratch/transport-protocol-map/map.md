@@ -44,6 +44,13 @@ Decided at chart time:
   Key-expr namespace prefixes **locked**: `robot/<id>/local/**` (on-node peer mesh),
   `fleet/**` (router-backed cross-cluster), with `stop/**` (class 1) and `lidar/**`
   (class 2) marking QoS class. See `issues/03-lock-zenoh-topology.md`.
+- **04 (Ferrous build spike):** Spike builds clean (branch `research/transport-spike`,
+  commit `92fe28a`). Our `src/` has **zero `unsafe`**; zenoh QoS builder API matches
+  research (Reliable/Block/InteractiveHigh for stop, BestEffort/Drop/DataLow for lidar).
+  `tokio` + `webrtc` + `zenoh`(unstable) integrate. **Caveat:** the `ferrous` safety
+  compiler isn't installed in this env — final ferrous pass is a documented confirm
+  step, not run. Crate-internal unsafe in deps (tokio/socket2/etc.) is acceptable per
+  the hard constraint, which covers *our* code only. See `issues/04-ferrous-build-spike.md`.
 
 ## Not yet specified
 

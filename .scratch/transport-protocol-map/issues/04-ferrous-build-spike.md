@@ -1,7 +1,7 @@
 # Ticket 04: Provision ferrous build spike for zenoh + webrtc
 
 Label: `wayfinder:task`
-Status: open
+Status: resolved
 Blocked by: 01, 02
 
 ## Question
