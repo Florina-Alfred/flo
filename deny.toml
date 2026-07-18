@@ -25,9 +25,6 @@ allow = [
     "MPL-2.0",
 ]
 confidence-threshold = 0.8
-exceptions = [
-    { allow = ["MPL-2.0"], name = "MPL-2.0" },
-]
 
 [bans]
 multiple-versions = "warn"
