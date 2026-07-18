@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod codec;
 mod config;
 mod engine;
 mod health;
@@ -7,6 +8,8 @@ mod rules;
 mod signaling;
 mod simulate;
 mod transport;
+
+use codec::Codec;
 
 use std::sync::Arc;
 
@@ -18,17 +21,39 @@ use crate::transport::Transport;
 
 /// Minimal CLI: `cargo run` (no args) = local demo. Explicit `--robot-id` /
 /// `--config` selects production mode (k8s DaemonSet). Everything else is optional.
+struct VideoArgs {
+    peer: Option<String>,
+    device: Option<String>,
+    codec: Codec,
+    self_test: bool,
+}
+
+impl Default for VideoArgs {
+    fn default() -> Self {
+        VideoArgs {
+            peer: None,
+            device: None,
+            codec: Codec::H264,
+            self_test: false,
+        }
+    }
+}
+
 #[derive(Default)]
 struct Args {
     robot_id: Option<String>,
     config: Option<String>,
     simulate: bool,
     simulate_period_ms: u64,
+    video: VideoArgs,
 }
 
 fn parse_args() -> Args {
+    parse_args_from(std::env::args().skip(1))
+}
+
+fn parse_args_from<I: Iterator<Item = String>>(mut iter: I) -> Args {
     let mut args = Args::default();
-    let mut iter = std::env::args().skip(1);
     while let Some(a) = iter.next() {
         match a.as_str() {
             "--robot-id" => args.robot_id = iter.next(),
@@ -37,6 +62,15 @@ fn parse_args() -> Args {
             "--simulate-period-ms" => {
                 args.simulate_period_ms = iter.next().and_then(|v| v.parse().ok()).unwrap_or(1000)
             }
+            "--video-peer" => args.video.peer = iter.next().map(|s| s.to_string()),
+            "--video-device" => args.video.device = iter.next().map(|s| s.to_string()),
+            "--video-codec" => {
+                let v = iter.next().unwrap_or_else(|| "h264".to_string());
+                args.video.codec = v
+                    .parse()
+                    .unwrap_or_else(|e| panic!("--video-codec: {e}"));
+            }
+            "--video-self-test" => args.video.self_test = true,
             "--help" | "-h" => {
                 print_help();
                 std::process::exit(0);
@@ -58,7 +92,7 @@ fn print_help() {
          \x20\x20--robot-id <id>           robot/node id (also via FLO_ROBOT_ID)\n\
          \x20\x20--config <path>          rules TOML (production); omit for the built-in demo rules\n\
          \x20\x20--simulate               publish synthetic sensor samples (demo input)\n\
-         \x20\x20--simulate-period-ms <n> sensor round interval (default 1000)\n\
+         \x20\x20--simulate-period-ms <n> sensor round interval (default 1000; demo fires 1/s)\n\
          \x20\x20--help                   this message"
     );
 }
@@ -106,7 +140,7 @@ async fn run_demo(args: Args, robot_id: String) -> Result<(), Box<dyn std::error
     if sim {
         let transport_sim = transport.clone();
         let robot_id_sim = robot_id.clone();
-        let period = args.simulate_period_ms.max(250);
+        let period = args.simulate_period_ms.max(100);
         tokio::spawn(async move {
             if let Err(e) = simulate::run_simulate(&transport_sim, &robot_id_sim, period).await {
                 error!(error = %e, "simulator exited");
@@ -144,7 +178,7 @@ async fn run_production(
     if args.simulate {
         let transport_sim = transport.clone();
         let robot_id_sim = robot_id.clone();
-        let period = args.simulate_period_ms.max(250);
+        let period = args.simulate_period_ms.max(100);
         tokio::spawn(async move {
             if let Err(e) = simulate::run_simulate(&transport_sim, &robot_id_sim, period).await {
                 error!(error = %e, "simulator exited");
@@ -237,4 +271,42 @@ async fn wait_for_subsystems() {
     // deployment would `tokio::select!` on the JoinHandles. For the demo we block
     // so `cargo run` stays alive and visible.
     std::future::pending::<()>().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_video_args() {
+        let args = parse_args_from(
+            [
+                "flo",
+                "--robot-id",
+                "7",
+                "--video-peer",
+                "8",
+                "--video-device",
+                "/dev/video0",
+                "--video-codec",
+                "h264",
+            ]
+            .into_iter()
+            .map(String::from),
+        );
+        assert_eq!(args.robot_id.as_deref(), Some("7"));
+        assert_eq!(args.video.peer.as_deref(), Some("8"));
+        assert_eq!(args.video.device.as_deref(), Some("/dev/video0"));
+        assert_eq!(args.video.codec, crate::codec::Codec::H264);
+    }
+
+    #[test]
+    fn rejects_unknown_codec() {
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            parse_args_from(
+                ["flo", "--video-codec", "vp8"].into_iter().map(String::from),
+            )
+        }));
+        assert!(r.is_err());
+    }
 }
