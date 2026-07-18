@@ -1,7 +1,7 @@
 # Ticket 01: Research zenoh loopback/peer config for zero-config cargo run
 
 Label: `wayfinder:research`
-Status: open
+Status: resolved
 Blocked by:
 
 ## Question
