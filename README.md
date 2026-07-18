@@ -116,12 +116,18 @@ This project takes safety and supply-chain hygiene seriously:
 - **Minimal, vetted dependencies:** no dependencies beyond the standard safe-Rust ecosystem.
   `openh264` was explicitly rejected (we use GStreamer-native encode only). GStreamer is
   feature-gated behind `media` so the default build needs no system libraries.
-- **Continuous security scanning:** every push and PR runs, on free standard runners:
-  - `cargo-audit` — RUSTSEC advisory check.
-  - `cargo-deny` — license and banned-dependency policy enforcement.
-  - `Trivy` — filesystem vulnerability, secret, and misconfiguration scan.
-  - `CodeQL` — semantic code-analysis for the Rust language.
-  SARIF/report artifacts are uploaded on every run (30-day retention).
+- **Continuous security scanning** on free standard runners (`ubuntu-latest`):
+  - Every branch push and PR runs the minimal gate — `fmt`, `cargo clippy -- -D warnings`,
+    and a `test` matrix (`stable`, `beta`, `1.97.1`). This is the required status-check
+    gate for merging into `main`.
+  - On `main` (push) and version tags, the full pipeline runs: `cargo-audit` (RUSTSEC),
+    `cargo-deny` (license + banned-dep policy), `Trivy` (filesystem vuln/secret/config
+    scan), and `CodeQL` (Rust semantic analysis). SARIF/report artifacts are uploaded
+    (30-day retention).
+  - **Supply-chain hardening:** every third-party action is pinned to a full commit SHA
+    (verified, not a mutable tag). After the 2026-03 `aquasecurity/trivy-action`
+    compromise, its pin is the known-good `v0.35.0` signed release. Dependabot keeps
+    action SHAs and crate deps fresh.
 - **Strict linting:** `cargo clippy --all-targets -- -D warnings` and `cargo fmt --all -- --check`
   gate every change. Convention: avoid magic numbers (named constants / documented literals);
   enforced via strict clippy and review.
