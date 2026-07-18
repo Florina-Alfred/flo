@@ -1,5 +1,5 @@
 # cargo-deny configuration for flo
-# Enforces license allowlist and bans unsafe/unknown-license deps.
+# Denies deps with unlisted licenses; allows permissive + weak-copyleft MPL-2.0.
 
 [advisories]
 version = 2
@@ -13,13 +13,21 @@ allow = [
     "MIT",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    "BSD-1-Clause",
     "ISC",
     "Unicode-3.0",
     "Unicode-DFS-2016",
     "Zlib",
+    "0BSD",
+    "Unlicense",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "MPL-2.0",
 ]
 confidence-threshold = 0.8
-exceptions = []
+exceptions = [
+    { allow = ["MPL-2.0"], name = "MPL-2.0" },
+]
 
 [bans]
 multiple-versions = "warn"
