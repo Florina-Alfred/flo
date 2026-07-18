@@ -80,6 +80,45 @@ cargo run --help          # full option list
 - **Production**: the DaemonSet manifest runs the same binary as a non-privileged
   pod with health probes and a Zenoh liveliness token.
 
+## Streaming live video (class-3, WebRTC)
+
+`flo` can stream robot camera video peer-to-peer over WebRTC. GStreamer does the
+capture + **hardware-accelerated encode** (NVENC `nvv4l2h264enc` on Jetson, `x264enc`
+on a dev laptop); webrtc-rs owns the peer connection. Signaling rides the same
+zenoh mesh as everything else — no separate service.
+
+Prerequisites (only needed for video):
+
+- System GStreamer >= 1.14 with `x264enc`, `h264parse`, `videotestsrc`
+  (apt: `gstreamer1.0-plugins-{base,good,bad,ugly} gstreamer1.0-libav`).
+  On Jetson, the NVIDIA accelerated GStreamer packages provide `nvv4l2h264enc`.
+- Build with the `media` feature: `cargo build --features media`.
+
+Two terminals, two nodes, real video:
+
+```bash
+# terminal 1
+cargo run --features media --robot-id 7 --video-peer 8
+# terminal 2
+cargo run --features media --robot-id 8 --video-peer 7
+```
+
+Node 7 captures (synthetic pattern unless `--video-device /dev/video0`), encodes
+H.264, and offers a WebRTC call to 8 over zenoh; 8 answers; video flows 7→8.
+Node 8 logs `▶ video track received`. No camera? The demo uses `videotestsrc`.
+
+Headless encode check (no peer needed):
+
+```bash
+cargo run --features media --video-self-test
+```
+
+It builds a GStreamer pipeline against `videotestsrc`, pulls encoded samples, and
+asserts valid H.264 (Annex-B start code). Great for verifying Jetson HW encode.
+
+Flags: `--video-peer <id>` (who to call), `--video-device <path>` (real camera;
+default = synthetic), `--video-codec h264` (only `h264` in v1), `--video-self-test`.
+
 ## Safety note
 
 The crate is built with `#![forbid(unsafe_code)]` and depends only on safe-Rust
