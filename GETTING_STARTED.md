@@ -75,8 +75,10 @@ cargo run --help          # full option list
   access using safe-Rust crates (`v4l`, `serialport`, ...).
 - **Custom rules**: write a TOML ruleset and pass `--config`. Hot-reload by
   publishing new TOML to `robot/<id>/local/rules`.
-- **Video**: the WebRTC signaling plane is implemented; attaching v4l2→WebRTC media
-  (encoder sidecar) is the next effort.
+- **Video**: live WebRTC streaming works now — see the "Streaming live video"
+  section above. Real camera: pass `--video-device /dev/video0` (v4l2 capture,
+  GStreamer-encoded). The receiver-side decode/render and browser viewer join path
+  are the remaining future work.
 - **Production**: the DaemonSet manifest runs the same binary as a non-privileged
   pod with health probes and a Zenoh liveliness token.
 
