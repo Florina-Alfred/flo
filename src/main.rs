@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use tracing::{error, info};
 
-use crate::config::{run_hot_reload, RuleStore};
+use crate::config::{RuleStore, run_hot_reload};
 use crate::health::Health;
 use crate::transport::Transport;
 
@@ -67,9 +67,7 @@ fn parse_args_from<I: Iterator<Item = String>>(mut iter: I) -> Args {
             "--video-device" => args.video.device = iter.next().map(|s| s.to_string()),
             "--video-codec" => {
                 let v = iter.next().unwrap_or_else(|| "h264".to_string());
-                args.video.codec = v
-                    .parse()
-                    .unwrap_or_else(|e| panic!("--video-codec: {e}"));
+                args.video.codec = v.parse().unwrap_or_else(|e| panic!("--video-codec: {e}"));
             }
             "--video-self-test" => args.video.self_test = true,
             "--help" | "-h" => {
@@ -134,7 +132,10 @@ fn run_video_self_test(_codec: &crate::codec::Codec) -> anyhow::Result<()> {
         // Annex-B start code: 00 00 00 01
         if bytes.windows(4).any(|w| w == [0x00, 0x00, 0x00, 0x01]) {
             seen.store(true, std::sync::atomic::Ordering::SeqCst);
-            tracing::info!(len = bytes.len(), "▶ encoded H.264 sample (Annex-B start code ok)");
+            tracing::info!(
+                len = bytes.len(),
+                "▶ encoded H.264 sample (Annex-B start code ok)"
+            );
         }
     }))?;
     // Run a few seconds to pull samples.
@@ -149,7 +150,10 @@ fn run_video_self_test(_codec: &crate::codec::Codec) -> anyhow::Result<()> {
 }
 
 /// Demo mode: loopback zenoh, built-in rules, simulated sensors, loud verdicts.
-async fn run_demo(args: Args, robot_id: String) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn run_demo(
+    args: Args,
+    robot_id: String,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!(
         "\n  flo DEMO  —  robot {robot_id} on loopback zenoh\n\
          \x20\x20Simulating sensors and running the rule engine. Watch for '▶ rule fired'.\n\
@@ -191,7 +195,8 @@ async fn run_demo(args: Args, robot_id: String) -> Result<(), Box<dyn std::error
                     Some(d) => SourceSpec::V4l2(d.clone()),
                     None => SourceSpec::Videotest,
                 };
-                if let Err(e) = crate::video::start_video_with_source(&rid, &pid, tr, source).await {
+                if let Err(e) = crate::video::start_video_with_source(&rid, &pid, tr, source).await
+                {
                     tracing::error!(error = %e, "video failed");
                 }
             }
@@ -220,8 +225,8 @@ async fn run_production(
             .map_err(|e| format!("cannot read rules config {path}: {e}"))?,
         None => "rules = []\n".to_string(),
     };
-    let store = RuleStore::bootstrap(&bootstrap)
-        .map_err(|e| format!("invalid bootstrap rules: {e}"))?;
+    let store =
+        RuleStore::bootstrap(&bootstrap).map_err(|e| format!("invalid bootstrap rules: {e}"))?;
 
     let mut transport = Transport::open().await?;
     transport.declare_liveliness(&robot_id).await?;
@@ -255,7 +260,8 @@ async fn run_production(
                     Some(d) => SourceSpec::V4l2(d.clone()),
                     None => SourceSpec::Videotest,
                 };
-                if let Err(e) = crate::video::start_video_with_source(&rid, &pid, tr, source).await {
+                if let Err(e) = crate::video::start_video_with_source(&rid, &pid, tr, source).await
+                {
                     tracing::error!(error = %e, "video failed");
                 }
             }
@@ -325,7 +331,12 @@ async fn start_common_subsystems(transport: &Arc<Transport>, store: &RuleStore, 
 }
 
 async fn run_signaling(transport: &Transport, robot_id: &str) -> zenoh::Result<()> {
-    signaling::publish_presence(transport, robot_id, vec![format!("robot/{}/local/cam0", robot_id)]).await?;
+    signaling::publish_presence(
+        transport,
+        robot_id,
+        vec![format!("robot/{}/local/cam0", robot_id)],
+    )
+    .await?;
     signaling::subscribe_presence(transport, |p: signaling::Presence| {
         info!(peer = %p.id, streams = ?p.streams, "discovered peer");
     })
@@ -337,10 +348,19 @@ struct LoggingSignalHandler;
 
 impl signaling::SignalHandler for LoggingSignalHandler {
     fn on_offer(&self, from: &str, msg: &signaling::SignalMessage) {
-        info!(from, sdp_len = msg.sdp.len(), ice = msg.ice.len(), "received offer (no media yet)");
+        info!(
+            from,
+            sdp_len = msg.sdp.len(),
+            ice = msg.ice.len(),
+            "received offer (no media yet)"
+        );
     }
     fn on_answer(&self, from: &str, msg: &signaling::SignalMessage) {
-        info!(from, sdp_len = msg.sdp.len(), "received answer (no media yet)");
+        info!(
+            from,
+            sdp_len = msg.sdp.len(),
+            "received answer (no media yet)"
+        );
     }
     fn on_ice(&self, from: &str, candidate: &signaling::IceCandidate) {
         info!(from, candidate = %candidate.candidate, "received ICE candidate (no media yet)");
@@ -386,7 +406,9 @@ mod tests {
     fn rejects_unknown_codec() {
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             parse_args_from(
-                ["flo", "--video-codec", "vp8"].into_iter().map(String::from),
+                ["flo", "--video-codec", "vp8"]
+                    .into_iter()
+                    .map(String::from),
             )
         }));
         assert!(r.is_err());

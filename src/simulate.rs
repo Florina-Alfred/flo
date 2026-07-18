@@ -59,7 +59,11 @@ pub async fn run_simulate(
         // Lidar min range dips below 0.5 every 4th round -> slowdown rule fires.
         let min_range = if round.is_multiple_of(4) { 0.3 } else { 1.2 };
         transport
-            .publish(&lidar, Qos::BestEffort, &json!({ "min_range_m": min_range }))
+            .publish(
+                &lidar,
+                Qos::BestEffort,
+                &json!({ "min_range_m": min_range }),
+            )
             .await?;
 
         info!(

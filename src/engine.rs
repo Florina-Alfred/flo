@@ -98,10 +98,7 @@ fn when_satisfied(when: &When, latest: &HashMap<String, Value>) -> bool {
 
 /// Run the rule engine: subscribe to sensor topics, maintain latest samples, and
 /// fire actions for satisfied rules. One subscription per distinct trigger topic.
-pub async fn run_engine(
-    transport: Arc<Transport>,
-    store: RuleStore,
-) -> zenoh::Result<()> {
+pub async fn run_engine(transport: Arc<Transport>, store: RuleStore) -> zenoh::Result<()> {
     let rules = store.current().await;
     let mut topics: Vec<String> = Vec::new();
     for rule in &rules.rules {
@@ -176,7 +173,10 @@ fn collect_topics(when: &When, out: &mut Vec<String>) {
 }
 
 async fn fire_action(transport: &Transport, action: &Action) {
-    if let Err(e) = transport.publish(&action.topic, action.qos, &action.payload).await {
+    if let Err(e) = transport
+        .publish(&action.topic, action.qos, &action.payload)
+        .await
+    {
         warn!(action = %action.topic, error = %e, "action publish failed");
     } else {
         debug!(action = %action.topic, qos = ?action.qos, "fired action");

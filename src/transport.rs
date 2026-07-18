@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use zenoh::qos::{CongestionControl, Priority, Reliability};
 use zenoh::Session;
+use zenoh::qos::{CongestionControl, Priority, Reliability};
 
 use crate::rules::Qos;
 
@@ -76,8 +76,7 @@ impl Transport {
         qos: Qos,
         payload: &serde_json::Value,
     ) -> zenoh::Result<()> {
-        let bytes = serde_json::to_vec(payload)
-            .map_err(|e| Box::new(e) as zenoh::Error)?;
+        let bytes = serde_json::to_vec(payload).map_err(|e| Box::new(e) as zenoh::Error)?;
         let put = self.session.put(topic, bytes);
         let put = match qos {
             Qos::Reliable => put
@@ -99,8 +98,7 @@ impl Transport {
         key_expr: &str,
         payload: &serde_json::Value,
     ) -> zenoh::Result<()> {
-        let bytes = serde_json::to_vec(payload)
-            .map_err(|e| Box::new(e) as zenoh::Error)?;
+        let bytes = serde_json::to_vec(payload).map_err(|e| Box::new(e) as zenoh::Error)?;
         self.session.put(key_expr, bytes).await.map(|_| ())
     }
 
@@ -118,4 +116,3 @@ impl Transport {
             .await
     }
 }
-

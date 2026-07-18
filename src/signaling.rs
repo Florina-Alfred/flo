@@ -93,7 +93,16 @@ pub async fn publish_offer(
     ice: Vec<IceCandidate>,
 ) -> zenoh::Result<()> {
     let key = replace(crate::transport::SIGNAL_OFFER_KEY, robot_id, peer_id);
-    put_signal(transport, &key, SignalKind::Offer, robot_id, peer_id, sdp, ice).await
+    put_signal(
+        transport,
+        &key,
+        SignalKind::Offer,
+        robot_id,
+        peer_id,
+        sdp,
+        ice,
+    )
+    .await
 }
 
 /// Publish an answer from `robot_id` to `peer_id`.
@@ -105,7 +114,16 @@ pub async fn publish_answer(
     ice: Vec<IceCandidate>,
 ) -> zenoh::Result<()> {
     let key = replace(crate::transport::SIGNAL_ANSWER_KEY, robot_id, peer_id);
-    put_signal(transport, &key, SignalKind::Answer, robot_id, peer_id, sdp, ice).await
+    put_signal(
+        transport,
+        &key,
+        SignalKind::Answer,
+        robot_id,
+        peer_id,
+        sdp,
+        ice,
+    )
+    .await
 }
 
 /// Publish a trickled ICE candidate from `robot_id` to `peer_id`.
