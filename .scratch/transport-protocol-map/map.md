@@ -54,14 +54,9 @@ Decided at chart time:
 
 ## Not yet specified
 
-- Zenoh **topology/deployment** shape (hybrid vs P2P peer mesh vs router backbone)
-  for class 1 & 2 traffic — hangs on ticket 01 (zenoh deployment research).
-- Whether a **single zenoh session** multiplexes both QoS classes or two sessions
-  per class — hangs on 01.
 - WebRTC **signaling** mechanism (how peers discover/exchange SDP) under k8s —
-  out of scope for transport-lock but needed before class-3 code; note for future map.
-- Concrete **Rust crate choice** for zenoh and its ferrous/unsafe posture
-  — hangs on 01 (webrtc choice resolved in 02).
+  out of scope for transport-lock but needed before class-3 code; candidate for a
+  future wayfinder map. (Resolved-by-reference: crate choice in 02, topology in 01/03.)
 
 ## Out of scope
 
