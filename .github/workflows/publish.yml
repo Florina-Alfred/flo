@@ -1,0 +1,44 @@
+name: Publish to crates.io
+
+# Publishes `flo` to crates.io when a version tag (v*) is pushed to main.
+# The token is provided by the CARGO_REGISTRY_TOKEN encrypted secret
+# (repo Settings -> Secrets and variables -> Actions). It is NEVER committed
+# to the repo and GitHub masks it in logs.
+#
+# Best-practice notes:
+# - Gated on tags only, so it cannot fire on a branch push or PR.
+# - Requires the minimal CI gate (ci.yml) to have passed on the commit.
+# - `cargo publish` is idempotent: if the version already exists it errors.
+# - Bump `version` in Cargo.toml and tag the commit as `vX.Y.Z` to release.
+
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    name: cargo publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
+      - name: Verify package
+        run: cargo publish --dry-run
+      - name: Publish to crates.io
+        run: cargo publish --token "${CARGO_REGISTRY_TOKEN}"
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

@@ -35,7 +35,10 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
       - name: Run audit
-        run: cargo audit --json > audit.json || true
+        # Hard gate: fails the job on any RUSTSEC advisory. To allowlist a
+        # specific, reviewed advisory, add `cargo audit ignore RUSTSEC-XXXX`
+        # (committed to the repo) with a justification comment.
+        run: cargo audit --json > audit.json
       - name: Upload audit report
         if: always()
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
@@ -76,7 +79,6 @@ jobs:
           scanners: vuln,secret,config
           format: sarif
           output: trivy.sarif
-          severity: CRITICAL,HIGH
       - name: Upload Trivy SARIF
         if: always()
         uses: github/codeql-action/upload-sarif@v3
