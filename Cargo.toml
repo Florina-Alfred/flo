@@ -1,0 +1,9 @@
+[package]
+name = "flo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.53.0", features = ["macros", "rt-multi-thread"] }
+webrtc = "0.17.1"
+zenoh = { version = "1.9.0", features = ["unstable"] }
