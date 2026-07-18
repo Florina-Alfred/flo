@@ -26,7 +26,7 @@ branch/commit reference as the resolution comment.
 
 ## Resolution (research findings)
 
-Branch `research/observability`, commit `RESEARCH_OBSERVABILITY_HEAD` (notes:
+Branch `research/observability`, commit `9a6ed53` (notes:
 `.scratch/client-container-arch-map/issues/04-observability-notes.md`). All recommendations
 verified ferrous-clean (no `unsafe` obligation on our side).
 
