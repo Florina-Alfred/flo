@@ -5,7 +5,7 @@
 
 #![cfg(feature = "media")]
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 
 use gstreamer::prelude::*;
 use gstreamer_app::AppSink;
