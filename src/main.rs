@@ -243,12 +243,18 @@ async fn run_production(
     info!(robot_id, "starting flo client (production mode)");
 
     let bootstrap = match &args.config {
-        Some(path) => std::fs::read_to_string(path)
-            .map_err(|e| format!("cannot read rules config {path}: {e}"))?,
+        Some(path) => match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(e) => {
+                tracing::error!(path, error = %e, "config unreadable -> starting in fail-safe safe-state (no unrestricted motion)");
+                safe_state_toml()
+            }
+        },
         None => "rules = []\n".to_string(),
     };
-    let store =
-        RuleStore::bootstrap(&bootstrap).map_err(|e| format!("invalid bootstrap rules: {e}"))?;
+
+    // Try semantic (extended-TOML) first; fall back to raw TOML; else safe-state.
+    let store = compile_or_fallback(&bootstrap, &robot_id);
 
     let mut transport = Transport::open().await?;
     transport.declare_liveliness(&robot_id).await?;
@@ -298,6 +304,34 @@ async fn run_production(
 
     wait_for_subsystems().await;
     Ok(())
+}
+
+/// A minimal fail-safe ruleset: no motion commands are emitted.
+fn safe_state_toml() -> String {
+    "rules = []\n".to_string()
+}
+
+/// Compile extended-TOML if it parses as semantic; otherwise treat as raw TOML.
+/// On any failure, fall back to a fail-safe empty ruleset.
+fn compile_or_fallback(text: &str, robot_id: &str) -> RuleStore {
+    if let Ok(doc) = flo_rs::semantic::parse_semantic(text) {
+        match flo_rs::semantic::compile(&doc, robot_id) {
+            Ok(rules) => match RuleStore::bootstrap(&rules.to_toml()) {
+                Ok(s) => return s,
+                Err(e) => {
+                    tracing::error!(error = %e, "semantic compile produced invalid rules -> safe-state")
+                }
+            },
+            Err(e) => tracing::error!(error = %e, "semantic validation failed -> safe-state"),
+        }
+    }
+    match RuleStore::bootstrap(text) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(error = %e, "config invalid -> starting in fail-safe safe-state");
+            RuleStore::bootstrap(&safe_state_toml()).expect("safe-state always parses")
+        }
+    }
 }
 
 /// Start health server, hot-reload, rule engine, and WebRTC signaling. Shared by
