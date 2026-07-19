@@ -1,0 +1,11 @@
+# Docker build context — keep the image lean and avoid leaking local state.
+.git
+.github
+target
+.scratch
+.agent
+.agents
+node_modules
+*.md
+!Cargo.toml
+!Cargo.lock
