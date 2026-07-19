@@ -1,0 +1,17 @@
+[site]
+id = "hrc-cell"
+frame = "robot-base"
+
+[zones.cell]
+shape = "rect"
+x = 0.0
+y = 0.0
+w = 2.0
+h = 2.0
+
+[[rules]]
+name = "slow-near-human"
+when.near_human = 1.0
+actions = [
+    { slow_to = 0.1, qos = "best_effort" },
+]

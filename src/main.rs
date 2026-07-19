@@ -47,6 +47,7 @@ struct Args {
     simulate: bool,
     simulate_period_ms: u64,
     video: VideoArgs,
+    rule: Option<Vec<String>>,
 }
 
 fn parse_args() -> Args {
@@ -56,6 +57,14 @@ fn parse_args() -> Args {
 fn parse_args_from<I: Iterator<Item = String>>(mut iter: I) -> Args {
     let mut args = Args::default();
     while let Some(a) = iter.next() {
+        if a == "rule" {
+            let mut collected: Vec<String> = Vec::new();
+            for r in iter.by_ref() {
+                collected.push(r);
+            }
+            args.rule = Some(collected);
+            break;
+        }
         match a.as_str() {
             "--robot-id" => args.robot_id = iter.next(),
             "--config" => args.config = iter.next(),
@@ -95,7 +104,8 @@ fn help_text() -> String {
      \x20\x20--video-device <path>     video source device (default: synthetic test pattern)\n\
      \x20\x20--video-codec <name>      video codec (default h264)\n\
      \x20\x20--video-self-test         encode-only self-test (no peer needed)\n\
-     \x20\x20--help                    this message\n"
+     \x20\x20--help                    this message\n\
+     \x20\x20rule check <path>        validate a semantic ruleset (extended TOML) before deploy\n"
         .to_string()
 }
 
@@ -108,6 +118,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     health::init_tracing();
 
     let args = parse_args();
+
+    if let Some(rule_cmd) = &args.rule {
+        return run_rule_command(rule_cmd);
+    }
+
     // Demo mode = no explicit production flags. `cargo run` with no args lands here.
     let demo = args.robot_id.is_none() && args.config.is_none();
     let robot_id = args
@@ -380,6 +395,36 @@ async fn wait_for_subsystems() {
     // deployment would `tokio::select!` on the JoinHandles. For the demo we block
     // so `cargo run` stays alive and visible.
     std::future::pending::<()>().await;
+}
+
+fn run_rule_command(cmd: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    match cmd.first().map(String::as_str) {
+        Some("check") => {
+            let path = cmd.get(1).ok_or("usage: flo rule check <path>")?;
+            let text = std::fs::read_to_string(path)
+                .map_err(|e| format!("cannot read {path}: {e}"))?;
+            match flo_rs::semantic::parse_semantic(&text) {
+                Ok(doc) => match flo_rs::semantic::validate(&doc) {
+                    Ok(()) => {
+                        println!("OK: {path} is a valid semantic ruleset");
+                        Ok(())
+                    }
+                    Err(e) => {
+                        eprintln!("INVALID: {e}");
+                        std::process::exit(1);
+                    }
+                },
+                Err(e) => {
+                    eprintln!("PARSE ERROR: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        other => {
+            eprintln!("unknown rule subcommand: {other:?} (try 'flo rule check <path>')");
+            std::process::exit(2);
+        }
+    }
 }
 
 #[cfg(test)]
