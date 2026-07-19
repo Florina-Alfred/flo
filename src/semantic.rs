@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use crate::rules::Qos;
+use crate::rules::{Action, Qos, Rule, Rules, Trigger, When};
 
 fn default_qos() -> Qos {
     Qos::Reliable
@@ -140,4 +140,91 @@ pub fn validate(doc: &SemanticDoc) -> Result<(), SemanticError> {
         }
     }
     Ok(())
+}
+
+/// Compile a validated semantic doc to the runtime `Rules` shape.
+pub fn compile(doc: &SemanticDoc, robot_id: &str) -> Result<Rules, SemanticError> {
+    validate(doc)?;
+    let site = if doc.site.id.is_empty() {
+        return Err(SemanticError("missing [site].id".to_string()));
+    } else {
+        &doc.site.id
+    };
+
+    let mut out = Vec::new();
+    for rule in &doc.rules {
+        let mut triggers = Vec::new();
+
+        if let Some(z) = &rule.when.in_zone {
+            triggers.push(Trigger {
+                topic: format!("fleet/{site}/{robot_id}/state"),
+                pred: Some(format!("zone_id == \"{z}\"")),
+            });
+        }
+        if let Some(z) = &rule.when.not_in_zone {
+            triggers.push(Trigger {
+                topic: format!("fleet/{site}/{robot_id}/state"),
+                pred: Some(format!("zone_id != \"{z}\"")),
+            });
+        }
+        if let Some(d) = rule.when.near_human {
+            triggers.push(Trigger {
+                topic: format!("fleet/{site}/proximity/{robot_id}/human"),
+                pred: Some(format!("separation_distance < {d}")),
+            });
+        }
+        if let Some(d) = rule.when.not_near_human {
+            triggers.push(Trigger {
+                topic: format!("fleet/{site}/proximity/{robot_id}/human"),
+                pred: Some(format!("separation_distance >= {d}")),
+            });
+        }
+        if let Some(n) = &rule.when.near {
+            triggers.push(Trigger {
+                topic: format!("fleet/{site}/{robot_id}/nearest_peer"),
+                pred: Some(format!("separation_distance < {}", n.dist)),
+            });
+        }
+        if let Some(r) = &rule.when.role {
+            triggers.push(Trigger {
+                topic: format!("fleet/{site}/{robot_id}/state"),
+                pred: Some(format!("role == \"{r}\"")),
+            });
+        }
+
+        let actions: Vec<Action> = rule
+            .actions
+            .iter()
+            .map(|a| compile_action(a, robot_id))
+            .collect();
+
+        out.push(Rule {
+            name: rule.name.clone(),
+            when: When { all: triggers, any: vec![] },
+            actions,
+        });
+    }
+    Ok(Rules { rules: out })
+}
+
+fn compile_action(a: &SemanticAction, robot_id: &str) -> Action {
+    if a.estop {
+        Action {
+            topic: "stop/fleet/cmd".to_string(),
+            qos: Qos::Reliable,
+            payload: serde_json::json!({ "stop": true }),
+        }
+    } else if a.resume {
+        Action {
+            topic: format!("robot/{robot_id}/local/drive"),
+            qos: Qos::Reliable,
+            payload: serde_json::json!({ "resume": true }),
+        }
+    } else {
+        Action {
+            topic: format!("robot/{robot_id}/local/drive"),
+            qos: a.qos,
+            payload: serde_json::json!({ "speed_mps": a.slow_to.unwrap_or(0.0) }),
+        }
+    }
 }
