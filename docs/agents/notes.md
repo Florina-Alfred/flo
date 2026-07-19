@@ -31,10 +31,11 @@ crate — operational notes only.
   - #46 webrtc-signaling (Todo — open: two-way connectivity)
   - #47 industrial-robotics (Done)
   - #42 CI status-discrepancy (Needs admin attention)
-  - Open child tickets created 2026-07-19 under the open epics:
-    - #48 Prometheus /metrics endpoint (Todo, child of #43)
-    - #49 Two-way WebRTC media connectivity (Todo, child of #46)
-    - #50 Device discovery/access API (Todo, child of #43)
+   - Open child tickets created 2026-07-19 under the open epics:
+     - #48 Prometheus /metrics endpoint (**Done** — PR #52 merged 2026-07-19)
+     - #49 Two-way WebRTC media connectivity (Todo, child of #46)
+     - #50 Device discovery/access API (**Done** — PR #53 merged 2026-07-19;
+       slice 1 = validation + descriptor; udev enumeration deferred)
     - #51 Dependency-policy conflict: AGENTS.md "no deps" vs reality (Needs
       admin attention — decision required before implementing #48/#49/#50
       that may need new crates).
@@ -44,3 +45,19 @@ crate — operational notes only.
 - Note: GitHub Projects V2 GraphQL `items` list can return truncated/eventually
   consistent results right after many rapid mutations; verify membership by
   node ID lookup, not by the count.
+
+## Board state (2026-07-19, after merges)
+
+- #43 client-container: open children remaining = **#49** (two-way WebRTC, child
+  of #46) is the only open item now. Both #48 (metrics) and #50 (device-access)
+  closed+DONE.
+- #46 webrtc-signaling: still Todo; its open child #49 blocks completion.
+- Remaining open work: **#49** two-way WebRTC connectivity (not started).
+- #52 (metrics) + #53 (device-access) merged to `main`.
+
+## Branch / PR hygiene
+
+- PR #52 and #53 merged via squash; branches deleted by GitHub.
+- CAUTION: `git checkout -b X` aborts silently if the working tree diverges from
+  the assumed base — always verify the current branch before committing. A stray
+  commit on the wrong branch was recovered by branching then `git reset --hard <prior-sha>`.
