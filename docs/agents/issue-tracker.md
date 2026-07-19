@@ -48,15 +48,19 @@ gh issue create \
 - #<blocking-issue-number>, or "None — can start immediately".
 EOF
 )" \
-  --label "ready-for-agent"
+  --label "ready-for-agent" \
+  --project "flo"
 
-# Add the new issue to the flo project board (needs the project's node ID)
-gh project item-add <PROJECT_NODE_ID> --owner <OWNER> --url "$(gh issue list --search '...' --json url -q '.[0].url')"
+# NOTE: `gh issue create --project "flo"` already adds the new issue to the
+# `flo` board (by project title), so a separate `gh project item-add` step is
+# normally unnecessary. If you must add an existing issue, use:
+#   gh project item-add 2 --owner Florina-Alfred --url "<issue-url>"
+# (project number 2 = the flo board; node ID in docs/agents/project-id.txt).
 ```
 
-The `flo` project's node ID is recorded in `docs/agents/project-id.txt`
-(replace `<PROJECT_NODE_ID>` and `<OWNER>` above). Apply the `ready-for-agent`
-label unless instructed otherwise — tickets are agent-grabbable by construction.
+Apply the `ready-for-agent` label unless instructed otherwise — tickets are
+agent-grabbable by construction. The `flo` project's number (2) and node ID
+are recorded in `docs/agents/project-id.txt`.
 
 ## When a skill says "fetch the relevant ticket"
 
