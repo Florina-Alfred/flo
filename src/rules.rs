@@ -1,8 +1,8 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// QoS class a published action targets. Maps onto the locked transport decision:
 /// `reliable` => Zenoh class 1 (STOP), `best_effort` => Zenoh class 2 (lidar).
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Qos {
     Reliable,
@@ -10,7 +10,7 @@ pub enum Qos {
 }
 
 /// A single publish action fired when a rule's `when` evaluates true.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Action {
     /// Target key-expression, e.g. `stop/fleet/cmd` or `robot/7/local/drive`.
     pub topic: String,
@@ -22,7 +22,7 @@ pub struct Action {
 
 /// One predicate: a key-expression match plus an optional predicate string
 /// evaluated against the received payload.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Trigger {
     /// Key-expression the incoming sample must match, e.g. `robot/7/local/bumper`.
     pub topic: String,
@@ -34,7 +34,7 @@ pub struct Trigger {
 }
 
 /// The boolean condition guarding a rule's actions. Composable AND/OR.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct When {
     /// All triggers must hold (logical AND).
     #[serde(default)]
@@ -45,7 +45,7 @@ pub struct When {
 }
 
 /// A single declarative rule: a `when` guard plus the actions it fires.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Rule {
     pub name: String,
     #[serde(default)]
@@ -54,7 +54,7 @@ pub struct Rule {
 }
 
 /// The full ruleset loaded from TOML (bootstrap ConfigMap or zenoh hot-reload).
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct Rules {
     #[serde(default)]
     pub rules: Vec<Rule>,
@@ -65,5 +65,13 @@ impl Rules {
     /// engine can reject bad config and keep the previous ruleset active.
     pub fn from_toml(text: &str) -> Result<Self, toml::de::Error> {
         toml::from_str(text)
+    }
+
+    /// Serialize back to TOML — used to feed `RuleStore::bootstrap` after compile.
+    /// `allow(dead_code)`: only the `semantic_rules` example + production compile path
+    /// consume this; clippy's per-crate analysis flags it as unused from the lib's view.
+    #[allow(dead_code)]
+    pub fn to_toml(&self) -> String {
+        toml::to_string(self).expect("Rules is serializable")
     }
 }

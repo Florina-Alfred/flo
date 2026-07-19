@@ -47,6 +47,7 @@ struct Args {
     simulate: bool,
     simulate_period_ms: u64,
     video: VideoArgs,
+    rule: Option<Vec<String>>,
 }
 
 fn parse_args() -> Args {
@@ -56,6 +57,14 @@ fn parse_args() -> Args {
 fn parse_args_from<I: Iterator<Item = String>>(mut iter: I) -> Args {
     let mut args = Args::default();
     while let Some(a) = iter.next() {
+        if a == "rule" {
+            let mut collected: Vec<String> = Vec::new();
+            for r in iter.by_ref() {
+                collected.push(r);
+            }
+            args.rule = Some(collected);
+            break;
+        }
         match a.as_str() {
             "--robot-id" => args.robot_id = iter.next(),
             "--config" => args.config = iter.next(),
@@ -95,7 +104,8 @@ fn help_text() -> String {
      \x20\x20--video-device <path>     video source device (default: synthetic test pattern)\n\
      \x20\x20--video-codec <name>      video codec (default h264)\n\
      \x20\x20--video-self-test         encode-only self-test (no peer needed)\n\
-     \x20\x20--help                    this message\n"
+     \x20\x20--help                    this message\n\
+     \x20\x20rule check <path>        validate a semantic ruleset (extended TOML) before deploy\n"
         .to_string()
 }
 
@@ -108,6 +118,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     health::init_tracing();
 
     let args = parse_args();
+
+    if let Some(rule_cmd) = &args.rule {
+        return run_rule_command(rule_cmd);
+    }
+
     // Demo mode = no explicit production flags. `cargo run` with no args lands here.
     let demo = args.robot_id.is_none() && args.config.is_none();
     let robot_id = args
@@ -228,12 +243,18 @@ async fn run_production(
     info!(robot_id, "starting flo client (production mode)");
 
     let bootstrap = match &args.config {
-        Some(path) => std::fs::read_to_string(path)
-            .map_err(|e| format!("cannot read rules config {path}: {e}"))?,
+        Some(path) => match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(e) => {
+                tracing::error!(path, error = %e, "config unreadable -> starting in fail-safe safe-state (no unrestricted motion)");
+                safe_state_toml()
+            }
+        },
         None => "rules = []\n".to_string(),
     };
-    let store =
-        RuleStore::bootstrap(&bootstrap).map_err(|e| format!("invalid bootstrap rules: {e}"))?;
+
+    // Try semantic (extended-TOML) first; fall back to raw TOML; else safe-state.
+    let store = compile_or_fallback(&bootstrap, &robot_id);
 
     let mut transport = Transport::open().await?;
     transport.declare_liveliness(&robot_id).await?;
@@ -283,6 +304,34 @@ async fn run_production(
 
     wait_for_subsystems().await;
     Ok(())
+}
+
+/// A minimal fail-safe ruleset: no motion commands are emitted.
+fn safe_state_toml() -> String {
+    "rules = []\n".to_string()
+}
+
+/// Compile extended-TOML if it parses as semantic; otherwise treat as raw TOML.
+/// On any failure, fall back to a fail-safe empty ruleset.
+fn compile_or_fallback(text: &str, robot_id: &str) -> RuleStore {
+    if let Ok(doc) = flo_rs::semantic::parse_semantic(text) {
+        match flo_rs::semantic::compile(&doc, robot_id) {
+            Ok(rules) => match RuleStore::bootstrap(&rules.to_toml()) {
+                Ok(s) => return s,
+                Err(e) => {
+                    tracing::error!(error = %e, "semantic compile produced invalid rules -> safe-state")
+                }
+            },
+            Err(e) => tracing::error!(error = %e, "semantic validation failed -> safe-state"),
+        }
+    }
+    match RuleStore::bootstrap(text) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(error = %e, "config invalid -> starting in fail-safe safe-state");
+            RuleStore::bootstrap(&safe_state_toml()).expect("safe-state always parses")
+        }
+    }
 }
 
 /// Start health server, hot-reload, rule engine, and WebRTC signaling. Shared by
@@ -380,6 +429,36 @@ async fn wait_for_subsystems() {
     // deployment would `tokio::select!` on the JoinHandles. For the demo we block
     // so `cargo run` stays alive and visible.
     std::future::pending::<()>().await;
+}
+
+fn run_rule_command(cmd: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    match cmd.first().map(String::as_str) {
+        Some("check") => {
+            let path = cmd.get(1).ok_or("usage: flo rule check <path>")?;
+            let text =
+                std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+            match flo_rs::semantic::parse_semantic(&text) {
+                Ok(doc) => match flo_rs::semantic::validate(&doc) {
+                    Ok(()) => {
+                        println!("OK: {path} is a valid semantic ruleset");
+                        Ok(())
+                    }
+                    Err(e) => {
+                        eprintln!("INVALID: {e}");
+                        std::process::exit(1);
+                    }
+                },
+                Err(e) => {
+                    eprintln!("PARSE ERROR: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        other => {
+            eprintln!("unknown rule subcommand: {other:?} (try 'flo rule check <path>')");
+            std::process::exit(2);
+        }
+    }
 }
 
 #[cfg(test)]

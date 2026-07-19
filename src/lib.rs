@@ -8,6 +8,7 @@ pub mod codec;
 pub mod config;
 pub mod engine;
 pub mod rules;
+pub mod semantic;
 pub mod simulate;
 pub mod transport;
 
