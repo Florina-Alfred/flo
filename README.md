@@ -53,6 +53,38 @@ cargo run --features media --example video_peer -- <peer-id>
 #   Requires the `media` feature + GStreamer. Without `media` it refuses to build.
 ```
 
+## Semantic rules (industrial)
+
+Instead of raw Zenoh key-expressions, you can author rules against **zones, roles, poses,
+proximity, and human-presence**. `flo` compiles the semantic document to the same runtime rule
+engine — no engine change. Authoring is extended TOML (no new dependencies; `#![forbid(unsafe_code)]`
+preserved).
+
+```toml
+[site]
+id = "cell-7"
+[zones]
+safety = { shape = "rect", x = 0.0, y = 0.0, w = 2.0, h = 2.0 }
+[[rules]]
+name = "hrc-slow-near-human"
+when.near_human = 1.2
+actions = [ { slow_to = 0.1, qos = "best_effort" } ]
+```
+
+Validate before deploy:
+
+```bash
+flo rule check examples/rules/hrc-cell.toml
+```
+
+Semantic `when` keys: `in_zone`, `not_in_zone`, `near_human`, `not_near_human`, `near`,
+`role`. Actions: `estop` (reliable STOP), `slow_to(speed)` (best-effort), `resume`. See
+`examples/rules/` for an HRC safety cell and a warehouse AMR fleet.
+
+**Safety posture:** `flo` is the software pre-estop / coordination layer. Missing or invalid
+config starts `flo` in a fail-safe state (no unrestricted motion commands); pose loss fails
+safe. Hardware STO / certified Safety-PLC remains the primary stop authority.
+
 ## Configuration / rules
 
 The demo ships with built-in rules. In production mode, pass your own rules file:
