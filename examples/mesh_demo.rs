@@ -41,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
         let t = transport.clone();
         let s = store.clone();
         tokio::spawn(async move {
-            if let Err(e) = engine::run_engine(t, s).await {
+            if let Err(e) = engine::run_engine(t, s, std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0))).await {
                 eprintln!("engine exited: {e}");
             }
         });

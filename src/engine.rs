@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use serde_json::Value;
 use tracing::{debug, info, warn};
@@ -98,7 +99,11 @@ fn when_satisfied(when: &When, latest: &HashMap<String, Value>) -> bool {
 
 /// Run the rule engine: subscribe to sensor topics, maintain latest samples, and
 /// fire actions for satisfied rules. One subscription per distinct trigger topic.
-pub async fn run_engine(transport: Arc<Transport>, store: RuleStore) -> zenoh::Result<()> {
+pub async fn run_engine(
+    transport: Arc<Transport>,
+    store: RuleStore,
+    eval_counter: Arc<AtomicU64>,
+) -> zenoh::Result<()> {
     let rules = store.current().await;
     let mut topics: Vec<String> = Vec::new();
     for rule in &rules.rules {
@@ -133,10 +138,12 @@ pub async fn run_engine(transport: Arc<Transport>, store: RuleStore) -> zenoh::R
     let eval_latest = latest.clone();
     let eval_store = store.clone();
     let eval_transport = transport.clone();
+    let eval_counter = eval_counter.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(50));
         loop {
             tick.tick().await;
+            eval_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let snap = eval_latest.lock().await.clone();
             let rules = eval_store.current().await;
             for rule in &rules.rules {

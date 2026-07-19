@@ -362,8 +362,9 @@ async fn start_common_subsystems(transport: &Arc<Transport>, store: &RuleStore, 
     let engine_task = {
         let transport = transport.clone();
         let store = store.clone();
+        let eval_counter = health.eval_counter();
         tokio::spawn(async move {
-            if let Err(e) = engine::run_engine(transport, store).await {
+            if let Err(e) = engine::run_engine(transport, store, eval_counter).await {
                 error!(error = %e, "rule engine exited");
             }
         })
