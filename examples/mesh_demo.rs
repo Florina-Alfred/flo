@@ -12,7 +12,19 @@ use flo_rs::transport::Transport;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let robot_id = std::env::args().nth(1).unwrap_or_else(|| "7".to_string());
+    // Mirror the `flo` binary: accept --robot-id <id> or FLO_ROBOT_ID.
+    let robot_id = std::env::var("FLO_ROBOT_ID").ok().or_else(|| {
+        let mut args = std::env::args().skip(1);
+        while let Some(a) = args.next() {
+            if a == "--robot-id" {
+                if let Some(v) = args.next() {
+                    return Some(v);
+                }
+            }
+        }
+        None
+    });
+    let robot_id = robot_id.unwrap_or_else(|| "7".to_string());
 
     let mut transport = Transport::open_with(Transport::loopback_config())
         .await
