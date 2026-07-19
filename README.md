@@ -79,7 +79,9 @@ flo rule check examples/rules/hrc-cell.toml
 
 Semantic `when` keys: `in_zone`, `not_in_zone`, `near_human`, `not_near_human`, `near`,
 `role`. Actions: `estop` (reliable STOP), `slow_to(speed)` (best-effort), `resume`. See
-`examples/rules/` for an HRC safety cell and a warehouse AMR fleet.
+`examples/rules/` for an HRC safety cell and a warehouse AMR fleet. **Full rules guide
+(mental model, topic contract, composition, fail-safe behavior, worked examples):
+[docs/RULES.md](docs/RULES.md).**
 
 **Safety posture:** `flo` is the software pre-estop / coordination layer. Missing or invalid
 config starts `flo` in a fail-safe state (no unrestricted motion commands); pose loss fails
