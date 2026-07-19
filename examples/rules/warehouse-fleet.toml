@@ -1,0 +1,22 @@
+[site]
+id = "dc-2"
+frame = "dc-2/world"
+[zones]
+aisle-a = { shape = "rect", x = 0.0, y = 0.0, w = 1.2, h = 40.0 }
+station-1 = { shape = "rect", x = 6.0, y = 0.0, w = 2.0, h = 2.0 }
+[[rules]]
+name = "amr-yield-near-peer"
+when.near = { entity = "8", dist = 2.0 }
+actions = [ { slow_to = 0.3, qos = "best_effort" } ]
+[[rules]]
+name = "amr-slow-in-aisle"
+when.in_zone = "aisle-a"
+actions = [ { slow_to = 0.5, qos = "best_effort" } ]
+[[rules]]
+name = "amr-dock-at-station"
+when.in_zone = "station-1"
+actions = [ { slow_to = 0.1, qos = "best_effort" } ]
+[[rules]]
+name = "amr-reserve-on-conflict"
+when.near = { entity = "8", dist = 0.8 }
+actions = [ { estop = true, qos = "reliable" } ]
