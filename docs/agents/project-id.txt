@@ -1,10 +1,5 @@
-# GitHub Project (Projects V2) node ID for the `flo` board.
-# Used by gh project item-add when publishing tickets from /to-tickets.
-#
-# Fill in the PROJECT_NODE_ID (not the URL) after creating the board.
-# Get it with: gh api graphql -f query='query{organization(login:"FLORINA-ALFRED"){projectV2(number:N){id}}}'
-#   or for a user-owned project: gh api graphql -f query='query{user(login:"FLORINA-ALfred"){projectV2(number:N){id}}}'
-#
-# owner: FLORINA-ALFRED
-# project_number: <FILL ME IN>
-# PROJECT_NODE_ID: <FILL ME IN>
+# GitHub Project (Projects V2) for the `flo` board.
+# Used by `gh project item-add` when publishing tickets from /to-tickets.
+owner: Florina-Alfred
+project_number: 2
+PROJECT_NODE_ID: PVT_kwHOBn8aXc4Bd1-y
