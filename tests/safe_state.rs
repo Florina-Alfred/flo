@@ -32,7 +32,9 @@ fn production_missing_config_starts_safe() {
     let _ = child.kill();
     let _ = child.wait();
 
-    let stderr = stderr_handle.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
+    let stderr = stderr_handle
+        .map(|h| h.join().unwrap_or_default())
+        .unwrap_or_default();
 
     assert!(
         !stderr.contains("panic"),

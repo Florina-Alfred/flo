@@ -120,10 +120,18 @@ pub fn validate(doc: &SemanticDoc) -> Result<(), SemanticError> {
 }
 
 /// Recursively validate a `SemanticWhen` (flat fields plus nested `all`/`any`).
-fn validate_when(when: &SemanticWhen, rule_name: &str, doc: &SemanticDoc) -> Result<(), SemanticError> {
-    for d in [when.near_human, when.not_near_human, when.near.as_ref().map(|n| n.dist)]
-        .into_iter()
-        .flatten()
+fn validate_when(
+    when: &SemanticWhen,
+    rule_name: &str,
+    doc: &SemanticDoc,
+) -> Result<(), SemanticError> {
+    for d in [
+        when.near_human,
+        when.not_near_human,
+        when.near.as_ref().map(|n| n.dist),
+    ]
+    .into_iter()
+    .flatten()
     {
         if d <= 0.0 {
             return Err(SemanticError(format!(

@@ -435,8 +435,8 @@ fn run_rule_command(cmd: &[String]) -> Result<(), Box<dyn std::error::Error + Se
     match cmd.first().map(String::as_str) {
         Some("check") => {
             let path = cmd.get(1).ok_or("usage: flo rule check <path>")?;
-            let text = std::fs::read_to_string(path)
-                .map_err(|e| format!("cannot read {path}: {e}"))?;
+            let text =
+                std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
             match flo_rs::semantic::parse_semantic(&text) {
                 Ok(doc) => match flo_rs::semantic::validate(&doc) {
                     Ok(()) => {

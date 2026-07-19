@@ -19,7 +19,10 @@ async fn main() -> anyhow::Result<()> {
     let text = std::fs::read_to_string(&path).map_err(|e| anyhow::anyhow!("read {path}: {e}"))?;
     let doc = parse_semantic(&text).map_err(|e| anyhow::anyhow!("parse: {e}"))?;
     let rules = compile(&doc, &robot_id).map_err(|e| anyhow::anyhow!("compile: {e}"))?;
-    println!("semantic_rules: compiled {} rule(s) from {path}", rules.rules.len());
+    println!(
+        "semantic_rules: compiled {} rule(s) from {path}",
+        rules.rules.len()
+    );
 
     let mut transport = Transport::open_with(Transport::loopback_config())
         .await
@@ -30,8 +33,8 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("declare liveliness: {e}"))?;
     let transport = Arc::new(transport);
 
-    let store = RuleStore::bootstrap(&rules.to_toml())
-        .map_err(|e| anyhow::anyhow!("bootstrap: {e}"))?;
+    let store =
+        RuleStore::bootstrap(&rules.to_toml()).map_err(|e| anyhow::anyhow!("bootstrap: {e}"))?;
 
     engine::run_engine(transport, store)
         .await
