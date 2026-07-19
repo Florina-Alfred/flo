@@ -36,8 +36,12 @@ async fn main() -> anyhow::Result<()> {
     let store =
         RuleStore::bootstrap(&rules.to_toml()).map_err(|e| anyhow::anyhow!("bootstrap: {e}"))?;
 
-    engine::run_engine(transport, store)
-        .await
-        .map_err(|e| anyhow::anyhow!("run_engine: {e}"))?;
+    engine::run_engine(
+        transport,
+        store,
+        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("run_engine: {e}"))?;
     Ok(())
 }
