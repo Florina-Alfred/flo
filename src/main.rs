@@ -2,6 +2,7 @@
 
 mod codec;
 mod config;
+mod device;
 mod engine;
 mod health;
 mod rules;
@@ -209,12 +210,25 @@ async fn run_demo(
         let tr = transport.clone();
         let rid = robot_id.clone();
         let pid = peer.clone();
+        // Validate the configured video device up front so a bad path fails
+        // fast with a clear message instead of an opaque GStreamer error.
+        #[cfg_attr(not(feature = "media"), allow(unused_variables))]
+        let device = match &args.video.device {
+            Some(d) => match crate::device::VideoDevice::validate(d) {
+                Ok(dev) => Some(dev),
+                Err(e) => {
+                    tracing::error!(error = %e, "invalid --video-device, falling back to test pattern");
+                    None
+                }
+            },
+            None => None,
+        };
         tokio::spawn(async move {
             #[cfg(feature = "media")]
             {
                 use crate::media::SourceSpec;
-                let source = match &args.video.device {
-                    Some(d) => SourceSpec::V4l2(d.clone()),
+                let source = match device {
+                    Some(dev) => dev.to_source_spec(),
                     None => SourceSpec::Videotest,
                 };
                 if let Err(e) = crate::video::start_video_with_source(&rid, &pid, tr, source).await
@@ -280,12 +294,25 @@ async fn run_production(
         let tr = transport.clone();
         let rid = robot_id.clone();
         let pid = peer.clone();
+        // Validate the configured video device up front so a bad path fails
+        // fast with a clear message instead of an opaque GStreamer error.
+        #[cfg_attr(not(feature = "media"), allow(unused_variables))]
+        let device = match &args.video.device {
+            Some(d) => match crate::device::VideoDevice::validate(d) {
+                Ok(dev) => Some(dev),
+                Err(e) => {
+                    tracing::error!(error = %e, "invalid --video-device, falling back to test pattern");
+                    None
+                }
+            },
+            None => None,
+        };
         tokio::spawn(async move {
             #[cfg(feature = "media")]
             {
                 use crate::media::SourceSpec;
-                let source = match &args.video.device {
-                    Some(d) => SourceSpec::V4l2(d.clone()),
+                let source = match device {
+                    Some(dev) => dev.to_source_spec(),
                     None => SourceSpec::Videotest,
                 };
                 if let Err(e) = crate::video::start_video_with_source(&rid, &pid, tr, source).await
