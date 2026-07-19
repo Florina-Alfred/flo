@@ -1,1 +1,5 @@
 /target
+
+# CI-generated SBOM artifact
+sbom.cdx.json
+cyclonedx/cdx.json
