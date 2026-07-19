@@ -61,7 +61,7 @@ impl Health {
         };
         let evals = self.eval_total.load(std::sync::atomic::Ordering::SeqCst);
         format!(
-             "# HELP flo_uptime_seconds seconds since the process started\n\
+            "# HELP flo_uptime_seconds seconds since the process started\n\
              # TYPE flo_uptime_seconds gauge\n\
              flo_uptime_seconds {uptime:.3}\n\
              # HELP flo_process_ready 1 once flo has started and declared its subsystems (ready probe == 200)\n\
@@ -103,7 +103,10 @@ pub fn router(health: Health) -> Router {
                     let text = health.metrics_text();
                     async move {
                         (
-                            [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4")],
+                            [(
+                                axum::http::header::CONTENT_TYPE,
+                                "text/plain; version=0.0.4",
+                            )],
                             text,
                         )
                     }
