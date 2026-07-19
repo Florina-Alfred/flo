@@ -76,7 +76,7 @@ act push -W .github/workflows/security.yml --container-architecture linux/amd64
 
 ### Issue tracker
 
-Issues live as local markdown files under `.scratch/<feature>/`. See `docs/agents/issue-tracker.md`.
+Issues live as GitHub Issues, organised on the `flo` Projects V2 board (see `docs/agents/issue-tracker.md`). The old local-markdown `.scratch/` tracker has been removed from the repo.
 
 ### Triage labels
 

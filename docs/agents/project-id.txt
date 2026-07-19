@@ -1,0 +1,5 @@
+# GitHub Project (Projects V2) for the `flo` board.
+# Used by `gh project item-add` when publishing tickets from /to-tickets.
+owner: Florina-Alfred
+project_number: 2
+PROJECT_NODE_ID: PVT_kwHOBn8aXc4Bd1-y
