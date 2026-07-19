@@ -18,7 +18,8 @@ only `ubuntu-latest`; no larger/self-hosted runners.
   Jobs: `fmt`, `clippy` (`-D warnings`), `test` matrix (`stable`, `beta`, `1.97.1`).
   This is the required status-check gate for merging into `main`.
 - `.github/workflows/security.yml` — **full security + release**, runs ONLY on `main`
-  (push) and `v*` tags. Jobs: `cargo-audit` (hard gate), `cargo-deny`, `trivy` (SARIF,
+  (push) and `v*` tags. Jobs: `cargo-audit` (hard gate — fails on any unlisted
+  RUSTSEC advisory; reviewed exceptions in `audit.toml`), `cargo-deny`, `trivy` (SARIF,
   all severities), `codeql`
   (rust), and a tag-triggered `release` artifact build (30-day retention).
 - The `media` feature is excluded from CI (needs system GStreamer); default features only.
