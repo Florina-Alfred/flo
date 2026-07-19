@@ -83,3 +83,47 @@ actions = [ { slow_to = 0.1 } ]
     let doc = parse_semantic(bad).unwrap();
     assert!(compile(&doc, "7").is_err());
 }
+
+#[test]
+fn nested_when_any_produces_triggers() {
+    let text = std::fs::read_to_string("examples/rules/hrc-cell.toml")
+        .expect("read hrc-cell.toml");
+    let doc = parse_semantic(&text).unwrap();
+    let rules: Rules = compile(&doc, "7").unwrap();
+    let protective = rules
+        .rules
+        .iter()
+        .find(|r| r.name == "hrc-protective-stop-on-breach")
+        .expect("protective-stop rule present");
+    // The nested `when.any` must produce non-empty triggers — regression guard
+    // against the silent no-op where unknown `all`/`any` keys were ignored.
+    assert!(
+        !protective.when.any.is_empty() || !protective.when.all.is_empty(),
+        "nested when.any produced zero triggers (silent safety no-op)"
+    );
+    // The two branches: in_zone=="safety" and near_human<0.3.
+    assert_eq!(protective.when.any.len(), 2);
+    assert_eq!(protective.when.any[0].topic, "fleet/cell-7/7/state");
+    assert_eq!(protective.when.any[0].pred, Some("zone_id == \"safety\"".to_string()));
+    assert_eq!(protective.when.any[1].topic, "fleet/cell-7/proximity/7/human");
+    assert_eq!(protective.when.any[1].pred, Some("separation_distance < 0.3".to_string()));
+}
+
+#[test]
+fn nested_when_all_produces_triggers() {
+    let text = std::fs::read_to_string("examples/rules/hrc-cell.toml")
+        .expect("read hrc-cell.toml");
+    let doc = parse_semantic(&text).unwrap();
+    let rules: Rules = compile(&doc, "7").unwrap();
+    let resume = rules
+        .rules
+        .iter()
+        .find(|r| r.name == "hrc-resume-after-clear")
+        .expect("resume rule present");
+    // The nested `when.all` must produce non-empty triggers.
+    assert!(
+        !resume.when.all.is_empty() || !resume.when.any.is_empty(),
+        "nested when.all produced zero triggers (silent safety no-op)"
+    );
+    assert_eq!(resume.when.all.len(), 2);
+}

@@ -61,6 +61,10 @@ pub struct SemanticWhen {
     pub near: Option<NearSpec>,
     #[serde(default)]
     pub role: Option<String>,
+    #[serde(default)]
+    pub all: Vec<SemanticWhen>,
+    #[serde(default)]
+    pub any: Vec<SemanticWhen>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -101,22 +105,6 @@ pub fn parse_semantic(text: &str) -> Result<SemanticDoc, SemanticError> {
 /// Validate semantic invariants before compile.
 pub fn validate(doc: &SemanticDoc) -> Result<(), SemanticError> {
     for rule in &doc.rules {
-        // distance must be positive where present
-        for d in [
-            rule.when.near_human,
-            rule.when.not_near_human,
-            rule.when.near.as_ref().map(|n| n.dist),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if d <= 0.0 {
-                return Err(SemanticError(format!(
-                    "rule '{}': distance must be > 0, got {d}",
-                    rule.name
-                )));
-            }
-        }
         // every action must carry at least one known verb
         for a in &rule.actions {
             if !a.estop && a.slow_to.is_none() && !a.resume {
@@ -126,18 +114,35 @@ pub fn validate(doc: &SemanticDoc) -> Result<(), SemanticError> {
                 )));
             }
         }
-        // referenced zone must exist (when uses in_zone/not_in_zone)
-        for z in [rule.when.in_zone.clone(), rule.when.not_in_zone.clone()]
-            .into_iter()
-            .flatten()
-        {
-            if !doc.zones.contains_key(&z) {
-                return Err(SemanticError(format!(
-                    "rule '{}': references unknown zone '{z}'",
-                    rule.name
-                )));
-            }
+        validate_when(&rule.when, &rule.name, doc)?;
+    }
+    Ok(())
+}
+
+/// Recursively validate a `SemanticWhen` (flat fields plus nested `all`/`any`).
+fn validate_when(when: &SemanticWhen, rule_name: &str, doc: &SemanticDoc) -> Result<(), SemanticError> {
+    for d in [when.near_human, when.not_near_human, when.near.as_ref().map(|n| n.dist)]
+        .into_iter()
+        .flatten()
+    {
+        if d <= 0.0 {
+            return Err(SemanticError(format!(
+                "rule '{rule_name}': distance must be > 0, got {d}"
+            )));
         }
+    }
+    for z in [when.in_zone.clone(), when.not_in_zone.clone()]
+        .into_iter()
+        .flatten()
+    {
+        if !doc.zones.contains_key(&z) {
+            return Err(SemanticError(format!(
+                "rule '{rule_name}': references unknown zone '{z}'"
+            )));
+        }
+    }
+    for nested in when.all.iter().chain(when.any.iter()) {
+        validate_when(nested, rule_name, doc)?;
     }
     Ok(())
 }
@@ -153,44 +158,7 @@ pub fn compile(doc: &SemanticDoc, robot_id: &str) -> Result<Rules, SemanticError
 
     let mut out = Vec::new();
     for rule in &doc.rules {
-        let mut triggers = Vec::new();
-
-        if let Some(z) = &rule.when.in_zone {
-            triggers.push(Trigger {
-                topic: format!("fleet/{site}/{robot_id}/state"),
-                pred: Some(format!("zone_id == \"{z}\"")),
-            });
-        }
-        if let Some(z) = &rule.when.not_in_zone {
-            triggers.push(Trigger {
-                topic: format!("fleet/{site}/{robot_id}/state"),
-                pred: Some(format!("zone_id != \"{z}\"")),
-            });
-        }
-        if let Some(d) = rule.when.near_human {
-            triggers.push(Trigger {
-                topic: format!("fleet/{site}/proximity/{robot_id}/human"),
-                pred: Some(format!("separation_distance < {d}")),
-            });
-        }
-        if let Some(d) = rule.when.not_near_human {
-            triggers.push(Trigger {
-                topic: format!("fleet/{site}/proximity/{robot_id}/human"),
-                pred: Some(format!("separation_distance >= {d}")),
-            });
-        }
-        if let Some(n) = &rule.when.near {
-            triggers.push(Trigger {
-                topic: format!("fleet/{site}/{robot_id}/nearest_peer"),
-                pred: Some(format!("separation_distance < {}", n.dist)),
-            });
-        }
-        if let Some(r) = &rule.when.role {
-            triggers.push(Trigger {
-                topic: format!("fleet/{site}/{robot_id}/state"),
-                pred: Some(format!("role == \"{r}\"")),
-            });
-        }
+        let (all, any) = expand_when(&rule.when, site, robot_id);
 
         let actions: Vec<Action> = rule
             .actions
@@ -200,11 +168,72 @@ pub fn compile(doc: &SemanticDoc, robot_id: &str) -> Result<Rules, SemanticError
 
         out.push(Rule {
             name: rule.name.clone(),
-            when: When { all: triggers, any: vec![] },
+            when: When { all, any },
             actions,
         });
     }
     Ok(Rules { rules: out })
+}
+
+/// Recursively expand a `SemanticWhen` into runtime trigger lists.
+///
+/// Returns `(all, any)` where every trigger in `all` must hold (logical AND)
+/// and any trigger in `any` may hold (logical OR).
+///
+/// Flat fields each contribute to `all` (matching prior flat-only behavior).
+/// `when.all` nests further AND-requirements; `when.any` nests OR-branches,
+/// each nested `SemanticWhen`'s own `all` triggers becoming an OR alternative.
+fn expand_when(when: &SemanticWhen, site: &str, robot_id: &str) -> (Vec<Trigger>, Vec<Trigger>) {
+    let mut all = Vec::new();
+    let mut any = Vec::new();
+
+    if let Some(z) = &when.in_zone {
+        all.push(Trigger {
+            topic: format!("fleet/{site}/{robot_id}/state"),
+            pred: Some(format!("zone_id == \"{z}\"")),
+        });
+    }
+    if let Some(z) = &when.not_in_zone {
+        all.push(Trigger {
+            topic: format!("fleet/{site}/{robot_id}/state"),
+            pred: Some(format!("zone_id != \"{z}\"")),
+        });
+    }
+    if let Some(d) = when.near_human {
+        all.push(Trigger {
+            topic: format!("fleet/{site}/proximity/{robot_id}/human"),
+            pred: Some(format!("separation_distance < {d}")),
+        });
+    }
+    if let Some(d) = when.not_near_human {
+        all.push(Trigger {
+            topic: format!("fleet/{site}/proximity/{robot_id}/human"),
+            pred: Some(format!("separation_distance >= {d}")),
+        });
+    }
+    if let Some(n) = &when.near {
+        all.push(Trigger {
+            topic: format!("fleet/{site}/{robot_id}/nearest_peer"),
+            pred: Some(format!("separation_distance < {}", n.dist)),
+        });
+    }
+    if let Some(r) = &when.role {
+        all.push(Trigger {
+            topic: format!("fleet/{site}/{robot_id}/state"),
+            pred: Some(format!("role == \"{r}\"")),
+        });
+    }
+
+    for nested in &when.all {
+        let (nested_all, _nested_any) = expand_when(nested, site, robot_id);
+        all.extend(nested_all);
+    }
+    for nested in &when.any {
+        let (nested_all, _nested_any) = expand_when(nested, site, robot_id);
+        any.extend(nested_all);
+    }
+
+    (all, any)
 }
 
 fn compile_action(a: &SemanticAction, robot_id: &str) -> Action {
