@@ -35,10 +35,15 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
       - name: Run audit
-        # Hard gate: fails the job on any RUSTSEC advisory. To allowlist a
-        # specific, reviewed advisory, add `cargo audit ignore RUSTSEC-XXXX`
-        # (committed to the repo) with a justification comment.
-        run: cargo audit --json > audit.json
+        # Hard gate: fails the job on any RUSTSEC advisory not explicitly
+        # allowlisted. Allowlisted advisories are reviewed and recorded in
+        # audit.toml ([advisories].ignore) with a justification. This cargo-audit
+        # version does not read audit.toml in --json mode, so the workflow passes
+        # those IDs via --ignore (derived from audit.toml to avoid drift).
+        # New/unlisted advisories still fail the build.
+        run: |
+          IGNORE_FLAGS=$(grep -oE 'RUSTSEC-[0-9-]+' audit.toml | sort -u | sed 's/^/--ignore /' | tr '\n' ' ')
+          cargo audit --json ${IGNORE_FLAGS} > audit.json
       - name: Upload audit report
         if: always()
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3

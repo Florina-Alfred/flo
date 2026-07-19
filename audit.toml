@@ -1,0 +1,25 @@
+# cargo-audit allowlist — reviewed, documented exceptions.
+#
+# These are ADVISORIES, not suppressions-by-default. Each entry is a deliberate
+# decision reviewed against flo's threat model (a Kubernetes robot orchestration
+# client; crypto/compression are handled by the Zenoh transport, not flo directly).
+#
+# This file is the audited record of allowlisted advisories. The Security & Release
+# workflow derives its --ignore flags from the RUSTSEC IDs listed here, so keep the
+# entries and the ignore array in sync. Re-run `cargo audit` after every dependency
+# bump and remove entries that become fixable (e.g. when Zenoh upgrades lz4_flex).
+
+[advisories]
+# RUSTSEC-2023-0071 (rsa 0.9.10, Marvin timing side-channel, MEDIUM):
+# No fixed upgrade exists upstream. Pulled transitively via zenoh-transport's
+# crypto stack; flo never calls rsa directly. Accepted as a known, unpatchable
+# transitive risk until Zenoh ships a fixed rsa.
+ignore = [
+    "RUSTSEC-2023-0071",
+    # RUSTSEC-2026-0041 (lz4_flex 0.10.0, HIGH, uninitialized-memory info leak on
+    # invalid decompression): a fix exists (>=0.11.6) but zenoh 1.9.0 hard-pins
+    # lz4_flex ^0.10, so it is currently unreachable. Revisit when Zenoh bumps its
+    # lz4_flex requirement. In flo's usage this only affects compressed transport
+    # payloads decoded by Zenoh, not flo's own code paths.
+    "RUSTSEC-2026-0041",
+]
