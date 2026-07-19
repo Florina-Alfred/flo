@@ -32,6 +32,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
         with:
           toolchain: "1.97.1"
+      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
+        # Caches ~/.cargo (incl. installed binaries) so the repeated
+        # `cargo install` of the security tooling is a no-op on cache hit
+        # instead of rebuilding the same crate graph every run.
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
       - name: Run audit
@@ -61,6 +65,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
         with:
           toolchain: "1.97.1"
+      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
       - name: Install cargo-deny
         run: cargo install cargo-deny --locked
       - name: Run deny
@@ -77,6 +82,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
         with:
           toolchain: "1.97.1"
+      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
       - name: Install cargo-cyclonedx
         run: cargo install cargo-cyclonedx@0.5.9 --locked
       - name: Generate SBOM
@@ -122,6 +128,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
+        # Speeds up CodeQL autobuild by reusing cached cargo registry/target.
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
@@ -133,8 +141,12 @@ jobs:
         with:
           category: codeql
 
-  release:
-    name: release artifact
+  build:
+    # Build the release binary once and publish it as an artifact so the
+    # `release` job (and anything else) can consume it without recompiling.
+    # Runs in parallel with the audit/deny/sbom/trivy/codeql scans instead of
+    # being serialized behind them. Only built on tags, where a consumer exists.
+    name: build release binary
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -151,6 +163,29 @@ jobs:
       - name: Upload binary artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: flo-${{ github.ref_name }}-linux-x86_64
+          name: flo-binary
           path: target/release/flo
+          retention-days: 30
+
+  release:
+    name: release artifact
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Download prebuilt binary
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: flo-binary
+          path: dist
+      - name: Ensure binary is executable
+        run: chmod +x dist/flo
+      - name: Publish versioned binary artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: flo-${{ github.ref_name }}-linux-x86_64
+          path: dist/flo
           retention-days: 30
