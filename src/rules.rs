@@ -68,6 +68,8 @@ impl Rules {
     }
 
     /// Serialize back to TOML — used to feed `RuleStore::bootstrap` after compile.
+    /// `allow(dead_code)`: only the `semantic_rules` example + production compile path
+    /// consume this; clippy's per-crate analysis flags it as unused from the lib's view.
     #[allow(dead_code)]
     pub fn to_toml(&self) -> String {
         toml::to_string(self).expect("Rules is serializable")
