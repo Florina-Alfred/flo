@@ -1,6 +1,29 @@
 # AGENTS.md
 
-Single-binary Rust crate (package `flo`, edition 2024). No dependencies, no tests, no CI yet.
+Single-binary Rust crate (package `flo`, edition 2024).
+
+## Dependencies
+
+The crate uses third-party Rust dependencies (e.g. `zenoh`, `webrtc`, `gstreamer`
+behind the `media` feature, `axum`, `tokio`). The original "no dependencies"
+stance has been relaxed to reflect reality:
+
+- **Keep dependencies minimal** — add a crate only when it earns its place; prefer
+  small, well-maintained crates over large frameworks.
+- **Every new dependency requires admin approval** before it is added to
+  `Cargo.toml`. Do not introduce dependencies unilaterally.
+- **No `unsafe`**: the crate remains `#![forbid(unsafe_code)]`. Any dependency
+  that requires `unsafe` in our code, or pulls in an unvetted `unsafe` transitively,
+  needs explicit admin sign-off.
+- **Supply chain**: third-party GitHub Actions remain pinned to full commit SHAs
+  (see CI section); Rust crates are resolved via `Cargo.lock` (committed).
+
+## Tests & CI
+
+- Tests: `cargo test` (the crate now has a test setup — run it in CI).
+- CI: GitHub Actions workflows in `.github/workflows/` (minimal gate `ci.yml` on
+  every branch/PR; full security + release pipeline `security.yml` on `main`/tags).
+
 
 ## Commands
 - Build: `cargo build`
