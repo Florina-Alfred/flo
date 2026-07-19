@@ -61,13 +61,13 @@ impl Health {
         };
         let evals = self.eval_total.load(std::sync::atomic::Ordering::SeqCst);
         format!(
-            "# HELP flo_uptime_seconds seconds since the process started\n\
+             "# HELP flo_uptime_seconds seconds since the process started\n\
              # TYPE flo_uptime_seconds gauge\n\
              flo_uptime_seconds {uptime:.3}\n\
-             # HELP flo_zenoh_ready 1 if the Zenoh session and liveliness token are live\n\
-             # TYPE flo_zenoh_ready gauge\n\
-             flo_zenoh_ready {ready}\n\
-             # HELP flo_rule_eval_total cumulative rule-evaluation ticks\n\
+             # HELP flo_process_ready 1 once flo has started and declared its subsystems (ready probe == 200)\n\
+             # TYPE flo_process_ready gauge\n\
+             flo_process_ready {ready}\n\
+             # HELP flo_rule_eval_total cumulative 50ms engine re-evaluation ticks\n\
              # TYPE flo_rule_eval_total counter\n\
              flo_rule_eval_total {evals}\n"
         )
@@ -101,7 +101,12 @@ pub fn router(health: Health) -> Router {
                 let health = health.clone();
                 move || {
                     let text = health.metrics_text();
-                    async move { text }
+                    async move {
+                        (
+                            [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4")],
+                            text,
+                        )
+                    }
                 }
             }),
         )
