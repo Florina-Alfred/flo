@@ -31,7 +31,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
         with:
-          toolchain: stable
+          toolchain: "1.97.1"
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
       - name: Run audit
@@ -60,7 +60,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
         with:
-          toolchain: stable
+          toolchain: "1.97.1"
       - name: Install cargo-deny
         run: cargo install cargo-deny --locked
       - name: Run deny
@@ -76,11 +76,11 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
         with:
-          toolchain: stable
+          toolchain: "1.97.1"
       - name: Install cargo-cyclonedx
-        run: cargo install cargo-cyclonedx --locked
+        run: cargo install cargo-cyclonedx@0.5.9 --locked
       - name: Generate SBOM
-        run: cargo cyclonedx -f json -o sbom.cdx.json
+        run: cargo cyclonedx -f json --override-filename sbom.cdx
       - name: Upload SBOM
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
@@ -144,7 +144,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
         with:
-          toolchain: stable
+          toolchain: "1.97.1"
       - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
       - name: Build release binary
         run: cargo build --release --bin flo
