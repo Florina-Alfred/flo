@@ -80,20 +80,27 @@ fn parse_args_from<I: Iterator<Item = String>>(mut iter: I) -> Args {
     args
 }
 
+fn help_text() -> String {
+    "flo - robot orchestration client\n\n\
+     USAGE:\n\
+     \x20\x20flo                        # local demo: simulated sensors + rule engine on loopback zenoh\n\
+     \x20\x20flo --robot-id 7           # demo node 7 (open a 2nd terminal with --robot-id 8 to mesh)\n\
+     \x20\x20flo --robot-id 7 --config /etc/flo/rules.toml   # production mode (k8s DaemonSet)\n\n\
+     OPTIONS:\n\
+     \x20\x20--robot-id <id>            robot/node id (also via FLO_ROBOT_ID)\n\
+     \x20\x20--config <path>           rules TOML (production); omit for the built-in demo rules\n\
+     \x20\x20--simulate                publish synthetic sensor samples (demo input)\n\
+     \x20\x20--simulate-period-ms <n>  sensor round interval (default 1000; demo fires 1/s)\n\
+     \x20\x20--video-peer <id>         peer robot id to stream WebRTC video to (needs --features media + GStreamer)\n\
+     \x20\x20--video-device <path>     video source device (default: synthetic test pattern)\n\
+     \x20\x20--video-codec <name>      video codec (default h264)\n\
+     \x20\x20--video-self-test         encode-only self-test (no peer needed)\n\
+     \x20\x20--help                    this message\n"
+        .to_string()
+}
+
 fn print_help() {
-    println!(
-        "flo - robot orchestration client\n\n\
-         USAGE:\n\
-         \x20\x20cargo run                 # local demo: simulated sensors + rule engine on loopback zenoh\n\
-         \x20\x20cargo run --robot-id 7    # demo node 7 (open a 2nd terminal with --robot-id 8 to mesh)\n\
-         \x20\x20cargo run --robot-id 7 --config /etc/flo/rules.toml   # production mode (k8s DaemonSet)\n\n\
-         OPTIONS:\n\
-         \x20\x20--robot-id <id>           robot/node id (also via FLO_ROBOT_ID)\n\
-         \x20\x20--config <path>          rules TOML (production); omit for the built-in demo rules\n\
-         \x20\x20--simulate               publish synthetic sensor samples (demo input)\n\
-         \x20\x20--simulate-period-ms <n> sensor round interval (default 1000; demo fires 1/s)\n\
-         \x20\x20--help                   this message"
-    );
+    println!("{}", help_text());
 }
 
 #[tokio::main]
