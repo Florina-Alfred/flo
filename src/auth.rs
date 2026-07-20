@@ -137,12 +137,13 @@ impl AuthConfig {
         }
     }
 
-    /// Build the Zenoh session config for this node. For `none`, returns the
+    /// Build the Zenoh session config for this node. `robot_id` scopes the
+    /// per-robot least-privilege ACL (PRD §2/#69). For `none`, returns the
     /// default peer config (the caller is responsible for the loopback/air-gap
     /// boundary). For `mtls`, enables Zenoh mTLS with the node cert/key and the
     /// trust anchor. ed25519 is recorded but not yet wired to a handshake
     /// (returns an error until implemented, so we fail closed).
-    pub fn zenoh_config(&self) -> Result<Config, AuthError> {
+    pub fn zenoh_config(&self, robot_id: &str) -> Result<Config, AuthError> {
         match self.mode {
             AuthMode::None => Ok(Config::default()),
             AuthMode::Mtls => {
@@ -161,7 +162,6 @@ impl AuthConfig {
                     .ok_or(AuthError::MissingCredential("trust"))?;
                 // Zenoh 1.x mTLS: enable_mtls + PEM cert/key + CA trust.
                 let _ = c.insert_json5("transport/auth/usrpwd", "false");
-                let _ = c.insert_json5("transport/auth/usrpwd", "false");
                 let _ = c.insert_json5("transport/link/tls/enable_mtls", "true");
                 let _ = c.insert_json5(
                     "transport/link/tls/certificate",
@@ -172,6 +172,8 @@ impl AuthConfig {
                     "transport/link/tls/trust_anchors",
                     &format!("\"{}\"", trust.display()),
                 );
+                // Enforce per-robot least-privilege namespace.
+                let _ = c.insert_json5("access_control", &Self::acl_config(robot_id));
                 Ok(c)
             }
             AuthMode::Ed25519 => {
@@ -182,6 +184,42 @@ impl AuthConfig {
                 ))
             }
         }
+    }
+
+    /// Build the Zenoh `access_control` JSON for a server enforcing a
+    /// per-robot least-privilege namespace. The authenticated client identified
+    /// by `robot_id` may only publish/subscribe under `/robot/<robot_id>/**`
+    /// (its own local subtree) plus the fleet ruleset-management keys. Every
+    /// other key-expression is denied — this is the server-side enforcement
+    /// of the 1:1 cert(SAN)=robot_id binding from PRD §2/#69.
+    ///
+    /// `subject_id` binds the rule to the client cert's common name; for mTLS
+    /// the cert CN/SAN should equal `robot_id` (the transport enforces the
+    /// cert chain via `trust_anchors`; this ACL adds the namespace scoping).
+    pub fn acl_config(robot_id: &str) -> String {
+        let own = format!("/robot/{robot_id}/**");
+        let rules_key = crate::transport::RULES_KEY.replace("{id}", robot_id);
+        format!(
+            r#"{{
+                "enabled": true,
+                "default_permission": "deny",
+                "rules": [
+                    {{
+                        "id": "r_own",
+                        "permission": "allow",
+                        "flows": ["egress", "ingress"],
+                        "messages": ["put", "query", "reply"],
+                        "key_exprs": ["{own}", "{rules_key}"]
+                    }}
+                ],
+                "subjects": [
+                    {{ "id": "{robot_id}", "cert_common_names": ["{robot_id}"] }}
+                ],
+                "policies": [
+                    {{ "id": "p_own", "rules": ["r_own"], "subjects": ["{robot_id}"] }}
+                ]
+            }}"#
+        )
     }
 }
 
@@ -268,7 +306,7 @@ mod tests {
             trust: Some(PathBuf::from("/etc/flo/allowlist.json")),
             ..Default::default()
         };
-        assert!(cfg.zenoh_config().is_err());
+        assert!(cfg.zenoh_config("robot_7").is_err());
     }
 
     #[test]
@@ -277,6 +315,19 @@ mod tests {
             mode: AuthMode::None,
             ..Default::default()
         };
-        assert!(cfg.zenoh_config().is_ok());
+        assert!(cfg.zenoh_config("robot_7").is_ok());
+    }
+
+    #[test]
+    fn acl_scopes_own_namespace_and_denies_rest() {
+        let acl = AuthConfig::acl_config("robot_7");
+        // own subtree allowed
+        assert!(acl.contains("/robot/robot_7/**"));
+        // default deny everywhere else
+        assert!(acl.contains("\"default_permission\": \"deny\""));
+        // own robot id is the subject + cert common name
+        assert!(acl.contains("\"cert_common_names\": [\"robot_7\"]"));
+        // a different robot's namespace is NOT in the allowed key_exprs
+        assert!(!acl.contains("/robot/robot_8/**"));
     }
 }

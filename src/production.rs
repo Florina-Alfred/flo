@@ -65,7 +65,7 @@ pub async fn run_production(
     let store = compile_or_fallback(&bootstrap, &robot_id);
 
     let mut transport = Transport::open_with(
-        auth.zenoh_config()
+        auth.zenoh_config(&robot_id)
             .map_err(|e| format!("auth config invalid: {e}"))?,
     )
     .await?;
