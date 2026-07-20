@@ -128,6 +128,28 @@ impl Rules {
     }
 }
 
+/// The full ruleset: an ownership/version envelope wrapping the runtime `Rule`s.
+/// This is the wire + storage unit; `rules` is what `engine.rs` evaluates.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Ruleset {
+    pub ruleset_name: String,
+    pub version: u64,
+    pub robot_owner: String,
+    pub rules: Vec<Rule>,
+}
+
+impl Ruleset {
+    #[allow(dead_code)]
+    pub fn from_toml(text: &str) -> Result<Self, toml::de::Error> {
+        toml::from_str(text)
+    }
+
+    #[allow(dead_code)]
+    pub fn to_toml(&self) -> String {
+        toml::to_string(self).expect("Ruleset is serializable")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,5 +1,7 @@
 use flo_rs::rules::{Rules, When};
-use flo_rs::semantic::{compile, parse_semantic, validate};
+use flo_rs::semantic::{
+    compile, compile_ruleset, parse_semantic, parse_semantic_ruleset, validate,
+};
 
 const DOC: &str = r#"
 [site]
@@ -130,4 +132,54 @@ fn nested_when_all_produces_triggers() {
         "nested when.all produced zero triggers (silent safety no-op)"
     );
     assert_eq!(resume.when.all.len(), 2);
+}
+
+const RULESET_DOC: &str = r#"
+ruleset_name = "acme-site-a"
+version = 3
+robot_owner = "robot/7"
+
+[[rule]]
+rule_name = "slow_near_human"
+when.in_zone = "zone_1"
+when.near_human = 1.2
+when.human_presence = true
+[[rule.actions]]
+topic = "robot/7/local/drive"
+qos = "reliable"
+payload = { speed_mps = 0.3 }
+"#;
+
+#[test]
+fn parses_ruleset_envelope() {
+    let doc = parse_semantic_ruleset(RULESET_DOC).expect("parse");
+    assert_eq!(doc.ruleset_name, "acme-site-a");
+    assert_eq!(doc.version, 3);
+    assert_eq!(doc.robot_owner, "robot/7");
+    assert_eq!(doc.rules.len(), 1);
+}
+
+#[test]
+fn compiles_ruleset_to_envelope() {
+    let doc = parse_semantic_ruleset(RULESET_DOC).unwrap();
+    let rs: flo_rs::rules::Ruleset = compile_ruleset(&doc, "7").unwrap();
+    assert_eq!(rs.ruleset_name, "acme-site-a");
+    assert_eq!(rs.rules.len(), 1);
+    assert_eq!(rs.rules[0].name, "slow_near_human");
+}
+
+#[test]
+fn rejects_nonprimitive_payload() {
+    let bad = r#"
+ruleset_name = "x"
+robot_owner = "robot/7"
+[[rule]]
+rule_name = "bad"
+when.near_human = 1.0
+[[rule.actions]]
+topic = "robot/7/local/drive"
+payload = { nested = { a = 1 } }
+"#;
+    let doc = parse_semantic_ruleset(bad).unwrap();
+    assert!(compile_ruleset(&doc, "7").is_err());
 }

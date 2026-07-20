@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use crate::rules::{Action, EvalMode, Qos, Rule, Rules, Trigger, When};
+use crate::rules::{Action, EvalMode, Qos, Rule, Rules, Ruleset, Trigger, When};
 
 fn default_qos() -> Qos {
     Qos::Reliable
@@ -276,4 +276,119 @@ fn compile_action(a: &SemanticAction, robot_id: &str) -> Action {
             payload: serde_json::json!({ "speed_mps": a.slow_to.unwrap_or(0.0) }),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Ruleset envelope path (additive; does not touch the legacy `compile` above).
+// ---------------------------------------------------------------------------
+
+/// Envelope-parse shape for a `Ruleset` authored as extended TOML. Distinct
+/// from `SemanticDoc`/`SemanticRule` (the legacy flat `Rules` path) so the two
+/// schemas can coexist without name collisions.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SemanticRuleset {
+    pub ruleset_name: String,
+    #[serde(default)]
+    pub version: u64,
+    pub robot_owner: String,
+    #[serde(default, rename = "rule")]
+    pub rules: Vec<SemanticRulesetRule>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SemanticRulesetRule {
+    pub rule_name: String,
+    #[serde(default)]
+    pub when: SemanticWhen,
+    pub actions: Vec<SemanticRulesetAction>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SemanticRulesetAction {
+    pub topic: String,
+    #[serde(default = "default_qos")]
+    pub qos: Qos,
+    #[serde(default)]
+    pub payload: serde_json::Value,
+}
+
+/// Parse a `Ruleset` envelope from extended-TOML.
+pub fn parse_semantic_ruleset(text: &str) -> Result<SemanticRuleset, SemanticError> {
+    toml::from_str(text).map_err(|e| SemanticError(e.to_string()))
+}
+
+/// Compile a `Ruleset` envelope into the runtime `Ruleset` wire/storage unit.
+pub fn compile_ruleset(doc: &SemanticRuleset, robot_id: &str) -> Result<Ruleset, SemanticError> {
+    // Normalize ruleset_name: lowercase, restricted charset, 1..=64 bytes.
+    let ruleset_name = doc.ruleset_name.to_lowercase();
+    if !ruleset_name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        || ruleset_name.is_empty()
+        || ruleset_name.len() > 64
+    {
+        return Err(SemanticError(format!(
+            "invalid ruleset_name '{ruleset_name}' (must match [a-z0-9-]{{1,64}})"
+        )));
+    }
+
+    let mut rules = Vec::new();
+    for rule in &doc.rules {
+        // NOTE: `robot_owner` is passed as the `site` slot; the typed-predicate
+        // compiler (Task 3, #73) will correct the trigger topic derivation.
+        let (all, any) = expand_when(&rule.when, &doc.robot_owner, robot_id);
+        let actions: Vec<Action> = rule.actions.iter().map(compile_ruleset_action).collect();
+        validate_rule_payloads(&actions, &rule.rule_name)?;
+        rules.push(Rule {
+            name: rule.rule_name.clone(),
+            when: When { all, any },
+            actions,
+        });
+    }
+
+    Ok(Ruleset {
+        ruleset_name,
+        version: doc.version,
+        robot_owner: doc.robot_owner.clone(),
+        rules,
+    })
+}
+
+fn compile_ruleset_action(a: &SemanticRulesetAction) -> Action {
+    Action {
+        topic: a.topic.clone(),
+        qos: a.qos,
+        payload: a.payload.clone(),
+    }
+}
+
+fn validate_rule_payloads(actions: &[Action], rule_name: &str) -> Result<(), SemanticError> {
+    for a in actions {
+        if !is_primitive(&a.payload) {
+            return Err(SemanticError(format!(
+                "rule '{rule_name}': action payload must be primitive (bool/int/float/string), got {a:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// A payload is primitive-only when it is a leaf (bool/int/float/string) or a
+/// flat object whose values are all leaves. Nested objects/arrays are rejected
+/// at author time (PRD: primitive-only payloads).
+fn is_primitive(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_) => true,
+        serde_json::Value::Object(m) => m.values().all(is_leaf),
+        _ => false,
+    }
+}
+
+fn is_leaf(v: &serde_json::Value) -> bool {
+    matches!(
+        v,
+        serde_json::Value::Bool(_) | serde_json::Value::Number(_) | serde_json::Value::String(_)
+    )
 }
