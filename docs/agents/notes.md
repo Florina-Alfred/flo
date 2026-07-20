@@ -57,6 +57,13 @@ crate — operational notes only.
   All three are GStreamer/`media`-feature blocked (not in default build, excluded
   from CI). #59 added to board, status Todo, child of #46.
 - #52 (metrics) + #53 (device-access) + #58 (two-way WebRTC) merged to `main`.
+- #54 (clap CLI), #55 (split main.rs into modules), #56 (health server README
+  docs), #57 (delete stray RESEARCH-webrtc-transport.md) — all resolved by
+  **PR #60** (squash-merged 2026-07-20) and moved to DONE on the board.
+  - #54 added `clap` 4.5 (admin-approved new dep, per AGENTS.md).
+  - #55: `main.rs` is now a thin entry point; logic split into `cli.rs`,
+    `mesh.rs`, `common.rs`, `demo.rs`, `production.rs`.
+  - #57: root `RESEARCH-webrtc-transport.md` deleted (unreferenced).
 
 ## CI / branch-protection fix (2026-07-20)
 
