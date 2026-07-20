@@ -24,7 +24,7 @@ env:
 
 jobs:
   fmt:
-    name: rustfmt
+    name: fmt
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
