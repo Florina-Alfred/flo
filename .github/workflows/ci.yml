@@ -28,41 +28,45 @@ jobs:
   # Detect whether the change affects Rust (code/Cargo.toml/workflows) or is
   # docs-only. Docs-only PRs skip the Rust gate entirely (the required checks
   # report "skipped", which satisfies branch protection) so doc changes don't
-  # burn CI minutes or block on a full build.
+  # burn CI minutes or block on a full build. Implemented with plain git diff
+  # (no third-party action) so the supply-chain surface stays minimal.
   changes:
     name: changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      rust: ${{ steps.conclude.outputs.rust }}
-      docs: ${{ steps.conclude.outputs.docs }}
+      rust: ${{ steps.scope.outputs.rust }}
+      docs: ${{ steps.scope.outputs.docs }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - id: filter
-        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
         with:
-          predicate-quantifier: "every"
-          filters: |
-            rust:
-              - "**/*.rs"
-              - "Cargo.toml"
-              - "Cargo.lock"
-              - ".github/workflows/**"
-            docs:
-              - "**/*.md"
-              - "docs/**"
-      # Pushes to main (already-reviewed merges) always run the full gate.
-      # Otherwise defer to the path filter.
-      - id: conclude
+          fetch-depth: 0
+      - id: scope
         run: |
+          set -euo pipefail
           if [ "${{ github.event_name }}" = "push" ]; then
             echo "rust=true" >> "$GITHUB_OUTPUT"
             echo "docs=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Compare the PR head against the base branch.
+          git fetch origin "${{ github.base_ref }}" --depth=1
+          BASE="origin/${{ github.base_ref }}"
+          FILES=$(git diff --name-only "$BASE"..HEAD)
+          echo "Changed files:"
+          echo "$FILES"
+          if echo "$FILES" | grep -Eq '\.(rs)$|^(Cargo\.toml|Cargo\.lock)$|\.github/workflows/'; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"
           else
-            echo "rust=${{ steps.filter.outputs.rust }}" >> "$GITHUB_OUTPUT"
-            echo "docs=${{ steps.filter.outputs.docs }}" >> "$GITHUB_OUTPUT"
+            echo "rust=false" >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$FILES" | grep -Eq '\.md$|^docs/'; then
+            echo "docs=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs=false" >> "$GITHUB_OUTPUT"
           fi
         shell: bash
+
 
   fmt:
     name: fmt
