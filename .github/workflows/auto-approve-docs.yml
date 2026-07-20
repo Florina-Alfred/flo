@@ -34,9 +34,10 @@ jobs:
       - id: check
         run: |
           set -euo pipefail
-          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          BASE_REF="${{ github.base_ref }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-          FILES=$(git diff --name-only "$BASE_SHA".."$HEAD_SHA")
+          git fetch origin "$BASE_REF" --depth=1
+          FILES=$(git diff --name-only "origin/$BASE_REF".."$HEAD_SHA")
           echo "Changed files:"
           echo "$FILES"
           if echo "$FILES" | grep -Eq '\.(rs)$|^(Cargo\.toml|Cargo\.lock)$|\.github/workflows/'; then
