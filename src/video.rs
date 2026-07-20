@@ -38,13 +38,30 @@ pub struct VideoPeer {
 }
 
 impl VideoPeer {
-    /// Create the PC, add the H.264 track, wire ICE + offer, and publish the offer.
-    pub async fn offer(
+    /// Build the `PeerConnection`, add the H.264 track, and wire trickle-ICE so
+    /// candidates are relayed to the peer over zenoh. Shared by [`offer`] and
+    /// [`answer`]; neither creates nor publishes an SDP here.
+    async fn build(
         robot_id: &str,
         peer_id: &str,
         transport: Arc<crate::transport::Transport>,
-    ) -> anyhow::Result<Arc<Self>> {
-        let api = APIBuilder::new().build();
+    ) -> anyhow::Result<(Arc<RTCPeerConnection>, Arc<TrackLocalStaticSample>)> {
+        // Register the H.264 codec in the MediaEngine so `add_track` has a codec
+        // to populate the SDP media section with (webrtc-rs rejects an
+        // RTPSender with no registered codec). Without this, offer/answer
+        // creation fails with "RTPSender created with no codecs".
+        let mut media_engine = webrtc::api::media_engine::MediaEngine::default();
+        media_engine
+            .register_codec(
+                webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters {
+                    capability: h264_codec_capability(),
+                    payload_type: 102,
+                    stats_id: String::new(),
+                },
+                webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video,
+            )
+            .context("register h264 codec")?;
+        let api = APIBuilder::new().with_media_engine(media_engine).build();
         let pc = Arc::new(
             api.new_peer_connection(RTCConfiguration::default())
                 .await
@@ -87,6 +104,18 @@ impl VideoPeer {
             Box::pin(async {})
         }));
 
+        Ok((pc, track))
+    }
+
+    /// Create the PC, add the H.264 track, wire ICE, create+publish an offer.
+    /// Use this on the side that initiates the call.
+    pub async fn offer(
+        robot_id: &str,
+        peer_id: &str,
+        transport: Arc<crate::transport::Transport>,
+    ) -> anyhow::Result<Arc<Self>> {
+        let (pc, track) = Self::build(robot_id, peer_id, transport.clone()).await?;
+
         // Create + publish the offer.
         let offer = pc.create_offer(None).await.context("create_offer")?;
         pc.set_local_description(offer.clone())
@@ -97,6 +126,27 @@ impl VideoPeer {
             .map_err(|e| anyhow::anyhow!("publish_offer: {e}"))?;
         info!(robot_id, peer_id, "video offer published");
 
+        Ok(Arc::new(Self {
+            robot_id: robot_id.to_string(),
+            peer_id: peer_id.to_string(),
+            pc,
+            track,
+            transport,
+        }))
+    }
+
+    /// Create the PC, add the H.264 track, and wire ICE — without sending an
+    /// offer. Use this on the responding side: when an inbound offer arrives,
+    /// [`SignalHandler::on_offer`] sets the remote description and publishes an
+    /// answer on this same `PeerConnection`. This is what makes connectivity
+    /// two-way (either peer can initiate; the other auto-answers).
+    pub async fn answer(
+        robot_id: &str,
+        peer_id: &str,
+        transport: Arc<crate::transport::Transport>,
+    ) -> anyhow::Result<Arc<Self>> {
+        let (pc, track) = Self::build(robot_id, peer_id, transport.clone()).await?;
+        info!(robot_id, peer_id, "video responder PeerConnection ready");
         Ok(Arc::new(Self {
             robot_id: robot_id.to_string(),
             peer_id: peer_id.to_string(),

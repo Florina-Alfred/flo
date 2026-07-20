@@ -15,7 +15,7 @@ use codec::Codec;
 
 use std::sync::Arc;
 
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::config::{RuleStore, run_hot_reload};
 use crate::health::Health;
@@ -401,7 +401,7 @@ async fn start_common_subsystems(transport: &Arc<Transport>, store: &RuleStore, 
         let transport = transport.clone();
         let robot_id = robot_id.to_string();
         tokio::spawn(async move {
-            if let Err(e) = run_signaling(&transport, &robot_id).await {
+            if let Err(e) = run_signaling(transport.clone(), &robot_id).await {
                 error!(error = %e, "signaling exited");
             }
         })
@@ -414,40 +414,108 @@ async fn start_common_subsystems(transport: &Arc<Transport>, store: &RuleStore, 
     let _ = (health_task, reload_task, engine_task, signal_task);
 }
 
-async fn run_signaling(transport: &Transport, robot_id: &str) -> zenoh::Result<()> {
+async fn run_signaling(transport: std::sync::Arc<Transport>, robot_id: &str) -> zenoh::Result<()> {
     signaling::publish_presence(
-        transport,
+        &transport,
         robot_id,
         vec![format!("robot/{}/local/cam0", robot_id)],
     )
     .await?;
-    signaling::subscribe_presence(transport, |p: signaling::Presence| {
+    signaling::subscribe_presence(&transport, |p: signaling::Presence| {
         info!(peer = %p.id, streams = ?p.streams, "discovered peer");
     })
     .await?;
-    signaling::run_signal_receiver(transport, robot_id, LoggingSignalHandler).await
+    // The mesh handler auto-answers inbound offers so connectivity is two-way:
+    // whichever peer initiates, the other side establishes its own PeerConnection
+    // and streams media back.
+    let handler = MeshSignalHandler::new(robot_id, transport.clone());
+    signaling::run_signal_receiver(&transport, robot_id, handler).await
 }
 
-struct LoggingSignalHandler;
+/// Signal handler for the always-on mesh listener. Unlike the one-shot
+/// [`crate::video::start_video`] initiator, this answers inbound offers from any
+/// peer by lazily creating a `VideoPeer` per peer and delegating to its
+/// `SignalHandler` impl. This is what makes WebRTC connectivity bidirectional.
+#[derive(Clone)]
+struct MeshSignalHandler {
+    inner: std::sync::Arc<MeshSignalHandlerInner>,
+}
 
-impl signaling::SignalHandler for LoggingSignalHandler {
-    fn on_offer(&self, from: &str, msg: &signaling::SignalMessage) {
-        info!(
+struct MeshSignalHandlerInner {
+    robot_id: String,
+    transport: std::sync::Arc<Transport>,
+    /// One answering PeerConnection per remote peer. Created on first inbound
+    /// offer; reused for subsequent signaling with that peer.
+    peers: std::sync::Mutex<
+        std::collections::HashMap<String, std::sync::Arc<crate::video::VideoPeer>>,
+    >,
+}
+
+impl MeshSignalHandler {
+    fn new(robot_id: &str, transport: std::sync::Arc<Transport>) -> Self {
+        Self {
+            inner: std::sync::Arc::new(MeshSignalHandlerInner {
+                robot_id: robot_id.to_string(),
+                transport,
+                peers: std::sync::Mutex::new(std::collections::HashMap::new()),
+            }),
+        }
+    }
+
+    /// Get the existing answering peer for `from`, or create one. The creation
+    /// await happens outside the lock to avoid blocking other signaling.
+    async fn peer_for(&self, from: &str) -> Option<std::sync::Arc<crate::video::VideoPeer>> {
+        if let Some(p) = self.inner.peers.lock().unwrap().get(from) {
+            return Some(p.clone());
+        }
+        let peer = match crate::video::VideoPeer::answer(
+            &self.inner.robot_id,
             from,
-            sdp_len = msg.sdp.len(),
-            ice = msg.ice.len(),
-            "received offer (no media yet)"
-        );
+            self.inner.transport.clone(),
+        )
+        .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(error = %e, peer = from, "failed to create answering PeerConnection");
+                return None;
+            }
+        };
+        let mut g = self.inner.peers.lock().unwrap();
+        Some(g.entry(from.to_string()).or_insert(peer).clone())
+    }
+}
+
+impl signaling::SignalHandler for MeshSignalHandler {
+    fn on_offer(&self, from: &str, msg: &signaling::SignalMessage) {
+        let h = self.clone();
+        let from = from.to_string();
+        let msg = msg.clone();
+        tokio::spawn(async move {
+            if let Some(peer) = h.peer_for(&from).await {
+                peer.on_offer(&from, &msg);
+            }
+        });
     }
     fn on_answer(&self, from: &str, msg: &signaling::SignalMessage) {
-        info!(
-            from,
-            sdp_len = msg.sdp.len(),
-            "received answer (no media yet)"
-        );
+        let h = self.clone();
+        let from = from.to_string();
+        let msg = msg.clone();
+        tokio::spawn(async move {
+            if let Some(peer) = h.inner.peers.lock().unwrap().get(&from).cloned() {
+                peer.on_answer(&from, &msg);
+            }
+        });
     }
     fn on_ice(&self, from: &str, candidate: &signaling::IceCandidate) {
-        info!(from, candidate = %candidate.candidate, "received ICE candidate (no media yet)");
+        let h = self.clone();
+        let from = from.to_string();
+        let candidate = candidate.clone();
+        tokio::spawn(async move {
+            if let Some(peer) = h.inner.peers.lock().unwrap().get(&from).cloned() {
+                peer.on_ice(&from, &candidate);
+            }
+        });
     }
 }
 
@@ -526,5 +594,63 @@ mod tests {
             )
         }));
         assert!(r.is_err());
+    }
+
+    /// End-to-end proof that the always-on mesh listener actually answers an
+    /// inbound offer (the two-way half of WebRTC connectivity): open a loopback
+    /// transport, attach `MeshSignalHandler`, publish an offer from a fake peer,
+    /// and assert an answer is published back on the expected key-expr.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mesh_handler_answers_inbound_offer() {
+        use std::sync::Arc;
+
+        // Roles: `offerer` (robot7) opens a real PeerConnection and publishes a
+        // valid offer; `answerer` (peer8) hosts the always-on MeshSignalHandler
+        // which must auto-create its own PeerConnection and publish an answer.
+        let offerer = "robot7";
+        let answerer = "peer8";
+        let transport = Arc::new(
+            Transport::open_with(Transport::loopback_config())
+                .await
+                .expect("open loopback transport"),
+        );
+
+        // The answerer side: always-on mesh listener.
+        let handler = MeshSignalHandler::new(answerer, transport.clone());
+        crate::signaling::run_signal_receiver(&transport, answerer, handler)
+            .await
+            .expect("signal receiver");
+
+        // Subscribe to the answer the answerer should publish back.
+        // Key layout: robot/{answerer}/signal/{offerer}/answer.
+        let answer_key = format!("robot/{answerer}/signal/{offerer}/answer");
+        let (tx, rx) = tokio::sync::oneshot::channel::<Vec<u8>>();
+        let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+        transport
+            .subscribe(&answer_key, move |s: zenoh::sample::Sample| {
+                if let Some(tx) = tx.lock().unwrap().take() {
+                    let _ = tx.send(s.payload().to_bytes().to_vec());
+                }
+            })
+            .await
+            .expect("subscribe answer key");
+
+        // The offerer side: a real PeerConnection producing a valid SDP offer.
+        // `VideoPeer::offer` publishes the offer over the same transport, which
+        // the answerer's mesh listener receives.
+        let _offerer = crate::video::VideoPeer::offer(offerer, answerer, transport.clone())
+            .await
+            .expect("offerer PeerConnection");
+
+        // The handler must auto-create an answering PeerConnection and publish
+        // an answer within a few seconds.
+        let got = tokio::time::timeout(std::time::Duration::from_secs(15), rx)
+            .await
+            .expect("answer within 15s")
+            .expect("answer payload");
+        let v: serde_json::Value = serde_json::from_slice(&got).expect("answer is JSON");
+        assert_eq!(v["kind"], "answer");
+        assert_eq!(v["from"], answerer);
+        assert_eq!(v["to"], offerer);
     }
 }
