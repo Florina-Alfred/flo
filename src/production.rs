@@ -39,7 +39,7 @@ pub async fn run_production(
     let transport = Arc::new(transport);
     info!(robot_id, "zenoh session open, liveliness declared");
 
-    start_common_subsystems(&transport, &store, &robot_id).await;
+    start_common_subsystems(&transport, &store, &robot_id, &args).await;
 
     // Optional simulation in production (e.g. a dev node without hardware).
     if args.simulate {

@@ -16,10 +16,14 @@ use crate::transport::Transport;
 
 /// Start health server, hot-reload, rule engine, and WebRTC signaling. Shared by
 /// both demo and production modes (the only difference is input + rules source).
+///
+/// `args` is used (under the `media` feature) to resolve the configured capture
+/// device so the always-on answerer can stream video back when a device is set.
 pub async fn start_common_subsystems(
     transport: &Arc<Transport>,
     store: &RuleStore,
     robot_id: &str,
+    #[cfg_attr(not(feature = "media"), allow(unused_variables))] args: &Args,
 ) {
     let health = Health::new();
 
@@ -57,11 +61,29 @@ pub async fn start_common_subsystems(
     let signal_task = {
         let transport = transport.clone();
         let robot_id = robot_id.to_string();
-        tokio::spawn(async move {
-            if let Err(e) = run_signaling(transport.clone(), &robot_id).await {
-                error!(error = %e, "signaling exited");
-            }
-        })
+        #[cfg(feature = "media")]
+        let source = match &args.video.device {
+            Some(d) => crate::device::VideoDevice::validate(d)
+                .ok()
+                .map(|dev| dev.to_source_spec()),
+            None => None,
+        };
+        #[cfg(feature = "media")]
+        {
+            tokio::spawn(async move {
+                if let Err(e) = run_signaling(transport.clone(), &robot_id, source).await {
+                    error!(error = %e, "signaling exited");
+                }
+            })
+        }
+        #[cfg(not(feature = "media"))]
+        {
+            tokio::spawn(async move {
+                if let Err(e) = run_signaling(transport.clone(), &robot_id).await {
+                    error!(error = %e, "signaling exited");
+                }
+            })
+        }
     };
 
     health.set_ready();
