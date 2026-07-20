@@ -46,18 +46,31 @@ crate — operational notes only.
   consistent results right after many rapid mutations; verify membership by
   node ID lookup, not by the count.
 
-## Board state (2026-07-19, after merges)
+## Board state (2026-07-19/20, after merges)
 
-- #43 client-container: open children remaining = **#49** (two-way WebRTC, child
-  of #46) is the only open item now. Both #48 (metrics) and #50 (device-access)
-  closed+DONE.
-- #46 webrtc-signaling: still Todo; its open child #49 blocks completion.
-- Remaining open work: **#49** two-way WebRTC connectivity (not started).
-- #52 (metrics) + #53 (device-access) merged to `main`.
+- #43 client-container: #48 (metrics) and #50 (device-access) closed+DONE.
+- #46 webrtc-signaling: **#49 merged (#58)** — two-way *signaling/connectivity*
+  delivered (MeshSignalHandler auto-answers inbound offers; latent H.264 codec
+  registration bug fixed). #49 moved to DONE on the board.
+- #59 created as the **media-feature** follow-up to #49 (answer-side media
+  production, `on_track` render/forward, remove `signaling.rs` `#![allow(dead_code)]`).
+  All three are GStreamer/`media`-feature blocked (not in default build, excluded
+  from CI). #59 added to board, status Todo, child of #46.
+- #52 (metrics) + #53 (device-access) + #58 (two-way WebRTC) merged to `main`.
+
+## CI / branch-protection fix (2026-07-20)
+
+- PRs were perpetually blocked by a *pending* `fmt` required status check. Root
+  cause: branch protection required context `fmt`, but `ci.yml`'s job had
+  `name: rustfmt` (only its `id` was `fmt`); GitHub keys required checks by job
+  **name**, so `fmt` never reported. Fixed by setting the job `name: fmt`
+  (commit `4aa7ffb` on main, cherry-picked to PR #58's branch). All 5 required
+  checks now report and pass. This fix applies to all future PRs branching from
+  main.
 
 ## Branch / PR hygiene
 
-- PR #52 and #53 merged via squash; branches deleted by GitHub.
+- PR #52, #53, #58 merged via squash; branches deleted by GitHub.
 - CAUTION: `git checkout -b X` aborts silently if the working tree diverges from
   the assumed base — always verify the current branch before committing. A stray
   commit on the wrong branch was recovered by branching then `git reset --hard <prior-sha>`.
