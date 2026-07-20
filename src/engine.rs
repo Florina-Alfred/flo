@@ -6,26 +6,94 @@ use serde_json::Value;
 use tracing::{debug, info, warn};
 
 use crate::config::RuleStore;
-use crate::rules::{Action, Predicate, Trigger, When};
+use crate::rules::{Action, Op, Operand, Predicate, PrimitiveRef, Trigger, When};
 use crate::transport::Transport;
 
-/// Evaluate a typed predicate against a JSON payload.
-/// The typed evaluator is not yet implemented (#73); until then any predicate is
-/// treated as "always true" so a pure key-expr match still fires (fail-open, matching
-/// the legacy behaviour). `split_predicate`/`cmp` are retained for the future evaluator.
-fn eval_predicate(pred: &Option<Predicate>, _payload: &Value) -> bool {
-    let _ = pred;
-    true
+/// Epsilon for float equality so `==`/`!=` do not fail on IEEE rounding dust.
+const EPSILON: f64 = 1e-9;
+
+/// Evaluate a typed predicate against a JSON payload (PRD §C).
+/// `None` => no predicate, pure key-expr match, always true (legacy behaviour).
+fn eval_predicate(pred: &Option<Predicate>, payload: &Value) -> bool {
+    match pred {
+        None => true,
+        Some(p) => eval_tree(p, payload),
+    }
 }
 
-#[allow(dead_code)]
-fn split_predicate(pred: &str) -> Option<(&str, &str, &str)> {
-    for op in ["<=", ">=", "==", "!=", "<", ">"] {
-        if let Some((l, r)) = pred.split_once(op) {
-            return Some((l.trim(), op, r.trim()));
+/// Recursively walk the typed `Predicate` tree, failing closed on any
+/// unsupported node. Unsupported operators or absent payload fields yield
+/// `false` rather than fail-open.
+fn eval_tree(pred: &Predicate, payload: &Value) -> bool {
+    match pred {
+        Predicate::Comparison { op, lhs, rhs } => {
+            let (Some(l), Some(r)) = (resolve_operand(lhs, payload), resolve_operand(rhs, payload))
+            else {
+                return false;
+            };
+            eval_comparison(*op, &l, &r)
+        }
+        Predicate::And(v) => v.iter().all(|p| eval_tree(p, payload)),
+        Predicate::Or(v) => v.iter().any(|p| eval_tree(p, payload)),
+        Predicate::Not(b) => !eval_tree(b, payload),
+    }
+}
+
+/// Compare two resolved JSON values under `op`. Floats use epsilon equality
+/// for `==`/`!=`; ordering uses the shared `cmp` helper (numbers/strings/bools).
+fn eval_comparison(op: Op, l: &Value, r: &Value) -> bool {
+    match op {
+        Op::Eq => values_equal(l, r),
+        Op::Ne => !values_equal(l, r),
+        Op::Lt => cmp(l, r).is_some_and(|o| o.is_lt()),
+        Op::Gt => cmp(l, r).is_some_and(|o| o.is_gt()),
+        Op::Le => cmp(l, r).is_some_and(|o| o.is_le()),
+        Op::Ge => cmp(l, r).is_some_and(|o| o.is_ge()),
+        Op::SameZoneAs => {
+            warn!("Op::SameZoneAs not yet supported; failing closed");
+            false
         }
     }
-    None
+}
+
+/// Equality with epsilon tolerance for floats, exact match otherwise.
+fn values_equal(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => {
+            if let (Some(xf), Some(yf)) = (x.as_f64(), y.as_f64()) {
+                (xf - yf).abs() < EPSILON
+            } else {
+                false
+            }
+        }
+        _ => a == b,
+    }
+}
+
+/// Resolve an `Operand` to a JSON value drawn from the payload.
+/// `None` means the referenced field is absent and cannot satisfy the predicate.
+fn resolve_operand(op: &Operand, payload: &Value) -> Option<Value> {
+    match op {
+        Operand::Bool(v) => Some(Value::Bool(*v)),
+        Operand::Int(v) => Some(Value::Number((*v).into())),
+        Operand::Float(v) => Some(serde_json::Number::from_f64(*v).map(Value::Number)?),
+        Operand::Str(v) => Some(Value::String(v.clone())),
+        Operand::Prim(p) => {
+            let field = prim_field(p);
+            payload.get(field).cloned()
+        }
+    }
+}
+
+/// Map a `PrimitiveRef` to its JSON payload field name (PRD §4).
+fn prim_field(p: &PrimitiveRef) -> &'static str {
+    match p {
+        PrimitiveRef::Zone => "zone_id",
+        PrimitiveRef::Robot => "role",
+        PrimitiveRef::HumanPresence => "separation_distance",
+        PrimitiveRef::Proximity(_) => "separation_distance",
+        PrimitiveRef::Site => "site_id",
+    }
 }
 
 #[allow(dead_code)]
