@@ -181,6 +181,37 @@ The `media` feature requires a system GStreamer install
 (`gstreamer`, `gstreamer-app`, `gstreamer-video` 0.25). It is feature-gated so the default
 build needs no system libraries.
 
+### Media feature setup
+
+The `media` feature wraps GStreamer for video capture/encoding and is **not** part of
+the default build. Install the system dev packages with the provided helper:
+
+```bash
+./scripts/setup-dev.sh            # auto-detects apt (Debian/Ubuntu) or brew (macOS)
+./scripts/setup-dev.sh --apt      # force apt
+./scripts/setup-dev.sh --brew     # force Homebrew (macOS)
+```
+
+What it installs: the GStreamer dev libraries plus the base/good/bad/ugly runtime
+plugin packages — `libgstreamer1.0-dev`, `libgstreamer-plugins-base1.0-dev`,
+`libx264-dev`, `gstreamer1.0-plugins-base`, `gstreamer1.0-plugins-good`,
+`gstreamer1.0-plugins-bad`, `gstreamer1.0-plugins-ugly` (apt) or
+`gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly x264`
+(brew).
+
+Then build/test with the feature enabled:
+
+```bash
+cargo build  --features media
+cargo test   --features media --bin flo
+cargo run    --features media --example video_peer -- <peer-id>
+```
+
+`pkg-config` must resolve `gstreamer-1.0`, `gstreamer-app-1.0`, and
+`gstreamer-video-1.0`; set `PKG_CONFIG_PATH` if your install is in a non-standard
+location. CI installs the same packages in the `media` job (see
+`.github/workflows/ci.yml`).
+
 ## License
 
 Apache-2.0. See [`LICENSE`](LICENSE).

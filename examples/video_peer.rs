@@ -23,9 +23,14 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!(e))?;
     let transport = std::sync::Arc::new(transport);
 
-    video::start_video(&robot_id, &peer, transport)
-        .await
-        .map_err(|e| anyhow::anyhow!("video failed: {e}"))?;
+    video::start_video_with_source(
+        &robot_id,
+        &peer,
+        transport,
+        flo_rs::media::SourceSpec::Videotest,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("video failed: {e}"))?;
     tokio::signal::ctrl_c().await?;
     Ok(())
 }

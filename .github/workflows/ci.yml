@@ -1,13 +1,15 @@
 name: CI
 
-# Minimal pipeline: runs on every branch push and every PR.
+# Minimal pipeline: runs on pushes to `main` and on every pull request.
+# Feature branches run CI once via the PR event (scoping `push` to `main`
+# only avoids duplicate runs when a branch is both pushed and PR'd).
 # This is the required status-check gate for merging into main.
 # The heavy security scanning (audit/deny/trivy/codeql/release) lives in
 # .github/workflows/security.yml and runs ONLY on main (push + tags).
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
     branches: ["**"]
 
@@ -68,3 +70,37 @@ jobs:
         run: cargo check --all-targets
       - name: Cargo test
         run: cargo test --bin flo
+
+  # The `media` feature needs system GStreamer, so it is excluded from the
+  # default (free-tier, no-system-deps) pipeline above. This job installs the
+  # GStreamer dev packages and verifies the media build, example, and clippy.
+  media:
+    name: media
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
+        with:
+          toolchain: "1.97.1"
+          components: clippy
+      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
+      - name: Install GStreamer dev packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            libx264-dev \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-ugly
+      - name: Clippy (media, deny warnings)
+        run: cargo clippy --features media --all-targets -- -D warnings
+      - name: Build (media)
+        run: cargo build --features media
+      - name: Build example (media)
+        run: cargo build --features media --example video_peer
+      - name: Test (media)
+        run: cargo test --features media --bin flo

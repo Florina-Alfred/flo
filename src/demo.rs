@@ -29,7 +29,7 @@ pub async fn run_demo(
 
     let store = RuleStore::bootstrap_demo(&robot_id);
 
-    start_common_subsystems(&transport, &store, &robot_id).await;
+    start_common_subsystems(&transport, &store, &robot_id, &args).await;
 
     // Simulated sensor input (the demo's fake hardware). Demo always simulates.
     let transport_sim = transport.clone();

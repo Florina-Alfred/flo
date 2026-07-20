@@ -16,7 +16,9 @@ use crate::transport::Transport;
 /// Signal handler for the always-on mesh listener. Unlike the one-shot
 /// [`crate::video::start_video`] initiator, this answers inbound offers from any
 /// peer by lazily creating a `VideoPeer` per peer and delegating to its
-/// `SignalHandler` impl.
+/// `SignalHandler` impl. When a capture `source` is configured it also starts
+/// media capture on each answering peer, so the answerer streams video back
+/// (two-way media).
 #[derive(Clone)]
 pub struct MeshSignalHandler {
     inner: Arc<MeshSignalHandlerInner>,
@@ -28,9 +30,30 @@ struct MeshSignalHandlerInner {
     /// One answering PeerConnection per remote peer. Created on first inbound
     /// offer; reused for subsequent signaling with that peer.
     peers: Mutex<HashMap<String, Arc<crate::video::VideoPeer>>>,
+    /// Capture source for answering peers; `None` means "receive-only / no
+    /// outbound media". Only meaningful with the `media` feature.
+    #[cfg(feature = "media")]
+    source: Option<crate::media::SourceSpec>,
 }
 
 impl MeshSignalHandler {
+    #[cfg(feature = "media")]
+    pub fn new(
+        robot_id: &str,
+        transport: Arc<Transport>,
+        source: Option<crate::media::SourceSpec>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(MeshSignalHandlerInner {
+                robot_id: robot_id.to_string(),
+                transport,
+                peers: Mutex::new(HashMap::new()),
+                source,
+            }),
+        }
+    }
+
+    #[cfg(not(feature = "media"))]
     pub fn new(robot_id: &str, transport: Arc<Transport>) -> Self {
         Self {
             inner: Arc::new(MeshSignalHandlerInner {
@@ -61,7 +84,18 @@ impl MeshSignalHandler {
             }
         };
         let mut g = self.inner.peers.lock().unwrap();
-        Some(g.entry(from.to_string()).or_insert(peer).clone())
+        let peer = g.entry(from.to_string()).or_insert(peer).clone();
+        #[cfg(feature = "media")]
+        if let Some(source) = self.inner.source.clone() {
+            let p = peer.clone();
+            let from = from.to_string();
+            tokio::spawn(async move {
+                if let Err(e) = crate::video::start_capture(p, source, 1280, 720, 30).await {
+                    warn!(error = %e, peer = from, "answerer capture failed to start");
+                }
+            });
+        }
+        Some(peer)
     }
 }
 
@@ -101,6 +135,28 @@ impl SignalHandler for MeshSignalHandler {
 /// Publish presence, subscribe to peer discovery, and run the inbound signal
 /// receiver backed by [`MeshSignalHandler`] so the robot can both initiate and
 /// answer WebRTC calls.
+#[cfg(feature = "media")]
+pub async fn run_signaling(
+    transport: Arc<Transport>,
+    robot_id: &str,
+    source: Option<crate::media::SourceSpec>,
+) -> zenoh::Result<()> {
+    signaling::publish_presence(
+        &transport,
+        robot_id,
+        vec![format!("robot/{robot_id}/local/cam0")],
+    )
+    .await?;
+    signaling::subscribe_presence(&transport, |p: signaling::Presence| {
+        info!(peer = %p.id, streams = ?p.streams, "discovered peer");
+    })
+    .await?;
+    let handler = MeshSignalHandler::new(robot_id, transport.clone(), source);
+    signaling::run_signal_receiver(&transport, robot_id, handler).await
+}
+
+/// Non-media variant: no capture source, receive/answer only.
+#[cfg(not(feature = "media"))]
 pub async fn run_signaling(transport: Arc<Transport>, robot_id: &str) -> zenoh::Result<()> {
     signaling::publish_presence(
         &transport,
@@ -140,6 +196,9 @@ mod tests {
         );
 
         // The answerer side: always-on mesh listener.
+        #[cfg(feature = "media")]
+        let handler = MeshSignalHandler::new(answerer, transport.clone(), None);
+        #[cfg(not(feature = "media"))]
         let handler = MeshSignalHandler::new(answerer, transport.clone());
         crate::signaling::run_signal_receiver(&transport, answerer, handler)
             .await

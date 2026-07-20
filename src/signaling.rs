@@ -7,11 +7,11 @@
 //! webrtc-rs peer connections.
 //!
 //! The publisher functions ([`publish_offer`], [`publish_answer`], [`publish_ice`])
-//! and the offer/answer/ICE key-expr constants are the skeleton API a future media
-//! module will drive; they are currently unused because live peer connections are
-//! later work, hence `#[allow(dead_code)]` at module scope.
-
-#![allow(dead_code)]
+//! and the offer/answer/ICE key-exprs are driven by the `video`/`mesh` modules:
+//! `VideoPeer` publishes offers/answers/ICE over this transport, and
+//! `MeshSignalHandler` runs the inbound receiver. No media is handled here — this
+//! module only performs the SDP/ICE handshake so `video` can attach peer
+//! connections.
 
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};

@@ -11,6 +11,7 @@ use gstreamer::prelude::*;
 use gstreamer_app::AppSink;
 
 /// Where the video frames come from.
+#[derive(Clone)]
 pub enum SourceSpec {
     /// Synthetic test pattern (no camera needed for the demo).
     Videotest,
@@ -33,6 +34,9 @@ pub struct MediaPipeline {
     pipeline: gstreamer::Pipeline,
 }
 
+/// Sample callback: receives each encoded H.264 frame as raw bytes.
+pub type OnSample = Box<dyn Fn(&[u8]) + Send + Sync + 'static>;
+
 impl MediaPipeline {
     /// Build the pipeline. `source` chooses the input; `width/height/fps` set caps.
     pub fn build(source: &SourceSpec, width: u32, height: u32, fps: u32) -> Result<Self> {
@@ -54,7 +58,7 @@ impl MediaPipeline {
         let desc = format!(
             "{src} ! videoconvert ! {enc} ! h264parse ! appsink name=enc drop=true max-buffers=2"
         );
-        let pipeline = gstreamer::parse_launch(&desc)
+        let pipeline = gstreamer::parse::launch(&desc)
             .context("parse_launch media pipeline")?
             .downcast::<gstreamer::Pipeline>()
             .map_err(|_| anyhow!("media pipeline is not a Pipeline"))?;
@@ -63,7 +67,7 @@ impl MediaPipeline {
     }
 
     /// Start the pipeline; each encoded H.264 sample is delivered to `on_sample`.
-    pub fn start(&self, on_sample: Box<dyn Fn(&[u8]) + Send + Sync + 'static>) -> Result<()> {
+    pub fn start(&self, on_sample: OnSample) -> Result<()> {
         let appsink = self
             .pipeline
             .by_name("enc")
@@ -81,6 +85,7 @@ impl MediaPipeline {
                             return Ok(gstreamer::FlowSuccess::Ok);
                         }
                     };
+                    #[allow(clippy::collapsible_if)]
                     if let Some(buffer) = sample.buffer() {
                         if let Ok(map) = buffer.map_readable() {
                             on_sample(&map);

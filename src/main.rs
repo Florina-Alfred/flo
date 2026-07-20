@@ -50,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     #[cfg(feature = "media")]
     if args.video.self_test {
-        return run_video_self_test(&args.video.codec);
+        return Ok(run_video_self_test(&args.video.codec)?);
     }
 
     if demo {
