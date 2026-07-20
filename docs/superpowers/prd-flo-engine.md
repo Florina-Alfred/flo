@@ -147,4 +147,12 @@ No arithmetic, loops, functions, or time-windows. Floats use epsilon equality.
 ## 8. Open items handed to implementation
 
 - Rule-passing event semantics (edge vs level) — §1 fog.
-- The four detailed research findings docs (`auth-mechanism.md`, `ruleset-schema.md`, `rule-primitives.md`, `topic-contract.md`) were reported by the research subagents but are **not present on their branches**; this PRD was synthesized from the recorded issue-resolution comments + `audit-sha.md`. Recommend regenerating those four docs or treating this PRD as the canonical source.
+
+## 9. Research backing
+
+The five detailed research findings docs back this PRD (under `docs/superpowers/research/`):
+- `auth-mechanism.md` — mTLS vs ed25519 vs none, effort-weighted.
+- `ruleset-schema.md` — ruleset/rule TOML schema & hot-reload.
+- `rule-primitives.md` — five primitives & predicate grammar.
+- `topic-contract.md` — Zenoh key-expression contract & hybrid topology.
+- `audit-sha.md` — collision policy & server audit/SHA model.
