@@ -1,0 +1,86 @@
+name: Auto-approve docs
+
+# Approves docs-only pull requests automatically so they don't block on a
+# manual human review (the built-in GITHUB_TOKEN cannot approve its own
+# repo's PRs). Triggered on PR open/edit. Only acts when:
+#   1. the change is docs-only (no Rust/Cargo/workflow files), AND
+#   2. the required status checks are already successful.
+# Uses a GitHub App token (pull-requests:write) stored as APP_ID / APP_PRIVATE_KEY
+# (or a pre-minted APP_TOKEN). Code PRs are never auto-approved.
+
+on:
+  pull_request_target:
+    types: [opened, ready_for_review, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: auto-approve-docs-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  scope:
+    name: scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.check.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - id: check
+        run: |
+          set -euo pipefail
+          BASE="origin/${{ github.base_ref }}"
+          git fetch origin "$BASE" --depth=1
+          FILES=$(git diff --name-only "$BASE".."${{ github.event.pull_request.head.sha }}")
+          echo "Changed files:"
+          echo "$FILES"
+          if echo "$FILES" | grep -Eq '\.(rs)$|^(Cargo\.toml|Cargo\.lock)$|\.github/workflows/'; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+          fi
+        shell: bash
+
+  approve:
+    name: approve-docs
+    needs: [scope]
+    if: needs.scope.outputs.docs_only == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      # Mint a token from the GitHub App. Replace APP_ID / APP_PRIVATE_KEY with
+      # the app's credentials once the app is created and installed on the repo.
+      # (Alternatively, store a pre-minted token in APP_TOKEN and skip this step.)
+      - id: app-token
+        uses: actions/create-github-app-token@7bfa3a4717ef143a604ee0a99d859b8886a96d00 # v1.9.3
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - name: Wait for required checks
+        run: |
+          set -euo pipefail
+          PR="${{ github.event.pull_request.number }}"
+          for i in $(seq 1 30); do
+            STATE=$(gh pr view "$PR" --json statusCheckRollup -q '
+              [.statusCheckRollup[] | select(.required == true)] |
+              if length == 0 then "pending"
+              else if all(.conclusion == "success" or .conclusion == "skipped" or .conclusion == "neutral")
+                   then "green" else "pending" end end')
+            echo "check state: $STATE (attempt $i)"
+            [ "$STATE" = "green" ] && break
+            sleep 10
+          done
+          [ "$STATE" = "green" ] || { echo "required checks not green"; exit 1; }
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+      - name: Approve
+        run: gh pr review "${{ github.event.pull_request.number }}" --approve --body "Auto-approved: docs-only change."
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
