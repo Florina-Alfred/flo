@@ -9,6 +9,57 @@ pub enum Qos {
     BestEffort,
 }
 
+/// Boolean/arithmetic operator for a `Predicate` comparison (PRD §4 grammar).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Op {
+    Eq,
+    Ne,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    SameZoneAs,
+}
+
+/// A comparison operand: a literal or a typed primitive reference (PRD §4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Operand {
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Str(String),
+    Prim(PrimitiveRef),
+}
+
+/// One of the five rule primitives (PRD §4). `Proximity` carries the peer robot id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PrimitiveRef {
+    Site,
+    Zone,
+    Robot,
+    Proximity(String),
+    HumanPresence,
+}
+
+/// Evaluation mode for a trigger (PRD §1 fog, #77): fire on transition (Edge)
+/// or re-evaluate every tick against latest sample (Level).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum EvalMode {
+    #[default]
+    Edge,
+    Level,
+}
+
+/// A statically-auditable predicate tree (non-Turing-complete, deterministic).
+/// Replaces the legacy free-text `Trigger.pred: Option<String>`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Predicate {
+    Comparison { op: Op, lhs: Operand, rhs: Operand },
+    And(Vec<Predicate>),
+    Or(Vec<Predicate>),
+    Not(Box<Predicate>),
+}
+
 /// A single publish action fired when a rule's `when` evaluates true.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Action {
@@ -20,17 +71,18 @@ pub struct Action {
     pub payload: serde_json::Value,
 }
 
-/// One predicate: a key-expression match plus an optional predicate string
+/// One predicate: a key-expression match plus an optional typed predicate
 /// evaluated against the received payload.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Trigger {
     /// Key-expression the incoming sample must match, e.g. `robot/7/local/bumper`.
     pub topic: String,
-    /// Optional predicate over the payload, e.g. `pressed == true`.
-    /// Evaluated against a `serde_json::Value` context; unimplemented predicates
-    /// (no evaluator yet) are treated as "always true" so pure matches still fire.
+    /// Typed predicate over the payload (None => always true).
     #[serde(default)]
-    pub pred: Option<String>,
+    pub pred: Option<Predicate>,
+    /// Evaluation mode (#77); defaults to Edge.
+    #[serde(default)]
+    pub mode: EvalMode,
 }
 
 /// The boolean condition guarding a rule's actions. Composable AND/OR.
@@ -73,5 +125,21 @@ impl Rules {
     #[allow(dead_code)]
     pub fn to_toml(&self) -> String {
         toml::to_string(self).expect("Rules is serializable")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn predicate_tree_is_typed() {
+        let p = Predicate::Comparison {
+            op: Op::Lt,
+            lhs: Operand::Prim(PrimitiveRef::Proximity("7".into())),
+            rhs: Operand::Float(1.2),
+        };
+        assert_eq!(p, p.clone());
+        // default eval mode is Edge
+        assert_eq!(Trigger::default().mode, EvalMode::Edge);
     }
 }

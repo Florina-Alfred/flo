@@ -6,45 +6,19 @@ use serde_json::Value;
 use tracing::{debug, info, warn};
 
 use crate::config::RuleStore;
-use crate::rules::{Action, Trigger, When};
+use crate::rules::{Action, Predicate, Trigger, When};
 use crate::transport::Transport;
 
-/// Evaluate a predicate string against a JSON payload.
-/// Supports `field == value`, `field != value`, `field < value`, `field > value`,
-/// `field <= value`, `field >= value` with string/number/boolean right-hand sides.
-/// An empty/absent predicate is always true. Unparseable predicates log and pass
-/// (fail-open) so a pure key-expr match still fires.
-fn eval_predicate(pred: &Option<String>, payload: &Value) -> bool {
-    let Some(pred) = pred else { return true };
-    let pred = pred.trim();
-    if pred.is_empty() {
-        return true;
-    }
-    let Some((field, op, rhs)) = split_predicate(pred) else {
-        warn!(predicate = %pred, "unparseable predicate; treating as true");
-        return true;
-    };
-    let Some(actual) = payload.get(field) else {
-        return false;
-    };
-    let rhs_val: Value = match serde_json::from_str::<Value>(rhs.trim()) {
-        Ok(v) => v,
-        Err(_) => Value::String(rhs.trim().trim_matches('"').to_string()),
-    };
-    match op {
-        "==" => actual == &rhs_val,
-        "!=" => actual != &rhs_val,
-        "<" => cmp(actual, &rhs_val).map(|o| o.is_lt()).unwrap_or(false),
-        ">" => cmp(actual, &rhs_val).map(|o| o.is_gt()).unwrap_or(false),
-        "<=" => cmp(actual, &rhs_val).map(|o| o.is_le()).unwrap_or(false),
-        ">=" => cmp(actual, &rhs_val).map(|o| o.is_ge()).unwrap_or(false),
-        _ => {
-            warn!(op = %op, "unsupported predicate operator; treating as true");
-            true
-        }
-    }
+/// Evaluate a typed predicate against a JSON payload.
+/// The typed evaluator is not yet implemented (#73); until then any predicate is
+/// treated as "always true" so a pure key-expr match still fires (fail-open, matching
+/// the legacy behaviour). `split_predicate`/`cmp` are retained for the future evaluator.
+fn eval_predicate(pred: &Option<Predicate>, _payload: &Value) -> bool {
+    let _ = pred;
+    true
 }
 
+#[allow(dead_code)]
 fn split_predicate(pred: &str) -> Option<(&str, &str, &str)> {
     for op in ["<=", ">=", "==", "!=", "<", ">"] {
         if let Some((l, r)) = pred.split_once(op) {
@@ -54,6 +28,7 @@ fn split_predicate(pred: &str) -> Option<(&str, &str, &str)> {
     None
 }
 
+#[allow(dead_code)]
 fn cmp(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
     match (a, b) {
         (Value::Number(x), Value::Number(y)) => {

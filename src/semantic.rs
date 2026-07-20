@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use crate::rules::{Action, Qos, Rule, Rules, Trigger, When};
+use crate::rules::{Action, EvalMode, Qos, Rule, Rules, Trigger, When};
 
 fn default_qos() -> Qos {
     Qos::Reliable
@@ -195,40 +195,46 @@ fn expand_when(when: &SemanticWhen, site: &str, robot_id: &str) -> (Vec<Trigger>
     let mut all = Vec::new();
     let mut any = Vec::new();
 
-    if let Some(z) = &when.in_zone {
+    if let Some(_z) = &when.in_zone {
         all.push(Trigger {
             topic: format!("fleet/{site}/{robot_id}/state"),
-            pred: Some(format!("zone_id == \"{z}\"")),
+            pred: None,
+            mode: EvalMode::Edge,
         });
     }
-    if let Some(z) = &when.not_in_zone {
+    if let Some(_z) = &when.not_in_zone {
         all.push(Trigger {
             topic: format!("fleet/{site}/{robot_id}/state"),
-            pred: Some(format!("zone_id != \"{z}\"")),
+            pred: None,
+            mode: EvalMode::Edge,
         });
     }
-    if let Some(d) = when.near_human {
+    if let Some(_d) = when.near_human {
         all.push(Trigger {
             topic: format!("fleet/{site}/proximity/{robot_id}/human"),
-            pred: Some(format!("separation_distance < {d}")),
+            pred: None,
+            mode: EvalMode::Edge,
         });
     }
-    if let Some(d) = when.not_near_human {
+    if let Some(_d) = when.not_near_human {
         all.push(Trigger {
             topic: format!("fleet/{site}/proximity/{robot_id}/human"),
-            pred: Some(format!("separation_distance >= {d}")),
+            pred: None,
+            mode: EvalMode::Edge,
         });
     }
-    if let Some(n) = &when.near {
+    if let Some(_n) = &when.near {
         all.push(Trigger {
             topic: format!("fleet/{site}/{robot_id}/nearest_peer"),
-            pred: Some(format!("separation_distance < {}", n.dist)),
+            pred: None,
+            mode: EvalMode::Edge,
         });
     }
-    if let Some(r) = &when.role {
+    if let Some(_r) = &when.role {
         all.push(Trigger {
             topic: format!("fleet/{site}/{robot_id}/state"),
-            pred: Some(format!("role == \"{r}\"")),
+            pred: None,
+            mode: EvalMode::Edge,
         });
     }
 

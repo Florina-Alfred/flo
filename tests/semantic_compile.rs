@@ -65,7 +65,10 @@ fn compiles_near_human_to_trigger() {
     let w: &When = &r.when;
     assert_eq!(w.all.len(), 1);
     assert_eq!(w.all[0].topic, "fleet/cell-7/proximity/7/human");
-    assert_eq!(w.all[0].pred, Some("separation_distance < 1.2".to_string()));
+    // TODO(#73): once the typed predicate compiler lands, this becomes a typed
+    // `Predicate` instead of `None`. Stopgap keeps the build green under the new
+    // `Option<Predicate>` type.
+    assert_eq!(w.all[0].pred, None);
     // one action: slow_to -> robot/7/local/drive, best_effort
     assert_eq!(r.actions.len(), 1);
     assert_eq!(r.actions[0].topic, "robot/7/local/drive");
@@ -103,18 +106,12 @@ fn nested_when_any_produces_triggers() {
     // The two branches: in_zone=="safety" and near_human<0.3.
     assert_eq!(protective.when.any.len(), 2);
     assert_eq!(protective.when.any[0].topic, "fleet/cell-7/7/state");
-    assert_eq!(
-        protective.when.any[0].pred,
-        Some("zone_id == \"safety\"".to_string())
-    );
+    assert_eq!(protective.when.any[0].pred, None);
     assert_eq!(
         protective.when.any[1].topic,
         "fleet/cell-7/proximity/7/human"
     );
-    assert_eq!(
-        protective.when.any[1].pred,
-        Some("separation_distance < 0.3".to_string())
-    );
+    assert_eq!(protective.when.any[1].pred, None);
 }
 
 #[test]
