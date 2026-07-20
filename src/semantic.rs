@@ -5,7 +5,10 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use crate::rules::{Action, EvalMode, Qos, Rule, Rules, Ruleset, Trigger, When};
+use crate::rules::{
+    Action, EvalMode, Op, Operand, Predicate, PrimitiveRef, Qos, Rule, Rules, Ruleset, Trigger,
+    When,
+};
 
 fn default_qos() -> Qos {
     Qos::Reliable
@@ -158,15 +161,13 @@ fn validate_when(
 /// Compile a validated semantic doc to the runtime `Rules` shape.
 pub fn compile(doc: &SemanticDoc, robot_id: &str) -> Result<Rules, SemanticError> {
     validate(doc)?;
-    let site = if doc.site.id.is_empty() {
+    if doc.site.id.is_empty() {
         return Err(SemanticError("missing [site].id".to_string()));
-    } else {
-        &doc.site.id
-    };
+    }
 
     let mut out = Vec::new();
     for rule in &doc.rules {
-        let (all, any) = expand_when(&rule.when, site, robot_id);
+        let (all, any) = expand_when(&rule.when, robot_id);
 
         let actions: Vec<Action> = rule
             .actions
@@ -191,66 +192,102 @@ pub fn compile(doc: &SemanticDoc, robot_id: &str) -> Result<Rules, SemanticError
 /// Flat fields each contribute to `all` (matching prior flat-only behavior).
 /// `when.all` nests further AND-requirements; `when.any` nests OR-branches,
 /// each nested `SemanticWhen`'s own `all` triggers becoming an OR alternative.
-fn expand_when(when: &SemanticWhen, site: &str, robot_id: &str) -> (Vec<Trigger>, Vec<Trigger>) {
+fn expand_when(when: &SemanticWhen, robot_id: &str) -> (Vec<Trigger>, Vec<Trigger>) {
     let mut all = Vec::new();
     let mut any = Vec::new();
 
-    if let Some(_z) = &when.in_zone {
+    if let Some(z) = &when.in_zone {
         all.push(Trigger {
-            topic: format!("fleet/{site}/{robot_id}/state"),
-            // TODO(#73): emit typed Predicate tree here (zone/role/proximity/human values currently unguarded)
-            pred: None,
+            topic: format!("robot/{robot_id}/local/zone"),
+            pred: Some(Predicate::Comparison {
+                op: Op::Eq,
+                lhs: Operand::Prim(PrimitiveRef::Zone),
+                rhs: Operand::Str(z.clone()),
+            }),
             mode: EvalMode::Edge,
         });
     }
-    if let Some(_z) = &when.not_in_zone {
+    if let Some(z) = &when.not_in_zone {
         all.push(Trigger {
-            topic: format!("fleet/{site}/{robot_id}/state"),
-            // TODO(#73): emit typed Predicate tree here (zone/role/proximity/human values currently unguarded)
-            pred: None,
+            topic: format!("robot/{robot_id}/local/zone"),
+            pred: Some(Predicate::Not(Box::new(Predicate::Comparison {
+                op: Op::Eq,
+                lhs: Operand::Prim(PrimitiveRef::Zone),
+                rhs: Operand::Str(z.clone()),
+            }))),
             mode: EvalMode::Edge,
         });
     }
-    if let Some(_d) = when.near_human {
+    if let Some(d) = when.near_human {
         all.push(Trigger {
-            topic: format!("fleet/{site}/proximity/{robot_id}/human"),
-            // TODO(#73): emit typed Predicate tree here (zone/role/proximity/human values currently unguarded)
-            pred: None,
-            mode: EvalMode::Edge,
+            topic: format!("robot/{robot_id}/local/human_present"),
+            pred: Some(Predicate::Comparison {
+                op: Op::Lt,
+                lhs: Operand::Prim(PrimitiveRef::HumanPresence),
+                rhs: Operand::Float(d),
+            }),
+            mode: EvalMode::Level,
         });
     }
-    if let Some(_d) = when.not_near_human {
+    if let Some(d) = when.not_near_human {
         all.push(Trigger {
-            topic: format!("fleet/{site}/proximity/{robot_id}/human"),
-            // TODO(#73): emit typed Predicate tree here (zone/role/proximity/human values currently unguarded)
-            pred: None,
-            mode: EvalMode::Edge,
+            topic: format!("robot/{robot_id}/local/human_present"),
+            pred: Some(Predicate::Comparison {
+                op: Op::Ge,
+                lhs: Operand::Prim(PrimitiveRef::HumanPresence),
+                rhs: Operand::Float(d),
+            }),
+            mode: EvalMode::Level,
         });
     }
-    if let Some(_n) = &when.near {
+    if let Some(n) = &when.near {
         all.push(Trigger {
-            topic: format!("fleet/{site}/{robot_id}/nearest_peer"),
-            // TODO(#73): emit typed Predicate tree here (zone/role/proximity/human values currently unguarded)
-            pred: None,
-            mode: EvalMode::Edge,
+            topic: format!("robot/{robot_id}/local/proximity"),
+            pred: Some(Predicate::Comparison {
+                op: Op::Lt,
+                lhs: Operand::Prim(PrimitiveRef::Proximity(n.entity.clone())),
+                rhs: Operand::Float(n.dist),
+            }),
+            mode: EvalMode::Level,
         });
     }
-    if let Some(_r) = &when.role {
+    if let Some(r) = &when.role {
         all.push(Trigger {
-            topic: format!("fleet/{site}/{robot_id}/state"),
-            // TODO(#73): emit typed Predicate tree here (zone/role/proximity/human values currently unguarded)
-            pred: None,
+            topic: format!("robot/{robot_id}/local/role"),
+            pred: Some(Predicate::Comparison {
+                op: Op::Eq,
+                lhs: Operand::Prim(PrimitiveRef::Robot),
+                rhs: Operand::Str(r.clone()),
+            }),
             mode: EvalMode::Edge,
         });
     }
 
     for nested in &when.all {
-        let (nested_all, _nested_any) = expand_when(nested, site, robot_id);
-        all.extend(nested_all);
+        let (nested_all, _) = expand_when(nested, robot_id);
+        all.push(Trigger {
+            topic: nested_all
+                .first()
+                .map(|t| t.topic.clone())
+                .unwrap_or_default(),
+            pred: Some(Predicate::And(
+                nested_all.into_iter().filter_map(|t| t.pred).collect(),
+            )),
+            mode: EvalMode::Level,
+        });
     }
     for nested in &when.any {
-        let (nested_all, _nested_any) = expand_when(nested, site, robot_id);
-        any.extend(nested_all);
+        let (nested_all, _) = expand_when(nested, robot_id);
+        any.push(Trigger {
+            topic: nested_all
+                .first()
+                .map(|t| t.topic.clone())
+                .unwrap_or_default(),
+            pred: Some(Predicate::Or(
+                nested_all.into_iter().filter_map(|t| t.pred).collect(),
+            )),
+            mode: EvalMode::Level,
+        });
     }
 
     (all, any)
@@ -334,9 +371,7 @@ pub fn compile_ruleset(doc: &SemanticRuleset, robot_id: &str) -> Result<Ruleset,
 
     let mut rules = Vec::new();
     for rule in &doc.rules {
-        // NOTE: `robot_owner` is passed as the `site` slot; the typed-predicate
-        // compiler (Task 3, #73) will correct the trigger topic derivation.
-        let (all, any) = expand_when(&rule.when, &doc.robot_owner, robot_id);
+        let (all, any) = expand_when(&rule.when, robot_id);
         let actions: Vec<Action> = rule.actions.iter().map(compile_ruleset_action).collect();
         validate_rule_payloads(&actions, &rule.rule_name)?;
         rules.push(Rule {

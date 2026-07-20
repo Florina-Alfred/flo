@@ -1,4 +1,4 @@
-use flo_rs::rules::{Rules, When};
+use flo_rs::rules::{EvalMode, Op, Operand, Predicate, PrimitiveRef, Rules, When};
 use flo_rs::semantic::{
     compile, compile_ruleset, parse_semantic, parse_semantic_ruleset, validate,
 };
@@ -66,11 +66,15 @@ fn compiles_near_human_to_trigger() {
     // one trigger: topic fleet/cell-7/proximity/7/human; typed predicate pending #73 (currently None)
     let w: &When = &r.when;
     assert_eq!(w.all.len(), 1);
-    assert_eq!(w.all[0].topic, "fleet/cell-7/proximity/7/human");
-    // TODO(#73): once the typed predicate compiler lands, this becomes a typed
-    // `Predicate` instead of `None`. Stopgap keeps the build green under the new
-    // `Option<Predicate>` type.
-    assert_eq!(w.all[0].pred, None);
+    assert_eq!(w.all[0].topic, "robot/7/local/human_present");
+    assert_eq!(
+        w.all[0].pred,
+        Some(Predicate::Comparison {
+            op: Op::Lt,
+            lhs: Operand::Prim(PrimitiveRef::HumanPresence),
+            rhs: Operand::Float(1.2),
+        })
+    );
     // one action: slow_to -> robot/7/local/drive, best_effort
     assert_eq!(r.actions.len(), 1);
     assert_eq!(r.actions[0].topic, "robot/7/local/drive");
@@ -107,13 +111,24 @@ fn nested_when_any_produces_triggers() {
     );
     // The two branches: in_zone=="safety" and near_human<0.3.
     assert_eq!(protective.when.any.len(), 2);
-    assert_eq!(protective.when.any[0].topic, "fleet/cell-7/7/state");
-    assert_eq!(protective.when.any[0].pred, None);
+    assert_eq!(protective.when.any[0].topic, "robot/7/local/zone");
     assert_eq!(
-        protective.when.any[1].topic,
-        "fleet/cell-7/proximity/7/human"
+        protective.when.any[0].pred,
+        Some(Predicate::Or(vec![Predicate::Comparison {
+            op: Op::Eq,
+            lhs: Operand::Prim(PrimitiveRef::Zone),
+            rhs: Operand::Str("safety".into()),
+        }]))
     );
-    assert_eq!(protective.when.any[1].pred, None);
+    assert_eq!(protective.when.any[1].topic, "robot/7/local/human_present");
+    assert_eq!(
+        protective.when.any[1].pred,
+        Some(Predicate::Or(vec![Predicate::Comparison {
+            op: Op::Lt,
+            lhs: Operand::Prim(PrimitiveRef::HumanPresence),
+            rhs: Operand::Float(0.3),
+        }]))
+    );
 }
 
 #[test]
@@ -166,6 +181,35 @@ fn compiles_ruleset_to_envelope() {
     assert_eq!(rs.ruleset_name, "acme-site-a");
     assert_eq!(rs.rules.len(), 1);
     assert_eq!(rs.rules[0].name, "slow_near_human");
+}
+
+#[test]
+fn compiles_in_zone_to_typed_predicate() {
+    let doc = parse_semantic_ruleset(
+        r#"
+ruleset_name = "x"
+robot_owner = "robot/7"
+[[rule]]
+rule_name = "r"
+when.in_zone = "zone_1"
+[[rule.actions]]
+topic = "robot/7/local/drive"
+payload = { speed_mps = 0.3 }
+"#,
+    )
+    .unwrap();
+    let rs = compile_ruleset(&doc, "7").unwrap();
+    let t = &rs.rules[0].when.all[0];
+    assert_eq!(
+        t.pred,
+        Some(Predicate::Comparison {
+            op: Op::Eq,
+            lhs: Operand::Prim(PrimitiveRef::Zone),
+            rhs: Operand::Str("zone_1".into()),
+        })
+    );
+    // zone entry is an edge event
+    assert_eq!(t.mode, EvalMode::Edge);
 }
 
 #[test]
