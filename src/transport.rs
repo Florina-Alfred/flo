@@ -30,14 +30,9 @@ pub struct Transport {
 }
 
 impl Transport {
-    /// Open a Zenoh session using the default config (hybrid topology: peer mesh
-    /// locally, routers at cluster/edge — configured via zenoh's config/env).
-    pub async fn open() -> zenoh::Result<Self> {
-        Self::open_with(zenoh::Config::default()).await
-    }
-
     /// Open a Zenoh session with an explicit config. Used by the local demo to pin
-    /// loopback peer discovery (zero-config `cargo run`, no router needed).
+    /// loopback peer discovery (zero-config `cargo run`, no router needed), and by
+    /// production with an auth-derived config.
     pub async fn open_with(config: zenoh::Config) -> zenoh::Result<Self> {
         let session = zenoh::open(config).await?;
         Ok(Self {

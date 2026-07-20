@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+mod auth;
 mod cli;
 mod codec;
 mod common;
