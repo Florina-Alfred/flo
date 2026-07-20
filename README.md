@@ -116,6 +116,33 @@ actions = [
 
 Rules can be hot-reloaded at runtime via the Zenoh topic `robot/<id>/local/rules`.
 
+## Health & observability
+
+Every `flo` client exposes an HTTP server on `0.0.0.0:8080` with liveness,
+readiness, and Prometheus metrics endpoints. This is what Kubernetes probes
+and your monitoring stack scrape.
+
+| Endpoint | Method | Meaning |
+| --- | --- | --- |
+| `/healthz` | GET | **Liveness** — always `200 OK` while the process is up. |
+| `/readyz`  | GET | **Readiness** — `200` once `flo` has started and declared its subsystems (zenoh session + liveliness); `503` before that. |
+| `/metrics` | GET | **Prometheus** text exposition (`text/plain; version=0.0.4`) of `flo_uptime_seconds`, `flo_process_ready`, and `flo_rule_eval_total`. |
+
+```bash
+# Liveness probe (k8s)
+curl -f http://localhost:8080/healthz
+
+# Wait until flo is fully up
+curl -f http://localhost:8080/readyz
+
+# Scrape metrics for Prometheus
+curl -f http://localhost:8080/metrics
+```
+
+Structured logging is initialized at startup. Set `FLO_JSON_LOGS=1` to emit
+JSON logs (for log aggregation); otherwise human-readable logs are printed.
+Log verbosity follows `RUST_LOG` (e.g. `RUST_LOG=info`, default `info`).
+
 ## Security & supply chain
 
 | Property | Status |

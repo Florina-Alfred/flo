@@ -26,6 +26,7 @@ webrtc = "0.17.1"
 zenoh = { version = "1.9.0", features = ["unstable"] }
 
 bytes = "1"
+clap = { version = "4.5", features = ["derive"] }
 
 [dependencies.gstreamer]
 version = "0.25"
