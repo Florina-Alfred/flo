@@ -198,6 +198,7 @@ fn expand_when(when: &SemanticWhen, site: &str, robot_id: &str) -> (Vec<Trigger>
     if let Some(_z) = &when.in_zone {
         all.push(Trigger {
             topic: format!("fleet/{site}/{robot_id}/state"),
+            // TODO(#73): emit typed Predicate tree here (zone/role/proximity/human values currently unguarded)
             pred: None,
             mode: EvalMode::Edge,
         });
@@ -205,6 +206,7 @@ fn expand_when(when: &SemanticWhen, site: &str, robot_id: &str) -> (Vec<Trigger>
     if let Some(_z) = &when.not_in_zone {
         all.push(Trigger {
             topic: format!("fleet/{site}/{robot_id}/state"),
+            // TODO(#73): emit typed Predicate tree here (zone/role/proximity/human values currently unguarded)
             pred: None,
             mode: EvalMode::Edge,
         });
@@ -212,6 +214,7 @@ fn expand_when(when: &SemanticWhen, site: &str, robot_id: &str) -> (Vec<Trigger>
     if let Some(_d) = when.near_human {
         all.push(Trigger {
             topic: format!("fleet/{site}/proximity/{robot_id}/human"),
+            // TODO(#73): emit typed Predicate tree here (zone/role/proximity/human values currently unguarded)
             pred: None,
             mode: EvalMode::Edge,
         });
@@ -219,6 +222,7 @@ fn expand_when(when: &SemanticWhen, site: &str, robot_id: &str) -> (Vec<Trigger>
     if let Some(_d) = when.not_near_human {
         all.push(Trigger {
             topic: format!("fleet/{site}/proximity/{robot_id}/human"),
+            // TODO(#73): emit typed Predicate tree here (zone/role/proximity/human values currently unguarded)
             pred: None,
             mode: EvalMode::Edge,
         });
@@ -226,6 +230,7 @@ fn expand_when(when: &SemanticWhen, site: &str, robot_id: &str) -> (Vec<Trigger>
     if let Some(_n) = &when.near {
         all.push(Trigger {
             topic: format!("fleet/{site}/{robot_id}/nearest_peer"),
+            // TODO(#73): emit typed Predicate tree here (zone/role/proximity/human values currently unguarded)
             pred: None,
             mode: EvalMode::Edge,
         });
@@ -233,6 +238,7 @@ fn expand_when(when: &SemanticWhen, site: &str, robot_id: &str) -> (Vec<Trigger>
     if let Some(_r) = &when.role {
         all.push(Trigger {
             topic: format!("fleet/{site}/{robot_id}/state"),
+            // TODO(#73): emit typed Predicate tree here (zone/role/proximity/human values currently unguarded)
             pred: None,
             mode: EvalMode::Edge,
         });

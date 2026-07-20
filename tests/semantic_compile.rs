@@ -61,7 +61,7 @@ fn compiles_near_human_to_trigger() {
     let rules: Rules = compile(&doc, "7").unwrap();
     let r = &rules.rules[0];
     assert_eq!(r.name, "hrc-slow-near-human");
-    // one trigger: topic fleet/cell-7/proximity/7/human, pred separation_distance < 1.2
+    // one trigger: topic fleet/cell-7/proximity/7/human; typed predicate pending #73 (currently None)
     let w: &When = &r.when;
     assert_eq!(w.all.len(), 1);
     assert_eq!(w.all[0].topic, "fleet/cell-7/proximity/7/human");
