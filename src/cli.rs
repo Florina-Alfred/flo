@@ -23,6 +23,29 @@ pub struct Args {
     #[arg(long, value_name = "PATH")]
     pub config: Option<String>,
 
+    /// Authentication mode: `mtls` (default), `ed25519`, or `none` (dev/air-gapped
+    /// only; production blocks it unless --auth-allow-insecure is set).
+    #[arg(long, value_name = "MODE", default_value = "mtls")]
+    pub auth_mode: String,
+
+    /// Allow `auth: none` in production (dev/air-gapped only; disables
+    /// impersonation protection). Off by default.
+    #[arg(long)]
+    pub auth_allow_insecure: bool,
+
+    /// Path to this node's TLS certificate (PEM) for mTLS.
+    #[arg(long, value_name = "PATH")]
+    pub auth_cert: Option<String>,
+
+    /// Path to this node's TLS private key (PEM) for mTLS.
+    #[arg(long, value_name = "PATH")]
+    pub auth_key: Option<String>,
+
+    /// Path to the trust anchor: CA cert (mTLS) or authorized-key allowlist
+    /// (ed25519).
+    #[arg(long, value_name = "PATH")]
+    pub auth_trust: Option<String>,
+
     /// Publish synthetic sensor samples (demo input).
     #[arg(long)]
     pub simulate: bool,

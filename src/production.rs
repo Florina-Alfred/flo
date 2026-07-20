@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use tracing::{error, info};
 
+use crate::auth::{AuthConfig, AuthMode};
 use crate::cli::Args;
 use crate::common::{spawn_video_peer, start_common_subsystems, wait_for_subsystems};
 use crate::config::RuleStore;
@@ -20,6 +21,35 @@ pub async fn run_production(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!(robot_id, "starting flo client (production mode)");
 
+    // Build + validate the auth config before opening any session. Production
+    // hard-blocks `auth: none` unless explicitly overridden; this fails fast.
+    let auth_mode = AuthMode::parse(&args.auth_mode)
+        .map_err(|e| format!("invalid --auth-mode '{0}': {e}", args.auth_mode))?;
+    let auth = AuthConfig {
+        mode: auth_mode,
+        allow_insecure: args.auth_allow_insecure,
+        cert: args.auth_cert.clone().map(std::path::PathBuf::from),
+        key: args.auth_key.clone().map(std::path::PathBuf::from),
+        trust: args.auth_trust.clone().map(std::path::PathBuf::from),
+    };
+    if auth.mode.is_authenticated() {
+        auth.validate_production()
+            .map_err(|e| format!("auth config invalid: {e}"))?;
+        info!(mode = ?auth.mode, "auth validated (authenticated client)");
+    } else {
+        match auth.validate_production() {
+            Ok(_) => tracing::warn!(
+                "auth: none permitted via --auth-allow-insecure; NO impersonation protection"
+            ),
+            Err(_) => {
+                return Err(
+                    "auth: none is blocked in production; set --auth-allow-insecure for dev/air-gapped only"
+                        .into(),
+                )
+            }
+        }
+    }
+
     let bootstrap = match &args.config {
         Some(path) => match std::fs::read_to_string(path) {
             Ok(text) => text,
@@ -34,7 +64,11 @@ pub async fn run_production(
     // Try semantic (extended-TOML) first; fall back to raw TOML; else safe-state.
     let store = compile_or_fallback(&bootstrap, &robot_id);
 
-    let mut transport = Transport::open().await?;
+    let mut transport = Transport::open_with(
+        auth.zenoh_config()
+            .map_err(|e| format!("auth config invalid: {e}"))?,
+    )
+    .await?;
     transport.declare_liveliness(&robot_id).await?;
     let transport = Arc::new(transport);
     info!(robot_id, "zenoh session open, liveliness declared");
