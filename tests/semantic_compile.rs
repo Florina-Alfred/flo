@@ -109,25 +109,27 @@ fn nested_when_any_produces_triggers() {
         !protective.when.any.is_empty() || !protective.when.all.is_empty(),
         "nested when.any produced zero triggers (silent safety no-op)"
     );
-    // The two branches: in_zone=="safety" and near_human<0.3.
+    // The two branches: in_zone=="safety" and near_human<0.3. After flattening
+    // (#73 fix A) each nested `SemanticWhen` contributes its own trigger with its
+    // own topic + predicate — NOT wrapped in `Predicate::Or`. The count stays 2.
     assert_eq!(protective.when.any.len(), 2);
     assert_eq!(protective.when.any[0].topic, "robot/7/local/zone");
     assert_eq!(
         protective.when.any[0].pred,
-        Some(Predicate::Or(vec![Predicate::Comparison {
+        Some(Predicate::Comparison {
             op: Op::Eq,
             lhs: Operand::Prim(PrimitiveRef::Zone),
             rhs: Operand::Str("safety".into()),
-        }]))
+        })
     );
     assert_eq!(protective.when.any[1].topic, "robot/7/local/human_present");
     assert_eq!(
         protective.when.any[1].pred,
-        Some(Predicate::Or(vec![Predicate::Comparison {
+        Some(Predicate::Comparison {
             op: Op::Lt,
             lhs: Operand::Prim(PrimitiveRef::HumanPresence),
             rhs: Operand::Float(0.3),
-        }]))
+        })
     );
 }
 

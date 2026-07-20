@@ -232,3 +232,116 @@ async fn fire_action(transport: &Transport, action: &Action) {
         debug!(action = %action.topic, qos = ?action.qos, "fired action");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn zone_eq(z: &str) -> Predicate {
+        Predicate::Comparison {
+            op: Op::Eq,
+            lhs: Operand::Prim(PrimitiveRef::Zone),
+            rhs: Operand::Str(z.to_string()),
+        }
+    }
+
+    fn sep_lt(d: f64) -> Predicate {
+        Predicate::Comparison {
+            op: Op::Lt,
+            lhs: Operand::Prim(PrimitiveRef::HumanPresence),
+            rhs: Operand::Float(d),
+        }
+    }
+
+    #[test]
+    fn none_predicate_always_true() {
+        assert!(eval_predicate(&None, &json!({})));
+        assert!(eval_predicate(&None, &json!({"anything": 1})));
+    }
+
+    #[test]
+    fn comparison_eq_zone_resolves_payload() {
+        let p = zone_eq("zone_1");
+        assert!(eval_tree(&p, &json!({"zone_id": "zone_1"})));
+        assert!(!eval_tree(&p, &json!({"zone_id": "zone_2"})));
+    }
+
+    #[test]
+    fn comparison_lt_separation_distance() {
+        let p = sep_lt(1.2);
+        assert!(eval_tree(&p, &json!({"separation_distance": 1.0})));
+        assert!(!eval_tree(&p, &json!({"separation_distance": 1.2})));
+        assert!(!eval_tree(&p, &json!({"separation_distance": 2.0})));
+    }
+
+    #[test]
+    fn proximity_uses_separation_distance_field() {
+        let p = Predicate::Comparison {
+            op: Op::Lt,
+            lhs: Operand::Prim(PrimitiveRef::Proximity("human".to_string())),
+            rhs: Operand::Float(1.2),
+        };
+        assert!(eval_tree(&p, &json!({"separation_distance": 0.5})));
+        assert!(!eval_tree(&p, &json!({"separation_distance": 1.5})));
+    }
+
+    #[test]
+    fn and_all_true_or_any_true_not_negates() {
+        let and = Predicate::And(vec![zone_eq("zone_1"), sep_lt(1.2)]);
+        assert!(eval_tree(
+            &and,
+            &json!({"zone_id": "zone_1", "separation_distance": 1.0})
+        ));
+        assert!(!eval_tree(
+            &and,
+            &json!({"zone_id": "zone_1", "separation_distance": 2.0})
+        ));
+
+        let or = Predicate::Or(vec![zone_eq("zone_1"), sep_lt(1.2)]);
+        assert!(eval_tree(
+            &or,
+            &json!({"zone_id": "zone_2", "separation_distance": 0.5})
+        ));
+        assert!(!eval_tree(
+            &or,
+            &json!({"zone_id": "zone_2", "separation_distance": 2.0})
+        ));
+
+        let not = Predicate::Not(Box::new(zone_eq("zone_1")));
+        assert!(!eval_tree(&not, &json!({"zone_id": "zone_1"})));
+        assert!(eval_tree(&not, &json!({"zone_id": "zone_2"})));
+    }
+
+    #[test]
+    fn absent_field_fails_closed() {
+        // `zone_id` absent => Prim(Zone) resolves to None => false.
+        assert!(!eval_tree(&zone_eq("zone_1"), &json!({"other": 1})));
+        assert!(!eval_tree(&sep_lt(1.2), &json!({})));
+        // And with one absent field => whole And false.
+        let and = Predicate::And(vec![zone_eq("zone_1"), sep_lt(1.2)]);
+        assert!(!eval_tree(&and, &json!({"zone_id": "zone_1"})));
+    }
+
+    #[test]
+    fn float_equality_uses_epsilon() {
+        let p = Predicate::Comparison {
+            op: Op::Eq,
+            lhs: Operand::Prim(PrimitiveRef::HumanPresence),
+            rhs: Operand::Float(1.2),
+        };
+        // 1.2 vs 1.2000000005 differ by 5e-10 < EPSILON (1e-9) => equal.
+        assert!(eval_tree(&p, &json!({"separation_distance": 1.2000000005})));
+        assert!(!eval_tree(&p, &json!({"separation_distance": 1.3})));
+    }
+
+    #[test]
+    fn same_zone_as_unsupported_fails_closed() {
+        let p = Predicate::Comparison {
+            op: Op::SameZoneAs,
+            lhs: Operand::Prim(PrimitiveRef::Zone),
+            rhs: Operand::Str("zone_1".to_string()),
+        };
+        assert!(!eval_tree(&p, &json!({"zone_id": "zone_1"})));
+    }
+}

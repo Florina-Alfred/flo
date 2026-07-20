@@ -263,31 +263,19 @@ fn expand_when(when: &SemanticWhen, robot_id: &str) -> (Vec<Trigger>, Vec<Trigge
         });
     }
 
+    // Flatten nested `when.all`/`when.any` into the parent trigger lists rather
+    // than wrapping them into a single multi-topic trigger. Each nested
+    // `SemanticWhen`'s own triggers keep their own `topic` + `pred`, so the
+    // engine evaluates every field against its own payload (fail-closed).
+    // Merging into one trigger would evaluate a cross-topic predicate against a
+    // single payload, silently passing absent-field exclusions (fail-open).
     for nested in &when.all {
         let (nested_all, _) = expand_when(nested, robot_id);
-        all.push(Trigger {
-            topic: nested_all
-                .first()
-                .map(|t| t.topic.clone())
-                .unwrap_or_default(),
-            pred: Some(Predicate::And(
-                nested_all.into_iter().filter_map(|t| t.pred).collect(),
-            )),
-            mode: EvalMode::Level,
-        });
+        all.extend(nested_all);
     }
     for nested in &when.any {
         let (nested_all, _) = expand_when(nested, robot_id);
-        any.push(Trigger {
-            topic: nested_all
-                .first()
-                .map(|t| t.topic.clone())
-                .unwrap_or_default(),
-            pred: Some(Predicate::Or(
-                nested_all.into_iter().filter_map(|t| t.pred).collect(),
-            )),
-            mode: EvalMode::Level,
-        });
+        any.extend(nested_all);
     }
 
     (all, any)
