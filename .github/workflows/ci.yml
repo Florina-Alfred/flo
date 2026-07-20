@@ -25,8 +25,49 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  # Detect whether the change affects Rust (code/Cargo.toml/workflows) or is
+  # docs-only. Docs-only PRs skip the Rust gate entirely (the required checks
+  # report "skipped", which satisfies branch protection) so doc changes don't
+  # burn CI minutes or block on a full build.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.conclude.outputs.rust }}
+      docs: ${{ steps.conclude.outputs.docs }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - id: filter
+        uses: dorny/paths-filter@de90cc6fb38fc096da4c647c81dfe7308752e5e8 # v3.0.2
+        with:
+          predicate-quantifier: "every"
+          filters: |
+            rust:
+              - "**/*.rs"
+              - "Cargo.toml"
+              - "Cargo.lock"
+              - ".github/workflows/**"
+            docs:
+              - "**/*.md"
+              - "docs/**"
+      # Pushes to main (already-reviewed merges) always run the full gate.
+      # Otherwise defer to the path filter.
+      - id: conclude
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            echo "docs=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "rust=${{ steps.filter.outputs.rust }}" >> "$GITHUB_OUTPUT"
+            echo "docs=${{ steps.filter.outputs.docs }}" >> "$GITHUB_OUTPUT"
+          fi
+        shell: bash
+
   fmt:
     name: fmt
+    needs: [changes]
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -40,6 +81,8 @@ jobs:
 
   clippy:
     name: clippy
+    needs: [changes]
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -54,6 +97,8 @@ jobs:
 
   test:
     name: test (${{ matrix.rust }})
+    needs: [changes]
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -76,6 +121,8 @@ jobs:
   # GStreamer dev packages and verifies the media build, example, and clippy.
   media:
     name: media
+    needs: [changes]
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
