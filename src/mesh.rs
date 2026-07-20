@@ -84,9 +84,16 @@ impl MeshSignalHandler {
             }
         };
         let mut g = self.inner.peers.lock().unwrap();
-        let peer = g.entry(from.to_string()).or_insert(peer).clone();
+        // `was_new` is determined before insertion so re-offers for an existing
+        // peer don't restart capture (which would spawn a duplicate pipeline).
         #[cfg(feature = "media")]
-        if let Some(source) = self.inner.source.clone() {
+        let was_new = !g.contains_key(&from.to_string());
+        let peer = g.entry(from.to_string()).or_insert(peer).clone();
+        // Start capture only once per peer (on first offer), not on every
+        // re-offer — `peers` is keyed by remote id and reused, so a re-offer
+        // would otherwise spawn a second GStreamer pipeline for the same peer.
+        #[cfg(feature = "media")]
+        if was_new && let Some(source) = self.inner.source.clone() {
             let p = peer.clone();
             let from = from.to_string();
             tokio::spawn(async move {
