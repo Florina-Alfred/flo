@@ -215,6 +215,13 @@ payload = { speed_mps = 0.3 }
 }
 
 #[test]
+fn action_targets_prd5_local_drive() {
+    let doc = parse_semantic_ruleset(RULESET_DOC).unwrap();
+    let rs = compile_ruleset(&doc, "7").unwrap();
+    assert_eq!(rs.rules[0].actions[0].topic, "robot/7/local/drive");
+}
+
+#[test]
 fn rejects_nonprimitive_payload() {
     let bad = r#"
 ruleset_name = "x"

@@ -11,6 +11,12 @@ use crate::rules::Qos;
 pub const LIVELINESS_KEY: &str = "robot/{id}/client/liveliness";
 pub const RULES_KEY: &str = "robot/{id}/local/rules";
 
+/// Fleet-scoped ruleset publish key (PRD §5). Server subscribes here to
+/// ingest owner pushes; `{site}` = site id, `{name}` = ruleset_name.
+/// Used by the #75/#76 server intake; referenced by its unit test until then.
+#[allow(dead_code)]
+pub const RULESET_PUB_KEY: &str = "fleet/{site}/ruleset/{name}";
+
 /// WebRTC signaling key-expression templates (class-3 video), locked in the
 /// webrtc-signaling map. Signaling rides the same zenoh mesh as everything else.
 /// `<self>` = this robot's id, `<peer>` = the other robot's id.
@@ -109,5 +115,18 @@ impl Transport {
             .callback(on_sample)
             .background()
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ruleset_pub_key_has_site_and_name() {
+        let k = RULESET_PUB_KEY
+            .replace("{site}", "cell-7")
+            .replace("{name}", "acme");
+        assert_eq!(k, "fleet/cell-7/ruleset/acme");
     }
 }
