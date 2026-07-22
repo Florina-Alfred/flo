@@ -17,5 +17,4 @@ pub mod transport;
 
 #[cfg(feature = "media")]
 pub mod media;
-#[cfg(feature = "media")]
 pub mod video;

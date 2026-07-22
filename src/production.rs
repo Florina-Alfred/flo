@@ -5,13 +5,14 @@ use std::sync::Arc;
 
 use tracing::{error, info};
 
-use crate::auth::{AuthConfig, AuthMode};
+use flo_rs::auth::{AuthConfig, AuthMode};
+use flo_rs::config::RuleStore;
+use flo_rs::semantic;
+use flo_rs::simulate;
+use flo_rs::transport::Transport;
+
 use crate::cli::Args;
 use crate::common::{spawn_video_peer, start_common_subsystems, wait_for_subsystems};
-use crate::config::RuleStore;
-use crate::simulate;
-use crate::transport::Transport;
-use flo_rs::semantic;
 
 /// Run in production mode (k8s DaemonSet): load rules from `--config`, open a
 /// real zenoh session, and start the shared subsystems.

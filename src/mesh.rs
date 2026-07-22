@@ -10,11 +10,11 @@ use std::sync::{Arc, Mutex};
 
 use tracing::{info, warn};
 
-use crate::signaling::{self, IceCandidate, SignalHandler, SignalMessage};
-use crate::transport::Transport;
+use flo_rs::signaling::{self, IceCandidate, SignalHandler, SignalMessage};
+use flo_rs::transport::Transport;
 
 /// Signal handler for the always-on mesh listener. Unlike the one-shot
-/// [`crate::video::start_video`] initiator, this answers inbound offers from any
+/// [`flo_rs::video::start_video`] initiator, this answers inbound offers from any
 /// peer by lazily creating a `VideoPeer` per peer and delegating to its
 /// `SignalHandler` impl. When a capture `source` is configured it also starts
 /// media capture on each answering peer, so the answerer streams video back
@@ -29,11 +29,11 @@ struct MeshSignalHandlerInner {
     transport: Arc<Transport>,
     /// One answering PeerConnection per remote peer. Created on first inbound
     /// offer; reused for subsequent signaling with that peer.
-    peers: Mutex<HashMap<String, Arc<crate::video::VideoPeer>>>,
+    peers: Mutex<HashMap<String, Arc<flo_rs::video::VideoPeer>>>,
     /// Capture source for answering peers; `None` means "receive-only / no
     /// outbound media". Only meaningful with the `media` feature.
     #[cfg(feature = "media")]
-    source: Option<crate::media::SourceSpec>,
+    source: Option<flo_rs::media::SourceSpec>,
 }
 
 impl MeshSignalHandler {
@@ -41,7 +41,7 @@ impl MeshSignalHandler {
     pub fn new(
         robot_id: &str,
         transport: Arc<Transport>,
-        source: Option<crate::media::SourceSpec>,
+        source: Option<flo_rs::media::SourceSpec>,
     ) -> Self {
         Self {
             inner: Arc::new(MeshSignalHandlerInner {
@@ -66,11 +66,11 @@ impl MeshSignalHandler {
 
     /// Get the existing answering peer for `from`, or create one. The creation
     /// await happens outside the lock to avoid blocking other signaling.
-    async fn peer_for(&self, from: &str) -> Option<Arc<crate::video::VideoPeer>> {
+    async fn peer_for(&self, from: &str) -> Option<Arc<flo_rs::video::VideoPeer>> {
         if let Some(p) = self.inner.peers.lock().unwrap().get(from) {
             return Some(p.clone());
         }
-        let peer = match crate::video::VideoPeer::answer(
+        let peer = match flo_rs::video::VideoPeer::answer(
             &self.inner.robot_id,
             from,
             self.inner.transport.clone(),
@@ -97,7 +97,7 @@ impl MeshSignalHandler {
             let p = peer.clone();
             let from = from.to_string();
             tokio::spawn(async move {
-                if let Err(e) = crate::video::start_capture(p, source, 1280, 720, 30).await {
+                if let Err(e) = flo_rs::video::start_capture(p, source, 1280, 720, 30).await {
                     warn!(error = %e, peer = from, "answerer capture failed to start");
                 }
             });
@@ -146,7 +146,7 @@ impl SignalHandler for MeshSignalHandler {
 pub async fn run_signaling(
     transport: Arc<Transport>,
     robot_id: &str,
-    source: Option<crate::media::SourceSpec>,
+    source: Option<flo_rs::media::SourceSpec>,
 ) -> zenoh::Result<()> {
     signaling::publish_presence(
         &transport,
@@ -207,7 +207,7 @@ mod tests {
         let handler = MeshSignalHandler::new(answerer, transport.clone(), None);
         #[cfg(not(feature = "media"))]
         let handler = MeshSignalHandler::new(answerer, transport.clone());
-        crate::signaling::run_signal_receiver(&transport, answerer, handler)
+        flo_rs::signaling::run_signal_receiver(&transport, answerer, handler)
             .await
             .expect("signal receiver");
 
@@ -228,7 +228,7 @@ mod tests {
         // The offerer side: a real PeerConnection producing a valid SDP offer.
         // `VideoPeer::offer` publishes the offer over the same transport, which
         // the answerer's mesh listener receives.
-        let _offerer = crate::video::VideoPeer::offer(offerer, answerer, transport.clone())
+        let _offerer = flo_rs::video::VideoPeer::offer(offerer, answerer, transport.clone())
             .await
             .expect("offerer PeerConnection");
 

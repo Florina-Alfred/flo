@@ -6,13 +6,14 @@ use std::sync::Arc;
 
 use tracing::{error, info};
 
+use flo_rs::config::{RuleStore, run_hot_reload};
+use flo_rs::engine;
+use flo_rs::transport::Transport;
+
 use crate::cli::Args;
-use crate::config::{RuleStore, run_hot_reload};
-use crate::engine;
 use crate::health;
 use crate::health::Health;
 use crate::mesh::run_signaling;
-use crate::transport::Transport;
 
 /// Start health server, hot-reload, rule engine, and WebRTC signaling. Shared by
 /// both demo and production modes (the only difference is input + rules source).
@@ -127,18 +128,18 @@ pub fn spawn_video_peer(args: &Args, transport: Arc<Transport>, robot_id: String
     tokio::spawn(async move {
         #[cfg(feature = "media")]
         {
-            use crate::media::SourceSpec;
+            use flo_rs::media::SourceSpec;
             let source = match device {
                 Some(dev) => dev.to_source_spec(),
                 None => SourceSpec::Videotest,
             };
-            if let Err(e) = crate::video::start_video_with_source(&rid, &pid, tr, source).await {
+            if let Err(e) = flo_rs::video::start_video_with_source(&rid, &pid, tr, source).await {
                 tracing::error!(error = %e, "video failed");
             }
         }
         #[cfg(not(feature = "media"))]
         {
-            if let Err(e) = crate::video::start_video(&rid, &pid, tr).await {
+            if let Err(e) = flo_rs::video::start_video(&rid, &pid, tr).await {
                 tracing::error!(error = %e, "video failed");
             }
         }

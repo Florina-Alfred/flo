@@ -120,9 +120,6 @@ impl Rules {
     }
 
     /// Serialize back to TOML — used to feed `RuleStore::bootstrap` after compile.
-    /// `#[allow(dead_code)]`: duplicated in the binary crate where `pub` still
-    /// triggers dead-code because nothing in the binary calls this copy.
-    #[allow(dead_code)]
     pub fn to_toml(&self) -> String {
         toml::to_string(self).expect("Rules is serializable")
     }
@@ -139,14 +136,10 @@ pub struct Ruleset {
 }
 
 impl Ruleset {
-    /// `#[allow(dead_code)]`: duplicated in the binary crate where `pub` still
-    /// triggers dead-code because nothing in the binary calls this copy.
-    #[allow(dead_code)]
     pub fn from_toml(text: &str) -> Result<Self, toml::de::Error> {
         toml::from_str(text)
     }
 
-    #[allow(dead_code)]
     pub fn to_toml(&self) -> String {
         toml::to_string(self).expect("Ruleset is serializable")
     }

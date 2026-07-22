@@ -6,27 +6,14 @@
 
 #![forbid(unsafe_code)]
 
-mod auth;
 mod cli;
-mod codec;
 mod common;
-mod config;
 mod demo;
 mod device;
-mod engine;
 mod health;
 mod mesh;
 mod production;
-mod registry;
-mod rules;
 mod server;
-mod signaling;
-mod simulate;
-mod transport;
-mod video;
-
-#[cfg(feature = "media")]
-mod media;
 
 use cli::Command;
 use common::run_rule_command;
@@ -68,8 +55,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 /// Encode-only self-test (media feature): verify GStreamer produces H.264.
 #[cfg(feature = "media")]
-fn run_video_self_test(_codec: &codec::Codec) -> anyhow::Result<()> {
-    use crate::media::{MediaPipeline, SourceSpec};
+fn run_video_self_test(_codec: &flo_rs::codec::Codec) -> anyhow::Result<()> {
+    use flo_rs::media::{MediaPipeline, SourceSpec};
     let pipeline = MediaPipeline::build(&SourceSpec::Videotest, 1280, 720, 30)?;
     let found = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let seen = found.clone();
