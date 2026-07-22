@@ -96,7 +96,6 @@ fn prim_field(p: &PrimitiveRef) -> &'static str {
     }
 }
 
-#[allow(dead_code)]
 fn cmp(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
     match (a, b) {
         (Value::Number(x), Value::Number(y)) => {
