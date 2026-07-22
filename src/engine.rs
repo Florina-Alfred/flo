@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
@@ -12,36 +12,78 @@ use crate::transport::Transport;
 /// Epsilon for float equality so `==`/`!=` do not fail on IEEE rounding dust.
 const EPSILON: f64 = 1e-9;
 
+/// Tracks which robots are in which zones, fed by `zone/*/entered` and
+/// `zone/*/cleared` subscriptions. Threaded through the eval tree so
+/// `Op::SameZoneAs` can check cross-robot zone overlap.
+#[derive(Clone)]
+struct ZoneTracker {
+    robot_zones: HashMap<String, HashSet<String>>,
+}
+
+impl ZoneTracker {
+    fn new() -> Self {
+        Self {
+            robot_zones: HashMap::new(),
+        }
+    }
+
+    fn enter_zone(&mut self, robot_id: &str, zone_id: &str) {
+        self.robot_zones
+            .entry(robot_id.to_string())
+            .or_default()
+            .insert(zone_id.to_string());
+    }
+
+    fn clear_zone(&mut self, robot_id: &str, zone_id: &str) {
+        if let Some(zones) = self.robot_zones.get_mut(robot_id) {
+            zones.remove(zone_id);
+            if zones.is_empty() {
+                self.robot_zones.remove(robot_id);
+            }
+        }
+    }
+
+    fn share_zone(&self, robot_a: &str, robot_b: &str) -> bool {
+        let Some(a_zones) = self.robot_zones.get(robot_a) else {
+            return false;
+        };
+        let Some(b_zones) = self.robot_zones.get(robot_b) else {
+            return false;
+        };
+        a_zones.iter().any(|z| b_zones.contains(z))
+    }
+}
+
 /// Evaluate a typed predicate against a JSON payload (PRD §C).
 /// `None` => no predicate, pure key-expr match, always true (legacy behaviour).
-fn eval_predicate(pred: &Option<Predicate>, payload: &Value) -> bool {
+fn eval_predicate(pred: &Option<Predicate>, payload: &Value, zones: &ZoneTracker) -> bool {
     match pred {
         None => true,
-        Some(p) => eval_tree(p, payload),
+        Some(p) => eval_tree(p, payload, zones),
     }
 }
 
 /// Recursively walk the typed `Predicate` tree, failing closed on any
 /// unsupported node. Unsupported operators or absent payload fields yield
 /// `false` rather than fail-open.
-fn eval_tree(pred: &Predicate, payload: &Value) -> bool {
+fn eval_tree(pred: &Predicate, payload: &Value, zones: &ZoneTracker) -> bool {
     match pred {
         Predicate::Comparison { op, lhs, rhs } => {
             let (Some(l), Some(r)) = (resolve_operand(lhs, payload), resolve_operand(rhs, payload))
             else {
                 return false;
             };
-            eval_comparison(*op, &l, &r)
+            eval_comparison(*op, &l, &r, zones)
         }
-        Predicate::And(v) => v.iter().all(|p| eval_tree(p, payload)),
-        Predicate::Or(v) => v.iter().any(|p| eval_tree(p, payload)),
-        Predicate::Not(b) => !eval_tree(b, payload),
+        Predicate::And(v) => v.iter().all(|p| eval_tree(p, payload, zones)),
+        Predicate::Or(v) => v.iter().any(|p| eval_tree(p, payload, zones)),
+        Predicate::Not(b) => !eval_tree(b, payload, zones),
     }
 }
 
 /// Compare two resolved JSON values under `op`. Floats use epsilon equality
 /// for `==`/`!=`; ordering uses the shared `cmp` helper (numbers/strings/bools).
-fn eval_comparison(op: Op, l: &Value, r: &Value) -> bool {
+fn eval_comparison(op: Op, l: &Value, r: &Value, zones: &ZoneTracker) -> bool {
     match op {
         Op::Eq => values_equal(l, r),
         Op::Ne => !values_equal(l, r),
@@ -50,8 +92,10 @@ fn eval_comparison(op: Op, l: &Value, r: &Value) -> bool {
         Op::Le => cmp(l, r).is_some_and(|o| o.is_le()),
         Op::Ge => cmp(l, r).is_some_and(|o| o.is_ge()),
         Op::SameZoneAs => {
-            warn!("Op::SameZoneAs not yet supported; failing closed");
-            false
+            let (Some(a), Some(b)) = (l.as_str(), r.as_str()) else {
+                return false;
+            };
+            zones.share_zone(a, b)
         }
     }
 }
@@ -112,8 +156,8 @@ fn cmp(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
 }
 
 /// Evaluate one trigger against a single received (topic, payload) sample.
-fn trigger_matches(trigger: &Trigger, topic: &str, payload: &Value) -> bool {
-    topic == trigger.topic && eval_predicate(&trigger.pred, payload)
+fn trigger_matches(trigger: &Trigger, topic: &str, payload: &Value, zones: &ZoneTracker) -> bool {
+    topic == trigger.topic && eval_predicate(&trigger.pred, payload, zones)
 }
 
 /// Evaluate one trigger with edge/level semantics.
@@ -126,10 +170,11 @@ fn trigger_edge_matches(
     prev: &mut HashMap<(String, usize, usize), bool>,
     rule_idx: usize,
     trigger_idx: usize,
+    zones: &ZoneTracker,
 ) -> bool {
     let cur = latest
         .get(&trigger.topic)
-        .map(|p| trigger_matches(trigger, &trigger.topic, p))
+        .map(|p| trigger_matches(trigger, &trigger.topic, p, zones))
         .unwrap_or(false);
     match trigger.mode {
         EvalMode::Level => cur,
@@ -150,12 +195,13 @@ fn when_satisfied_with_prev(
     latest: &HashMap<String, Value>,
     prev: &mut HashMap<(String, usize, usize), bool>,
     rule_idx: usize,
+    zones: &ZoneTracker,
 ) -> bool {
     let all_ok = when
         .all
         .iter()
         .enumerate()
-        .all(|(i, t)| trigger_edge_matches(t, latest, prev, rule_idx, i));
+        .all(|(i, t)| trigger_edge_matches(t, latest, prev, rule_idx, i, zones));
     let any_ok = if when.any.is_empty() {
         true
     } else {
@@ -163,7 +209,7 @@ fn when_satisfied_with_prev(
         when.any
             .iter()
             .enumerate()
-            .any(|(i, t)| trigger_edge_matches(t, latest, prev, rule_idx, offset + i))
+            .any(|(i, t)| trigger_edge_matches(t, latest, prev, rule_idx, offset + i, zones))
     };
     all_ok && any_ok
 }
@@ -201,6 +247,57 @@ pub async fn run_engine(
     }
     info!(sensor_topics = ?topics, "rule engine subscribed");
 
+    // Zone-tracking: observe zone entered/cleared to support SameZoneAs.
+    let zone_tracker = Arc::new(std::sync::Mutex::new(ZoneTracker::new()));
+    {
+        let zt = zone_tracker.clone();
+        let tr = transport.clone();
+        tokio::spawn(async move {
+            let entered = "zone/*/entered";
+            if let Err(e) = tr
+                .subscribe(entered, move |sample: zenoh::sample::Sample| {
+                    let key = sample.key_expr().to_string();
+                    let parts: Vec<&str> = key.split('/').collect();
+                    if parts.len() >= 3 {
+                        let zone_id = parts[1];
+                        let payload: Value = serde_json::from_slice(&sample.payload().to_bytes())
+                            .unwrap_or(Value::Null);
+                        if let Some(robot_id) = payload.get("robot_id").and_then(|v| v.as_str()) {
+                            zt.lock().unwrap().enter_zone(robot_id, zone_id);
+                        }
+                    }
+                })
+                .await
+            {
+                warn!(error = %e, topic = entered, "zone entered subscribe failed");
+            }
+        });
+    }
+    {
+        let zt = zone_tracker.clone();
+        let tr = transport.clone();
+        tokio::spawn(async move {
+            let cleared = "zone/*/cleared";
+            if let Err(e) = tr
+                .subscribe(cleared, move |sample: zenoh::sample::Sample| {
+                    let key = sample.key_expr().to_string();
+                    let parts: Vec<&str> = key.split('/').collect();
+                    if parts.len() >= 3 {
+                        let zone_id = parts[1];
+                        let payload: Value = serde_json::from_slice(&sample.payload().to_bytes())
+                            .unwrap_or(Value::Null);
+                        if let Some(robot_id) = payload.get("robot_id").and_then(|v| v.as_str()) {
+                            zt.lock().unwrap().clear_zone(robot_id, zone_id);
+                        }
+                    }
+                })
+                .await
+            {
+                warn!(error = %e, topic = cleared, "zone cleared subscribe failed");
+            }
+        });
+    }
+
     // Latest sample per topic, plus a re-evaluation tick so `when` holds compose.
     let latest: HashMap<String, Value> = HashMap::new();
     let latest = Arc::new(tokio::sync::Mutex::new(latest));
@@ -210,6 +307,7 @@ pub async fn run_engine(
     let eval_store = store.clone();
     let eval_transport = transport.clone();
     let eval_counter = eval_counter.clone();
+    let eval_zones = zone_tracker.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(50));
         let mut prev_outcomes: HashMap<(String, usize, usize), bool> = HashMap::new();
@@ -219,6 +317,7 @@ pub async fn run_engine(
             eval_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let snap = eval_latest.lock().await.clone();
             let rules = eval_store.current().await;
+            let zones = eval_zones.lock().unwrap().clone();
 
             if last_rules
                 .as_ref()
@@ -229,7 +328,8 @@ pub async fn run_engine(
             }
 
             for (rule_idx, rule) in rules.rules.iter().enumerate() {
-                if when_satisfied_with_prev(&rule.when, &snap, &mut prev_outcomes, rule_idx) {
+                if when_satisfied_with_prev(&rule.when, &snap, &mut prev_outcomes, rule_idx, &zones)
+                {
                     info!(rule = %rule.name, "▶ rule fired");
                     for action in &rule.actions {
                         info!(
@@ -293,99 +393,181 @@ mod tests {
         }
     }
 
+    fn no_zones() -> ZoneTracker {
+        ZoneTracker::new()
+    }
+
     #[test]
     fn none_predicate_always_true() {
-        assert!(eval_predicate(&None, &json!({})));
-        assert!(eval_predicate(&None, &json!({"anything": 1})));
+        let zones = no_zones();
+        assert!(eval_predicate(&None, &json!({}), &zones));
+        assert!(eval_predicate(&None, &json!({"anything": 1}), &zones));
     }
 
     #[test]
     fn comparison_eq_zone_resolves_payload() {
+        let zones = no_zones();
         let p = zone_eq("zone_1");
-        assert!(eval_tree(&p, &json!({"zone_id": "zone_1"})));
-        assert!(!eval_tree(&p, &json!({"zone_id": "zone_2"})));
+        assert!(eval_tree(&p, &json!({"zone_id": "zone_1"}), &zones));
+        assert!(!eval_tree(&p, &json!({"zone_id": "zone_2"}), &zones));
     }
 
     #[test]
     fn comparison_lt_separation_distance() {
+        let zones = no_zones();
         let p = sep_lt(1.2);
-        assert!(eval_tree(&p, &json!({"separation_distance": 1.0})));
-        assert!(!eval_tree(&p, &json!({"separation_distance": 1.2})));
-        assert!(!eval_tree(&p, &json!({"separation_distance": 2.0})));
+        assert!(eval_tree(&p, &json!({"separation_distance": 1.0}), &zones));
+        assert!(!eval_tree(&p, &json!({"separation_distance": 1.2}), &zones));
+        assert!(!eval_tree(&p, &json!({"separation_distance": 2.0}), &zones));
     }
 
     #[test]
     fn proximity_uses_separation_distance_field() {
+        let zones = no_zones();
         let p = Predicate::Comparison {
             op: Op::Lt,
             lhs: Operand::Prim(PrimitiveRef::Proximity("human".to_string())),
             rhs: Operand::Float(1.2),
         };
-        assert!(eval_tree(&p, &json!({"separation_distance": 0.5})));
-        assert!(!eval_tree(&p, &json!({"separation_distance": 1.5})));
+        assert!(eval_tree(&p, &json!({"separation_distance": 0.5}), &zones));
+        assert!(!eval_tree(&p, &json!({"separation_distance": 1.5}), &zones));
     }
 
     #[test]
     fn and_all_true_or_any_true_not_negates() {
+        let zones = no_zones();
         let and = Predicate::And(vec![zone_eq("zone_1"), sep_lt(1.2)]);
         assert!(eval_tree(
             &and,
-            &json!({"zone_id": "zone_1", "separation_distance": 1.0})
+            &json!({"zone_id": "zone_1", "separation_distance": 1.0}),
+            &zones
         ));
         assert!(!eval_tree(
             &and,
-            &json!({"zone_id": "zone_1", "separation_distance": 2.0})
+            &json!({"zone_id": "zone_1", "separation_distance": 2.0}),
+            &zones
         ));
 
         let or = Predicate::Or(vec![zone_eq("zone_1"), sep_lt(1.2)]);
         assert!(eval_tree(
             &or,
-            &json!({"zone_id": "zone_2", "separation_distance": 0.5})
+            &json!({"zone_id": "zone_2", "separation_distance": 0.5}),
+            &zones
         ));
         assert!(!eval_tree(
             &or,
-            &json!({"zone_id": "zone_2", "separation_distance": 2.0})
+            &json!({"zone_id": "zone_2", "separation_distance": 2.0}),
+            &zones
         ));
 
         let not = Predicate::Not(Box::new(zone_eq("zone_1")));
-        assert!(!eval_tree(&not, &json!({"zone_id": "zone_1"})));
-        assert!(eval_tree(&not, &json!({"zone_id": "zone_2"})));
+        assert!(!eval_tree(&not, &json!({"zone_id": "zone_1"}), &zones));
+        assert!(eval_tree(&not, &json!({"zone_id": "zone_2"}), &zones));
     }
 
     #[test]
     fn absent_field_fails_closed() {
+        let zones = no_zones();
         // `zone_id` absent => Prim(Zone) resolves to None => false.
-        assert!(!eval_tree(&zone_eq("zone_1"), &json!({"other": 1})));
-        assert!(!eval_tree(&sep_lt(1.2), &json!({})));
+        assert!(!eval_tree(&zone_eq("zone_1"), &json!({"other": 1}), &zones));
+        assert!(!eval_tree(&sep_lt(1.2), &json!({}), &zones));
         // And with one absent field => whole And false.
         let and = Predicate::And(vec![zone_eq("zone_1"), sep_lt(1.2)]);
-        assert!(!eval_tree(&and, &json!({"zone_id": "zone_1"})));
+        assert!(!eval_tree(&and, &json!({"zone_id": "zone_1"}), &zones));
     }
 
     #[test]
     fn float_equality_uses_epsilon() {
+        let zones = no_zones();
         let p = Predicate::Comparison {
             op: Op::Eq,
             lhs: Operand::Prim(PrimitiveRef::HumanPresence),
             rhs: Operand::Float(1.2),
         };
         // 1.2 vs 1.2000000005 differ by 5e-10 < EPSILON (1e-9) => equal.
-        assert!(eval_tree(&p, &json!({"separation_distance": 1.2000000005})));
-        assert!(!eval_tree(&p, &json!({"separation_distance": 1.3})));
+        assert!(eval_tree(
+            &p,
+            &json!({"separation_distance": 1.2000000005}),
+            &zones
+        ));
+        assert!(!eval_tree(&p, &json!({"separation_distance": 1.3}), &zones));
     }
 
     #[test]
-    fn same_zone_as_unsupported_fails_closed() {
+    fn same_zone_check_uses_tracker() {
+        let mut zones = ZoneTracker::new();
+
+        // No zone data yet — fails closed.
         let p = Predicate::Comparison {
             op: Op::SameZoneAs,
-            lhs: Operand::Prim(PrimitiveRef::Zone),
-            rhs: Operand::Str("zone_1".to_string()),
+            lhs: Operand::Str("robot7".to_string()),
+            rhs: Operand::Str("robot8".to_string()),
         };
-        assert!(!eval_tree(&p, &json!({"zone_id": "zone_1"})));
+        assert!(!eval_tree(&p, &json!({}), &zones));
+
+        // robot7 enters zone_a, robot8 enters zone_a — same zone.
+        zones.enter_zone("robot7", "zone_a");
+        zones.enter_zone("robot8", "zone_a");
+        assert!(eval_tree(&p, &json!({}), &zones));
+
+        // robot8 clears zone_a — no longer same.
+        zones.clear_zone("robot8", "zone_a");
+        assert!(!eval_tree(&p, &json!({}), &zones));
+
+        // robot8 enters zone_b, robot7 still in zone_a — different.
+        zones.enter_zone("robot8", "zone_b");
+        assert!(!eval_tree(&p, &json!({}), &zones));
+
+        // Both share zone_c — overlap detected even with different primary zones.
+        zones.enter_zone("robot7", "zone_c");
+        zones.enter_zone("robot8", "zone_c");
+        assert!(eval_tree(&p, &json!({}), &zones));
+    }
+
+    #[test]
+    fn same_zone_non_string_fails_closed() {
+        let zones = no_zones();
+        // Operands that don't resolve to strings (e.g. ints) can't be SameZoneAs.
+        let p = Predicate::Comparison {
+            op: Op::SameZoneAs,
+            lhs: Operand::Int(1),
+            rhs: Operand::Int(2),
+        };
+        assert!(!eval_tree(&p, &json!({}), &zones));
+    }
+
+    #[test]
+    fn zone_tracker_enter_clear_share() {
+        let mut z = ZoneTracker::new();
+
+        // Empty tracker — no sharing.
+        assert!(!z.share_zone("a", "b"));
+
+        // One robot in a zone — no sharing yet.
+        z.enter_zone("a", "z1");
+        assert!(!z.share_zone("a", "b"));
+        assert!(!z.share_zone("b", "a"));
+
+        // Second robot enters the same zone — share detected.
+        z.enter_zone("b", "z1");
+        assert!(z.share_zone("a", "b"));
+        assert!(z.share_zone("b", "a"));
+
+        // Clear zone — no longer shared.
+        z.clear_zone("b", "z1");
+        assert!(!z.share_zone("a", "b"));
+
+        // Clear removes empty entry.
+        z.clear_zone("a", "z1");
+        assert!(!z.share_zone("a", "b"));
+
+        // Unknown robot fails closed.
+        assert!(!z.share_zone("a", "c"));
     }
 
     #[test]
     fn level_trigger_fires_each_tick_while_true() {
+        let zones = no_zones();
         let mut prev = HashMap::new();
         let trigger = Trigger {
             topic: "robot/7/proximity".into(),
@@ -406,13 +588,14 @@ mod tests {
             any: vec![],
         };
 
-        assert!(when_satisfied_with_prev(&w, &latest, &mut prev, 0));
-        assert!(when_satisfied_with_prev(&w, &latest, &mut prev, 0));
-        assert!(when_satisfied_with_prev(&w, &latest, &mut prev, 0));
+        assert!(when_satisfied_with_prev(&w, &latest, &mut prev, 0, &zones));
+        assert!(when_satisfied_with_prev(&w, &latest, &mut prev, 0, &zones));
+        assert!(when_satisfied_with_prev(&w, &latest, &mut prev, 0, &zones));
     }
 
     #[test]
     fn edge_fires_only_on_transition() {
+        let zones = no_zones();
         let mut prev = HashMap::new();
         let trigger = Trigger {
             topic: "robot/7/zone".into(),
@@ -434,20 +617,20 @@ mod tests {
         // Tick 1: outside — no baseline, no fire
         let mut latest = HashMap::new();
         latest.insert("robot/7/zone".into(), outside.clone());
-        assert!(!when_satisfied_with_prev(&w, &latest, &mut prev, 0));
+        assert!(!when_satisfied_with_prev(&w, &latest, &mut prev, 0, &zones));
 
         // Tick 2: enter — false→true, fire
         latest.insert("robot/7/zone".into(), inside.clone());
-        assert!(when_satisfied_with_prev(&w, &latest, &mut prev, 0));
+        assert!(when_satisfied_with_prev(&w, &latest, &mut prev, 0, &zones));
 
         // Tick 3: hold — true→true, no fire
-        assert!(!when_satisfied_with_prev(&w, &latest, &mut prev, 0));
+        assert!(!when_satisfied_with_prev(&w, &latest, &mut prev, 0, &zones));
 
         // Tick 4: exit — true→false, fire
         latest.insert("robot/7/zone".into(), outside.clone());
-        assert!(when_satisfied_with_prev(&w, &latest, &mut prev, 0));
+        assert!(when_satisfied_with_prev(&w, &latest, &mut prev, 0, &zones));
 
         // Tick 5: still absent — false→false, no fire
-        assert!(!when_satisfied_with_prev(&w, &latest, &mut prev, 0));
+        assert!(!when_satisfied_with_prev(&w, &latest, &mut prev, 0, &zones));
     }
 }
