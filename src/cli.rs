@@ -87,7 +87,7 @@ impl std::fmt::Display for Mode {
 pub enum Command {
     /// Validate / inspect a semantic ruleset (extended TOML) before deploy.
     Rule {
-        /// `check <path>` — validate the ruleset at <path>.
+        /// `check <path>` — validate the ruleset at `path`.
         #[arg(trailing_var_arg = true, num_args = 1..)]
         args: Vec<String>,
     },
