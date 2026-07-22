@@ -6,7 +6,7 @@ use serde_json::Value;
 use tracing::{debug, info, warn};
 
 use crate::config::RuleStore;
-use crate::rules::{Action, Op, Operand, Predicate, PrimitiveRef, Trigger, When};
+use crate::rules::{Action, EvalMode, Op, Operand, Predicate, PrimitiveRef, Trigger, When};
 use crate::transport::Transport;
 
 /// Epsilon for float equality so `==`/`!=` do not fail on IEEE rounding dust.
@@ -116,25 +116,54 @@ fn trigger_matches(trigger: &Trigger, topic: &str, payload: &Value) -> bool {
     topic == trigger.topic && eval_predicate(&trigger.pred, payload)
 }
 
-/// Evaluate a rule's `when` guard over the latest sample for each trigger topic.
-/// We hold the most recent payload per topic; a `when` is satisfied when its
-/// triggers are satisfied by currently-held samples.
-fn when_satisfied(when: &When, latest: &HashMap<String, Value>) -> bool {
-    let all_ok = when.all.iter().all(|t| {
-        latest
-            .get(&t.topic)
-            .map(|p| trigger_matches(t, &t.topic, p))
-            .unwrap_or(false)
-    });
+/// Evaluate one trigger with edge/level semantics.
+/// For Level triggers, returns whether the trigger matches current payload.
+/// For Edge triggers, returns whether the outcome CHANGED from the previous tick
+/// (false→true = entry fire; true→false = exit fire; first tick never fires).
+fn trigger_edge_matches(
+    trigger: &Trigger,
+    latest: &HashMap<String, Value>,
+    prev: &mut HashMap<(String, usize, usize), bool>,
+    rule_idx: usize,
+    trigger_idx: usize,
+) -> bool {
+    let cur = latest
+        .get(&trigger.topic)
+        .map(|p| trigger_matches(trigger, &trigger.topic, p))
+        .unwrap_or(false);
+    match trigger.mode {
+        EvalMode::Level => cur,
+        EvalMode::Edge => {
+            let key = (trigger.topic.clone(), rule_idx, trigger_idx);
+            let prev_val = prev.get(&key).copied();
+            prev.insert(key, cur);
+            prev_val.is_some_and(|p| p != cur)
+        }
+    }
+}
+
+/// Evaluate a `When` guard with per-trigger edge/level transition tracking.
+/// `prev` persists across ticks so Edge triggers can detect transitions.
+/// Level triggers use current payload match (re-evaluate each tick).
+fn when_satisfied_with_prev(
+    when: &When,
+    latest: &HashMap<String, Value>,
+    prev: &mut HashMap<(String, usize, usize), bool>,
+    rule_idx: usize,
+) -> bool {
+    let all_ok = when
+        .all
+        .iter()
+        .enumerate()
+        .all(|(i, t)| trigger_edge_matches(t, latest, prev, rule_idx, i));
     let any_ok = if when.any.is_empty() {
         true
     } else {
-        when.any.iter().any(|t| {
-            latest
-                .get(&t.topic)
-                .map(|p| trigger_matches(t, &t.topic, p))
-                .unwrap_or(false)
-        })
+        let offset = when.all.len();
+        when.any
+            .iter()
+            .enumerate()
+            .any(|(i, t)| trigger_edge_matches(t, latest, prev, rule_idx, offset + i))
     };
     all_ok && any_ok
 }
@@ -183,13 +212,14 @@ pub async fn run_engine(
     let eval_counter = eval_counter.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(50));
+        let mut prev_outcomes: HashMap<(String, usize, usize), bool> = HashMap::new();
         loop {
             tick.tick().await;
             eval_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let snap = eval_latest.lock().await.clone();
             let rules = eval_store.current().await;
-            for rule in &rules.rules {
-                if when_satisfied(&rule.when, &snap) {
+            for (rule_idx, rule) in rules.rules.iter().enumerate() {
+                if when_satisfied_with_prev(&rule.when, &snap, &mut prev_outcomes, rule_idx) {
                     info!(rule = %rule.name, "▶ rule fired");
                     for action in &rule.actions {
                         info!(
@@ -342,5 +372,72 @@ mod tests {
             rhs: Operand::Str("zone_1".to_string()),
         };
         assert!(!eval_tree(&p, &json!({"zone_id": "zone_1"})));
+    }
+
+    #[test]
+    fn level_trigger_fires_each_tick_while_true() {
+        let mut prev = HashMap::new();
+        let trigger = Trigger {
+            topic: "robot/7/proximity".into(),
+            pred: Some(Predicate::Comparison {
+                op: Op::Lt,
+                lhs: Operand::Prim(PrimitiveRef::Proximity("7".into())),
+                rhs: Operand::Float(1.2),
+            }),
+            mode: EvalMode::Level,
+        };
+        let mut latest = HashMap::new();
+        latest.insert(
+            "robot/7/proximity".into(),
+            json!({"separation_distance": 0.5}),
+        );
+        let w = When {
+            all: vec![trigger],
+            any: vec![],
+        };
+
+        assert!(when_satisfied_with_prev(&w, &latest, &mut prev, 0));
+        assert!(when_satisfied_with_prev(&w, &latest, &mut prev, 0));
+        assert!(when_satisfied_with_prev(&w, &latest, &mut prev, 0));
+    }
+
+    #[test]
+    fn edge_fires_only_on_transition() {
+        let mut prev = HashMap::new();
+        let trigger = Trigger {
+            topic: "robot/7/zone".into(),
+            pred: Some(Predicate::Comparison {
+                op: Op::Eq,
+                lhs: Operand::Prim(PrimitiveRef::Zone),
+                rhs: Operand::Str("zone_1".into()),
+            }),
+            mode: EvalMode::Edge,
+        };
+        let w = When {
+            all: vec![trigger],
+            any: vec![],
+        };
+
+        let outside = json!({"zone_id": "zone_2"});
+        let inside = json!({"zone_id": "zone_1"});
+
+        // Tick 1: outside — no baseline, no fire
+        let mut latest = HashMap::new();
+        latest.insert("robot/7/zone".into(), outside.clone());
+        assert!(!when_satisfied_with_prev(&w, &latest, &mut prev, 0));
+
+        // Tick 2: enter — false→true, fire
+        latest.insert("robot/7/zone".into(), inside.clone());
+        assert!(when_satisfied_with_prev(&w, &latest, &mut prev, 0));
+
+        // Tick 3: hold — true→true, no fire
+        assert!(!when_satisfied_with_prev(&w, &latest, &mut prev, 0));
+
+        // Tick 4: exit — true→false, fire
+        latest.insert("robot/7/zone".into(), outside.clone());
+        assert!(when_satisfied_with_prev(&w, &latest, &mut prev, 0));
+
+        // Tick 5: still absent — false→false, no fire
+        assert!(!when_satisfied_with_prev(&w, &latest, &mut prev, 0));
     }
 }
