@@ -3,7 +3,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info};
 
-use crate::rules::Rules;
+use crate::registry::{PublishOutcome, Registry};
+use crate::rules::{Rules, Ruleset};
 use crate::transport::Transport;
 
 /// Shared, atomically-swappable ruleset. Readers hold an `Arc` clone; a hot-reload
@@ -93,6 +94,62 @@ pub async fn run_hot_reload(
                 store.swap(Arc::new(rules)).await;
                 info!(rules = n, "ruleset hot-reloaded");
             }
+            Err(e) => error!(error = %e, "rejected bad ruleset update; keeping previous"),
+        }
+    }
+    Ok(())
+}
+
+/// Server-mode hot-reload: subscribe to the fleet-scoped ruleset publish topic,
+/// validate each incoming [`Ruleset`] against the [`Registry`], and only swap
+/// the store on `Inserted`/`Updated`. Rejects with conflict are logged (last-good
+/// preserved); parse errors are logged (last-good preserved).
+pub async fn run_hot_reload_with_registry(
+    transport: &Transport,
+    robot_id: &str,
+    store: RuleStore,
+    registry: Arc<Registry>,
+) -> zenoh::Result<()> {
+    use crate::transport::RULESET_PUB_KEY;
+
+    let wildcard_key = RULESET_PUB_KEY
+        .replace("{site}", "*")
+        .replace("{name}", "**");
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<zenoh::sample::Sample>();
+    transport
+        .subscribe(&wildcard_key, move |sample: zenoh::sample::Sample| {
+            let _ = tx.send(sample);
+        })
+        .await?;
+    info!(topic = %wildcard_key, "hot-reload subscriber active (registry)"); // cspell:disable-line
+
+    while let Some(sample) = rx.recv().await {
+        let bytes = sample.payload().to_bytes();
+        let text = String::from_utf8_lossy(&bytes);
+        match Ruleset::from_toml(&text) {
+            Ok(rs) => match registry.publish(&rs, robot_id) {
+                Ok(PublishOutcome::Inserted) | Ok(PublishOutcome::Updated { .. }) => {
+                    match Rules::from_toml(&rs.to_toml()) {
+                        Ok(rules) => {
+                            let n = rules.rules.len();
+                            store.swap(Arc::new(rules)).await;
+                            info!(
+                                rules = n,
+                                name = %rs.ruleset_name,
+                                "ruleset hot-reloaded via registry"
+                            );
+                        }
+                        Err(e) => error!(error = %e, "compiled ruleset invalid; keeping previous"),
+                    }
+                }
+                Ok(PublishOutcome::RejectedConflict) => {
+                    error!("ruleset rejected: owner conflict; keeping previous");
+                }
+                Ok(PublishOutcome::Quarantined) => {
+                    error!("ruleset quarantined; keeping previous");
+                }
+                Err(e) => error!(error = %e, "registry error; keeping previous"),
+            },
             Err(e) => error!(error = %e, "rejected bad ruleset update; keeping previous"),
         }
     }

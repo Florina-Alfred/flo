@@ -3,8 +3,18 @@ use std::process::Command;
 /// Production mode with a missing config must still start (fail-safe), not crash.
 #[test]
 fn production_missing_config_starts_safe() {
+    // Provide explicit auth: none (with allow-insecure) so the auth gate passes
+    // and the test reaches the config-file fallback (safe-state) path.
     let mut child = Command::new(env!("CARGO_BIN_EXE_flo"))
-        .args(["--robot-id", "7", "--config", "/nonexistent/flo/rules.toml"])
+        .args([
+            "--robot-id",
+            "7",
+            "--config",
+            "/nonexistent/flo/rules.toml",
+            "--auth-mode",
+            "none",
+            "--auth-allow-insecure",
+        ])
         .stdout(std::process::Stdio::piped())
         .spawn()
         .expect("spawn flo");

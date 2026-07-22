@@ -17,6 +17,7 @@ mod engine;
 mod health;
 mod mesh;
 mod production;
+mod registry;
 mod rules;
 mod server;
 mod signaling;

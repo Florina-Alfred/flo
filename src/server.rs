@@ -5,8 +5,9 @@ use tracing::info;
 
 use crate::auth::{AuthConfig, AuthMode};
 use crate::cli;
-use crate::config::RuleStore;
+use crate::config::{RuleStore, run_hot_reload_with_registry};
 use crate::engine;
+use crate::registry::Registry;
 use crate::transport::Transport;
 
 pub async fn run_server(
@@ -29,7 +30,17 @@ pub async fn run_server(
     let store = RuleStore::bootstrap_demo(&robot_id);
     let counter = Arc::new(AtomicU64::new(0));
 
+    let db_path = std::env::temp_dir()
+        .join("flo-server-registry")
+        .join("audit.db");
+    std::fs::create_dir_all(db_path.parent().unwrap())?;
+    let registry = Arc::new(Registry::new(&db_path)?);
+
     info!("flo-engine server mode started (robot_id={robot_id})");
-    engine::run_engine(transport, store, counter).await?;
+
+    tokio::try_join!(
+        engine::run_engine(transport.clone(), store.clone(), counter),
+        run_hot_reload_with_registry(&transport, &robot_id, store.clone(), registry),
+    )?;
     Ok(())
 }

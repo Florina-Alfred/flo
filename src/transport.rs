@@ -13,8 +13,6 @@ pub const RULES_KEY: &str = "robot/{id}/local/rules";
 
 /// Fleet-scoped ruleset publish key (PRD §5). Server subscribes here to
 /// ingest owner pushes; `{site}` = site id, `{name}` = ruleset_name.
-/// Used by the #75/#76 server intake; referenced by its unit test until then.
-#[allow(dead_code)]
 pub const RULESET_PUB_KEY: &str = "fleet/{site}/ruleset/{name}";
 
 /// WebRTC signaling key-expression templates (class-3 video), locked in the
