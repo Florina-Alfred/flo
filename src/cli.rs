@@ -54,11 +54,32 @@ pub struct Args {
     #[arg(long, value_name = "N", default_value_t = 1000)]
     pub simulate_period_ms: u64,
 
+    /// Run mode: client (default) or server (co-located router + rule engine).
+    #[arg(long, value_name = "MODE", default_value_t = Mode::Client)]
+    pub mode: Mode,
+
     #[command(flatten)]
     pub video: VideoArgs,
 
     #[command(subcommand)]
     pub command: Option<Command>,
+}
+
+/// Server vs client mode.
+#[derive(clap::ValueEnum, Clone, Debug, Default, PartialEq)]
+pub enum Mode {
+    #[default]
+    Client,
+    Server,
+}
+
+impl std::fmt::Display for Mode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Mode::Client => write!(f, "client"),
+            Mode::Server => write!(f, "server"),
+        }
+    }
 }
 
 /// Subcommands. Only `rule` exists today.

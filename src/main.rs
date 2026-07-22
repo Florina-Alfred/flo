@@ -18,6 +18,7 @@ mod health;
 mod mesh;
 mod production;
 mod rules;
+mod server;
 mod signaling;
 mod simulate;
 mod transport;
@@ -54,7 +55,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         return Ok(run_video_self_test(&args.video.codec)?);
     }
 
-    if demo {
+    if args.mode == cli::Mode::Server {
+        server::run_server(args, robot_id).await?;
+    } else if demo {
         demo::run_demo(args, robot_id).await?;
     } else {
         production::run_production(args, robot_id).await?;

@@ -36,15 +36,22 @@ pub struct Transport {
 }
 
 impl Transport {
+    /// Wrap an already-open `zenoh::Session` in a `Transport`. Used by the server
+    /// mode which opens the session as a router via `zenoh::open` with an auth
+    /// config, then wraps the result here.
+    pub fn from_session(session: zenoh::Session) -> Self {
+        Self {
+            session: Arc::new(session),
+            _tokens: Vec::new(),
+        }
+    }
+
     /// Open a Zenoh session with an explicit config. Used by the local demo to pin
     /// loopback peer discovery (zero-config `cargo run`, no router needed), and by
     /// production with an auth-derived config.
     pub async fn open_with(config: zenoh::Config) -> zenoh::Result<Self> {
         let session = zenoh::open(config).await?;
-        Ok(Self {
-            session: Arc::new(session),
-            _tokens: Vec::new(),
-        })
+        Ok(Self::from_session(session))
     }
 
     /// Build the zero-config loopback config for the local demo: peer mode with
