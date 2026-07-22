@@ -56,15 +56,16 @@ jobs:
     permissions:
       pull-requests: write
     steps:
-      # Mint a token from the GitHub App. Replace APP_ID / APP_PRIVATE_KEY with
-      # the app's credentials once the app is created and installed on the repo.
-      # (Alternatively, store a pre-minted token in APP_TOKEN and skip this step.)
+      # Mint a token from the GitHub App. The app-id and private-key secrets must
+      # be configured in the repo; if they are not, the auto-approve is skipped.
       - id: app-token
+        continue-on-error: true
         uses: actions/create-github-app-token@7bfa3a4717ef143a604ee0a99d859b8886a96d00 # v1.9.3
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
       - name: Wait for required checks
+        if: steps.app-token.outputs.token != ''
         run: |
           set -euo pipefail
           PR="${{ github.event.pull_request.number }}"
@@ -82,7 +83,11 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
       - name: Approve
+        if: steps.app-token.outputs.token != ''
         run: |
           gh pr review "${{ github.event.pull_request.number }}" --approve --body "Auto-approved: docs-only change."
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+      - name: Skip — no GitHub App credentials
+        if: steps.app-token.outputs.token == ''
+        run: echo "APP_ID / APP_PRIVATE_KEY not configured; auto-approve skipped"
