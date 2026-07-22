@@ -6,7 +6,7 @@ use serde_json::Value;
 use tracing::{debug, info, warn};
 
 use crate::config::RuleStore;
-use crate::rules::{Action, EvalMode, Op, Operand, Predicate, PrimitiveRef, Trigger, When};
+use crate::rules::{Action, EvalMode, Op, Operand, Predicate, PrimitiveRef, Rules, Trigger, When};
 use crate::transport::Transport;
 
 /// Epsilon for float equality so `==`/`!=` do not fail on IEEE rounding dust.
@@ -213,11 +213,21 @@ pub async fn run_engine(
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(50));
         let mut prev_outcomes: HashMap<(String, usize, usize), bool> = HashMap::new();
+        let mut last_rules: Option<Arc<Rules>> = None;
         loop {
             tick.tick().await;
             eval_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let snap = eval_latest.lock().await.clone();
             let rules = eval_store.current().await;
+
+            if last_rules
+                .as_ref()
+                .is_none_or(|prev| Arc::as_ptr(prev) != Arc::as_ptr(&rules))
+            {
+                prev_outcomes.clear();
+                last_rules = Some(rules.clone());
+            }
+
             for (rule_idx, rule) in rules.rules.iter().enumerate() {
                 if when_satisfied_with_prev(&rule.when, &snap, &mut prev_outcomes, rule_idx) {
                     info!(rule = %rule.name, "▶ rule fired");
