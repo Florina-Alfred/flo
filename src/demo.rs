@@ -5,12 +5,13 @@ use std::sync::Arc;
 
 use tracing::{error, info};
 
-use crate::auth::{AuthConfig, AuthMode};
+use flo_rs::auth::{AuthConfig, AuthMode};
+use flo_rs::config::RuleStore;
+use flo_rs::simulate;
+use flo_rs::transport::Transport;
+
 use crate::cli::Args;
 use crate::common::{spawn_video_peer, start_common_subsystems, wait_for_subsystems};
-use crate::config::RuleStore;
-use crate::simulate;
-use crate::transport::Transport;
 
 /// Run the local demo: simulated sensors + rule engine on a loopback zenoh mesh.
 pub async fn run_demo(

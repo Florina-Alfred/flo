@@ -49,8 +49,8 @@ impl VideoDevice {
 
     /// Build the GStreamer `SourceSpec` for this device.
     #[cfg(feature = "media")]
-    pub fn to_source_spec(&self) -> crate::media::SourceSpec {
-        crate::media::SourceSpec::V4l2(self.path.clone())
+    pub fn to_source_spec(&self) -> flo_rs::media::SourceSpec {
+        flo_rs::media::SourceSpec::V4l2(self.path.clone())
     }
 
     /// Enumerate the V4L2 capture devices currently attached to this node.

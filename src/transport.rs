@@ -11,6 +11,10 @@ use crate::rules::Qos;
 pub const LIVELINESS_KEY: &str = "robot/{id}/client/liveliness";
 pub const RULES_KEY: &str = "robot/{id}/local/rules";
 
+/// Fleet-scoped ruleset publish key (PRD §5). Server subscribes here to
+/// ingest owner pushes; `{site}` = site id, `{name}` = ruleset_name.
+pub const RULESET_PUB_KEY: &str = "fleet/{site}/ruleset/{name}";
+
 /// WebRTC signaling key-expression templates (class-3 video), locked in the
 /// webrtc-signaling map. Signaling rides the same zenoh mesh as everything else.
 /// `<self>` = this robot's id, `<peer>` = the other robot's id.
@@ -30,15 +34,22 @@ pub struct Transport {
 }
 
 impl Transport {
+    /// Wrap an already-open `zenoh::Session` in a `Transport`. Used by the server
+    /// mode which opens the session as a router via `zenoh::open` with an auth
+    /// config, then wraps the result here.
+    pub fn from_session(session: zenoh::Session) -> Self {
+        Self {
+            session: Arc::new(session),
+            _tokens: Vec::new(),
+        }
+    }
+
     /// Open a Zenoh session with an explicit config. Used by the local demo to pin
     /// loopback peer discovery (zero-config `cargo run`, no router needed), and by
     /// production with an auth-derived config.
     pub async fn open_with(config: zenoh::Config) -> zenoh::Result<Self> {
         let session = zenoh::open(config).await?;
-        Ok(Self {
-            session: Arc::new(session),
-            _tokens: Vec::new(),
-        })
+        Ok(Self::from_session(session))
     }
 
     /// Build the zero-config loopback config for the local demo: peer mode with
@@ -109,5 +120,18 @@ impl Transport {
             .callback(on_sample)
             .background()
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ruleset_pub_key_has_site_and_name() {
+        let k = RULESET_PUB_KEY
+            .replace("{site}", "cell-7")
+            .replace("{name}", "acme");
+        assert_eq!(k, "fleet/cell-7/ruleset/acme");
     }
 }

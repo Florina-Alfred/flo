@@ -8,6 +8,7 @@ pub mod auth;
 pub mod codec;
 pub mod config;
 pub mod engine;
+pub mod registry;
 pub mod rules;
 pub mod semantic;
 pub mod signaling;
@@ -16,5 +17,4 @@ pub mod transport;
 
 #[cfg(feature = "media")]
 pub mod media;
-#[cfg(feature = "media")]
 pub mod video;

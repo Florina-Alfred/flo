@@ -48,8 +48,8 @@ pub type OnTrack = Arc<dyn Fn(Arc<webrtc::track::track_remote::TrackRemote>) + S
 
 impl VideoPeer {
     /// Build the `PeerConnection`, add the H.264 track, and wire trickle-ICE so
-    /// candidates are relayed to the peer over zenoh. Shared by [`offer`] and
-    /// [`answer`]; neither creates nor publishes an SDP here.
+    /// candidates are relayed to the peer over zenoh. Shared by [`VideoPeer::offer`] and
+    /// [`VideoPeer::answer`]; neither creates nor publishes an SDP here.
     async fn build(
         robot_id: &str,
         peer_id: &str,

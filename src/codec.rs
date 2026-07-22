@@ -30,7 +30,6 @@ impl std::str::FromStr for Codec {
 }
 
 /// Build the webrtc-rs codec capability for H.264 (clock rate 90 kHz, per RFC 6184).
-#[allow(dead_code)]
 pub fn h264_codec_capability() -> webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
     webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
         mime_type: webrtc::api::media_engine::MIME_TYPE_H264.to_owned(),

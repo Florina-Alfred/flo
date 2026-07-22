@@ -5,8 +5,8 @@
 //! The `rule` subcommand (`flo rule check <path>`) is captured as
 //! `Command::Rule { args }` and handed to the existing `run_rule_command`.
 
-use crate::codec::Codec;
 use clap::{Args as ClapArgs, Parser, Subcommand};
+use flo_rs::codec::Codec;
 
 /// flo - robot orchestration client.
 ///
@@ -54,6 +54,10 @@ pub struct Args {
     #[arg(long, value_name = "N", default_value_t = 1000)]
     pub simulate_period_ms: u64,
 
+    /// Run mode: client (default) or server (co-located router + rule engine).
+    #[arg(long, value_name = "MODE", default_value_t = Mode::Client)]
+    pub mode: Mode,
+
     #[command(flatten)]
     pub video: VideoArgs,
 
@@ -61,12 +65,29 @@ pub struct Args {
     pub command: Option<Command>,
 }
 
+/// Server vs client mode.
+#[derive(clap::ValueEnum, Clone, Debug, Default, PartialEq)]
+pub enum Mode {
+    #[default]
+    Client,
+    Server,
+}
+
+impl std::fmt::Display for Mode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Mode::Client => write!(f, "client"),
+            Mode::Server => write!(f, "server"),
+        }
+    }
+}
+
 /// Subcommands. Only `rule` exists today.
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Validate / inspect a semantic ruleset (extended TOML) before deploy.
     Rule {
-        /// `check <path>` — validate the ruleset at <path>.
+        /// `check <path>` — validate the ruleset at `path`.
         #[arg(trailing_var_arg = true, num_args = 1..)]
         args: Vec<String>,
     },
