@@ -31,13 +31,11 @@ struct MeshSignalHandlerInner {
     /// offer; reused for subsequent signaling with that peer.
     peers: Mutex<HashMap<String, Arc<flo_rs::video::VideoPeer>>>,
     /// Capture source for answering peers; `None` means "receive-only / no
-    /// outbound media". Only meaningful with the `media` feature.
-    #[cfg(feature = "media")]
+    /// outbound media".
     source: Option<flo_rs::media::SourceSpec>,
 }
 
 impl MeshSignalHandler {
-    #[cfg(feature = "media")]
     pub fn new(
         robot_id: &str,
         transport: Arc<Transport>,
@@ -53,22 +51,23 @@ impl MeshSignalHandler {
         }
     }
 
-    #[cfg(not(feature = "media"))]
-    pub fn new(robot_id: &str, transport: Arc<Transport>) -> Self {
-        Self {
-            inner: Arc::new(MeshSignalHandlerInner {
-                robot_id: robot_id.to_string(),
-                transport,
-                peers: Mutex::new(HashMap::new()),
-            }),
+    /// Synchronous lookup — avoids holding a non-Send `MutexGuard` across
+    /// await points when called from spawned tasks.
+    fn find_peer(&self, from: &str) -> Option<Arc<flo_rs::video::VideoPeer>> {
+        match self.inner.peers.lock() {
+            Ok(g) => g.get(from).cloned(),
+            Err(e) => {
+                warn!(error = %e, "peers lock poisoned in find_peer");
+                None
+            }
         }
     }
 
     /// Get the existing answering peer for `from`, or create one. The creation
     /// await happens outside the lock to avoid blocking other signaling.
     async fn peer_for(&self, from: &str) -> Option<Arc<flo_rs::video::VideoPeer>> {
-        if let Some(p) = self.inner.peers.lock().unwrap().get(from) {
-            return Some(p.clone());
+        if let Some(p) = self.find_peer(from) {
+            return Some(p);
         }
         let peer = match flo_rs::video::VideoPeer::answer(
             &self.inner.robot_id,
@@ -83,16 +82,15 @@ impl MeshSignalHandler {
                 return None;
             }
         };
-        let mut g = self.inner.peers.lock().unwrap();
-        // `was_new` is determined before insertion so re-offers for an existing
-        // peer don't restart capture (which would spawn a duplicate pipeline).
-        #[cfg(feature = "media")]
+        let mut g = match self.inner.peers.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                warn!(error = %e, "peers lock poisoned in peer_for");
+                return None;
+            }
+        };
         let was_new = !g.contains_key(&from.to_string());
         let peer = g.entry(from.to_string()).or_insert(peer).clone();
-        // Start capture only once per peer (on first offer), not on every
-        // re-offer — `peers` is keyed by remote id and reused, so a re-offer
-        // would otherwise spawn a second GStreamer pipeline for the same peer.
-        #[cfg(feature = "media")]
         if was_new && let Some(source) = self.inner.source.clone() {
             let p = peer.clone();
             let from = from.to_string();
@@ -122,9 +120,19 @@ impl SignalHandler for MeshSignalHandler {
         let from = from.to_string();
         let msg = msg.clone();
         tokio::spawn(async move {
-            if let Some(peer) = h.inner.peers.lock().unwrap().get(&from).cloned() {
-                peer.on_answer(&from, &msg);
-            }
+            let peers = match h.inner.peers.lock() {
+                Ok(g) => g,
+                Err(e) => {
+                    warn!(error = %e, "peers lock poisoned, skipping answer");
+                    return;
+                }
+            };
+            let peer = match peers.get(&from).cloned() {
+                Some(p) => p,
+                None => return,
+            };
+            drop(peers);
+            peer.on_answer(&from, &msg);
         });
     }
     fn on_ice(&self, from: &str, candidate: &IceCandidate) {
@@ -132,9 +140,19 @@ impl SignalHandler for MeshSignalHandler {
         let from = from.to_string();
         let candidate = candidate.clone();
         tokio::spawn(async move {
-            if let Some(peer) = h.inner.peers.lock().unwrap().get(&from).cloned() {
-                peer.on_ice(&from, &candidate);
-            }
+            let peers = match h.inner.peers.lock() {
+                Ok(g) => g,
+                Err(e) => {
+                    warn!(error = %e, "peers lock poisoned, skipping ice");
+                    return;
+                }
+            };
+            let peer = match peers.get(&from).cloned() {
+                Some(p) => p,
+                None => return,
+            };
+            drop(peers);
+            peer.on_ice(&from, &candidate);
         });
     }
 }
@@ -142,7 +160,6 @@ impl SignalHandler for MeshSignalHandler {
 /// Publish presence, subscribe to peer discovery, and run the inbound signal
 /// receiver backed by [`MeshSignalHandler`] so the robot can both initiate and
 /// answer WebRTC calls.
-#[cfg(feature = "media")]
 pub async fn run_signaling(
     transport: Arc<Transport>,
     robot_id: &str,
@@ -159,23 +176,6 @@ pub async fn run_signaling(
     })
     .await?;
     let handler = MeshSignalHandler::new(robot_id, transport.clone(), source);
-    signaling::run_signal_receiver(&transport, robot_id, handler).await
-}
-
-/// Non-media variant: no capture source, receive/answer only.
-#[cfg(not(feature = "media"))]
-pub async fn run_signaling(transport: Arc<Transport>, robot_id: &str) -> zenoh::Result<()> {
-    signaling::publish_presence(
-        &transport,
-        robot_id,
-        vec![format!("robot/{robot_id}/local/cam0")],
-    )
-    .await?;
-    signaling::subscribe_presence(&transport, |p: signaling::Presence| {
-        info!(peer = %p.id, streams = ?p.streams, "discovered peer");
-    })
-    .await?;
-    let handler = MeshSignalHandler::new(robot_id, transport.clone());
     signaling::run_signal_receiver(&transport, robot_id, handler).await
 }
 
@@ -203,10 +203,7 @@ mod tests {
         );
 
         // The answerer side: always-on mesh listener.
-        #[cfg(feature = "media")]
         let handler = MeshSignalHandler::new(answerer, transport.clone(), None);
-        #[cfg(not(feature = "media"))]
-        let handler = MeshSignalHandler::new(answerer, transport.clone());
         flo_rs::signaling::run_signal_receiver(&transport, answerer, handler)
             .await
             .expect("signal receiver");
@@ -218,7 +215,7 @@ mod tests {
         let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
         transport
             .subscribe(&answer_key, move |s: zenoh::sample::Sample| {
-                if let Some(tx) = tx.lock().unwrap().take() {
+                if let Some(tx) = tx.lock().expect("test lock poisoned").take() {
                     let _ = tx.send(s.payload().to_bytes().to_vec());
                 }
             })

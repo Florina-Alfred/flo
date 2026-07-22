@@ -1,4 +1,4 @@
-use flo_rs::registry::{PublishOutcome, Registry};
+use flo_rs::registry::{RegisterOutcome, Registry};
 use flo_rs::rules::{Action, Qos, Rule, Ruleset, When};
 
 fn sample_rs(name: &str, owner: &str, ver: u64) -> Ruleset {
@@ -39,7 +39,7 @@ fn new_name_inserts() {
     let out = reg
         .publish(&sample_rs("acme", "robot/7", 1), "robot/7")
         .unwrap();
-    assert!(matches!(out, PublishOutcome::Inserted));
+    assert!(matches!(out, RegisterOutcome::Inserted));
 }
 
 #[test]
@@ -50,7 +50,7 @@ fn same_owner_updates() {
     let out = reg
         .publish(&sample_rs("acme", "robot/7", 2), "robot/7")
         .unwrap();
-    assert!(matches!(out, PublishOutcome::Updated { version: 2, .. }));
+    assert!(matches!(out, RegisterOutcome::Updated { version: 2, .. }));
 }
 
 #[test]
@@ -61,7 +61,7 @@ fn different_owner_rejects_with_conflict() {
     let out = reg
         .publish(&sample_rs("acme", "robot/9", 1), "robot/9")
         .unwrap();
-    assert!(matches!(out, PublishOutcome::RejectedConflict));
+    assert!(matches!(out, RegisterOutcome::RejectedConflict));
 }
 
 #[test]
@@ -72,5 +72,5 @@ fn sha_changes_bump_version_only_on_diff() {
     let out = reg
         .publish(&sample_rs("acme", "robot/7", 1), "robot/7")
         .unwrap();
-    assert!(matches!(out, PublishOutcome::Updated { version: 1, .. }));
+    assert!(matches!(out, RegisterOutcome::Updated { version: 1, .. }));
 }

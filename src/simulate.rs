@@ -15,22 +15,22 @@ use crate::rules::Qos;
 use crate::transport::Transport;
 
 /// Default sensor topics the demo rules watch (mirror map-02's example rules).
-pub const BUMPER_KEY: &str = "robot/{id}/local/bumper";
-pub const IMU_KEY: &str = "robot/{id}/local/imu";
-pub const LIDAR_KEY: &str = "lidar/fleet/scan";
+pub const BUMPER_TOPIC: &str = "robot/{id}/local/bumper";
+pub const IMU_TOPIC: &str = "robot/{id}/local/imu";
+pub const LIDAR_TOPIC: &str = "lidar/fleet/scan";
 
 /// Run the simulator: every `period` ms, emit one round of synthetic samples.
 /// `bumper_pressed` toggles each round so the e-stop rule fires on alternate ticks;
 /// `imu_speed` and `lidar_range` dip below their rule thresholds periodically so the
 /// lidar-slowdown rule also fires, giving the user a visible "aha" on first run.
-pub async fn run_simulate(
+pub async fn simulate_sensors(
     transport: &Transport,
     robot_id: &str,
     period_ms: u64,
 ) -> zenoh::Result<()> {
-    let bumper = BUMPER_KEY.replace("{id}", robot_id);
-    let imu = IMU_KEY.replace("{id}", robot_id);
-    let lidar = LIDAR_KEY.to_string();
+    let bumper = BUMPER_TOPIC.replace("{id}", robot_id);
+    let imu = IMU_TOPIC.replace("{id}", robot_id);
+    let lidar = LIDAR_TOPIC.to_string();
 
     // Default demo tick is 1 round / second so the "aha" is easy to read.
     // For a busier stream, drop the default in `main.rs` (or pass --simulate-period-ms):

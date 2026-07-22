@@ -11,6 +11,7 @@ pub enum RegistryError {
     Db(rusqlite::Error),
     Io(std::io::Error),
     BadName,
+    Lock(String),
 }
 impl std::fmt::Display for RegistryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -18,13 +19,14 @@ impl std::fmt::Display for RegistryError {
             RegistryError::Db(e) => write!(f, "registry db error: {e}"),
             RegistryError::Io(e) => write!(f, "registry io error: {e}"),
             RegistryError::BadName => write!(f, "invalid ruleset_name"),
+            RegistryError::Lock(e) => write!(f, "registry lock poisoned: {e}"),
         }
     }
 }
 impl std::error::Error for RegistryError {}
 
 #[derive(Debug, PartialEq)]
-pub enum PublishOutcome {
+pub enum RegisterOutcome {
     Inserted,
     Updated {
         version: u64,
@@ -45,14 +47,14 @@ fn canonical_ruleset(rs: &Ruleset) -> String {
     toml::to_string(&rs).expect("Ruleset serializable")
 }
 
-pub fn sha256_ruleset(rs: &Ruleset) -> String {
+pub fn ruleset_digest(rs: &Ruleset) -> String {
     let mut h = Sha256::new();
     h.update(canonical_ruleset(rs).as_bytes());
     to_hex(&h.finalize())
 }
 
 #[allow(dead_code)]
-pub fn sha256_rule(rule: &Rule) -> String {
+pub fn rule_digest(rule: &Rule) -> String {
     let mut h = Sha256::new();
     h.update(toml::to_string(rule).expect("Rule serializable").as_bytes());
     to_hex(&h.finalize())
@@ -66,7 +68,7 @@ fn to_hex(bytes: &[u8]) -> String {
     s
 }
 
-fn chrono_now() -> String {
+fn unix_timestamp_secs() -> String {
     let s = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -81,7 +83,7 @@ impl Registry {
         }
         let conn = Mutex::new(Connection::open(path).map_err(RegistryError::Db)?);
         conn.lock()
-            .unwrap()
+            .map_err(|e| RegistryError::Lock(e.to_string()))?
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS audit (
                 id INTEGER PRIMARY KEY,
@@ -108,7 +110,7 @@ impl Registry {
         &self,
         rs: &Ruleset,
         _claiming_id: &str,
-    ) -> Result<PublishOutcome, RegistryError> {
+    ) -> Result<RegisterOutcome, RegistryError> {
         if !rs
             .ruleset_name
             .chars()
@@ -118,12 +120,12 @@ impl Registry {
         {
             return Err(RegistryError::BadName);
         }
-        let sha = sha256_ruleset(rs);
-        let ts = chrono_now();
+        let sha = ruleset_digest(rs);
+        let ts = unix_timestamp_secs();
         let existing: Option<(String, i64, String)> = self
             .conn
             .lock()
-            .unwrap()
+            .map_err(|e| RegistryError::Lock(e.to_string()))?
             .query_row(
                 "SELECT owner, version, sha FROM registry WHERE name = ?",
                 params![rs.ruleset_name],
@@ -136,22 +138,22 @@ impl Registry {
             None => {
                 self.conn
                     .lock()
-                    .unwrap()
+                    .map_err(|e| RegistryError::Lock(e.to_string()))?
                     .execute(
                         "INSERT INTO registry (name, owner, version, sha) VALUES (?,?,?,?)",
                         params![rs.ruleset_name, rs.robot_owner, 1i64, sha],
                     )
                     .map_err(RegistryError::Db)?;
                 self.write_audit(&ts, rs, 1, &sha, "inserted")?;
-                Ok(PublishOutcome::Inserted)
+                Ok(RegisterOutcome::Inserted)
             }
             Some((owner, ver, prev_sha)) => {
                 if owner != rs.robot_owner {
                     self.write_audit(&ts, rs, ver, &sha, "rejected_conflict")?;
-                    return Ok(PublishOutcome::RejectedConflict);
+                    return Ok(RegisterOutcome::RejectedConflict);
                 }
                 if prev_sha == sha {
-                    return Ok(PublishOutcome::Updated {
+                    return Ok(RegisterOutcome::Updated {
                         version: ver as u64,
                         sha,
                     });
@@ -159,14 +161,14 @@ impl Registry {
                 let new_ver = ver + 1;
                 self.conn
                     .lock()
-                    .unwrap()
+                    .map_err(|e| RegistryError::Lock(e.to_string()))?
                     .execute(
                         "UPDATE registry SET owner=?, version=?, sha=? WHERE name=?",
                         params![rs.robot_owner, new_ver, sha, rs.ruleset_name],
                     )
                     .map_err(RegistryError::Db)?;
                 self.write_audit(&ts, rs, new_ver, &sha, "updated")?;
-                Ok(PublishOutcome::Updated {
+                Ok(RegisterOutcome::Updated {
                     version: new_ver as u64,
                     sha,
                 })
@@ -185,7 +187,7 @@ impl Registry {
         let blob = canonical_ruleset(rs);
         self.conn
             .lock()
-            .unwrap()
+            .map_err(|e| RegistryError::Lock(e.to_string()))?
             .execute(
                 "INSERT INTO audit (ts, name, owner, version, sha, status, blob) VALUES (?,?,?,?,?,?,?)",
                 params![ts, rs.ruleset_name, rs.robot_owner, version, sha, status, blob],

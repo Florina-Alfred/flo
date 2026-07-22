@@ -13,6 +13,7 @@ use flo_rs::transport::Transport;
 use crate::cli::Args;
 use crate::health;
 use crate::health::Health;
+#[cfg(feature = "media")]
 use crate::mesh::run_signaling;
 
 /// Start health server, hot-reload, rule engine, and WebRTC signaling. Shared by
@@ -60,11 +61,13 @@ pub async fn start_common_subsystems(
     };
 
     let signal_task = {
+        #[cfg(feature = "media")]
         let transport = transport.clone();
+        #[cfg(feature = "media")]
         let robot_id = robot_id.to_string();
         #[cfg(feature = "media")]
         let source = match &args.video.device {
-            Some(d) => crate::device::VideoDevice::validate(d)
+            Some(d) => crate::device::VideoDevice::from_path(d)
                 .ok()
                 .map(|dev| dev.to_source_spec()),
             None => None,
@@ -80,9 +83,9 @@ pub async fn start_common_subsystems(
         #[cfg(not(feature = "media"))]
         {
             tokio::spawn(async move {
-                if let Err(e) = run_signaling(transport.clone(), &robot_id).await {
-                    error!(error = %e, "signaling exited");
-                }
+                // Signaling requires the `media` feature (WebRTC/mesh listener).
+                // Without it, no peer-discovery or inbound video-answer is started.
+                std::future::pending::<()>().await
             })
         }
     };
@@ -95,7 +98,7 @@ pub async fn start_common_subsystems(
 }
 
 /// Run until any subsystem dies (k8s / process supervisor restarts).
-pub async fn wait_for_subsystems() {
+pub async fn block_indefinitely() {
     // The spawned tasks own the long-lived work; this future just idles. A real
     // deployment would `tokio::select!` on the JoinHandles. For the demo we block
     // so `cargo run` stays alive and visible.
@@ -105,6 +108,8 @@ pub async fn wait_for_subsystems() {
 /// Spawn the outbound WebRTC video call requested via `--video-peer`, validating
 /// the configured device up front so a bad path fails fast with a clear message
 /// instead of an opaque GStreamer error. Shared by demo and production modes.
+/// Only available with the `media` feature (requires system GStreamer + webrtc).
+#[cfg(feature = "media")]
 pub fn spawn_video_peer(args: &Args, transport: Arc<Transport>, robot_id: String) {
     let Some(peer) = args.video.peer.clone() else {
         return;
@@ -114,9 +119,8 @@ pub fn spawn_video_peer(args: &Args, transport: Arc<Transport>, robot_id: String
     let pid = peer.clone();
     // Validate the configured video device up front so a bad path fails
     // fast with a clear message instead of an opaque GStreamer error.
-    #[cfg_attr(not(feature = "media"), allow(unused_variables))]
     let device = match &args.video.device {
-        Some(d) => match crate::device::VideoDevice::validate(d) {
+        Some(d) => match crate::device::VideoDevice::from_path(d) {
             Ok(dev) => Some(dev),
             Err(e) => {
                 tracing::error!(error = %e, "invalid --video-device, falling back to test pattern");
@@ -126,24 +130,26 @@ pub fn spawn_video_peer(args: &Args, transport: Arc<Transport>, robot_id: String
         None => None,
     };
     tokio::spawn(async move {
-        #[cfg(feature = "media")]
-        {
-            use flo_rs::media::SourceSpec;
-            let source = match device {
-                Some(dev) => dev.to_source_spec(),
-                None => SourceSpec::Videotest,
-            };
-            if let Err(e) = flo_rs::video::start_video_with_source(&rid, &pid, tr, source).await {
-                tracing::error!(error = %e, "video failed");
-            }
-        }
-        #[cfg(not(feature = "media"))]
-        {
-            if let Err(e) = flo_rs::video::start_video(&rid, &pid, tr).await {
-                tracing::error!(error = %e, "video failed");
-            }
+        use flo_rs::media::SourceSpec;
+        let source = match device {
+            Some(dev) => dev.to_source_spec(),
+            None => SourceSpec::Videotest,
+        };
+        if let Err(e) = flo_rs::video::start_video_with_source(&rid, &pid, tr, source).await {
+            tracing::error!(error = %e, "video failed");
         }
     });
+}
+
+/// Stub compiled when `media` feature is off: logs a hint and returns.
+#[cfg(not(feature = "media"))]
+pub fn spawn_video_peer(_args: &Args, _transport: Arc<Transport>, _robot_id: String) {
+    if _args.video.peer.is_some() {
+        tracing::info!(
+            _robot_id,
+            "--video-peer set but media feature disabled; recompile with --features media"
+        );
+    }
 }
 
 /// Handle the `flo rule check <path>` subcommand: validate a semantic ruleset

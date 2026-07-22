@@ -11,7 +11,7 @@ use flo_rs::simulate;
 use flo_rs::transport::Transport;
 
 use crate::cli::Args;
-use crate::common::{spawn_video_peer, start_common_subsystems, wait_for_subsystems};
+use crate::common::{spawn_video_peer, start_common_subsystems, block_indefinitely};
 
 /// Run the local demo: simulated sensors + rule engine on a loopback zenoh mesh.
 pub async fn run_demo(
@@ -52,13 +52,13 @@ pub async fn run_demo(
     let robot_id_sim = robot_id.clone();
     let period = args.simulate_period_ms.max(100);
     tokio::spawn(async move {
-        if let Err(e) = simulate::run_simulate(&transport_sim, &robot_id_sim, period).await {
+        if let Err(e) = simulate::simulate_sensors(&transport_sim, &robot_id_sim, period).await {
             error!(error = %e, "simulator exited");
         }
     });
 
     spawn_video_peer(&args, transport, robot_id);
 
-    wait_for_subsystems().await;
+    block_indefinitely().await;
     Ok(())
 }

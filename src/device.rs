@@ -18,18 +18,19 @@ pub struct VideoDevice {
 }
 
 impl VideoDevice {
-    /// Validate `candidate` as a usable V4L2 video device.
+    /// Build a `VideoDevice` from a candidate path, validating it's a usable V4L2
+    /// video device.
     ///
     /// Checks the path exists, is a character device, and looks like a V4L2
     /// device (`/dev/videoN`). Returns a typed error on any failure so the CLI
     /// can report it instead of letting GStreamer fail later.
-    pub fn validate(candidate: &str) -> Result<Self, DeviceAccessError> {
+    pub fn from_path(candidate: &str) -> Result<Self, DeviceValidationError> {
         let path = Path::new(candidate);
         if !path.exists() {
-            return Err(DeviceAccessError::Missing(candidate.to_string()));
+            return Err(DeviceValidationError::DeviceNotFound(candidate.to_string()));
         }
         let meta =
-            std::fs::metadata(path).map_err(|e| DeviceAccessError::Io(candidate.to_string(), e))?;
+            std::fs::metadata(path).map_err(|e| DeviceValidationError::Io(candidate.to_string(), e))?;
         let is_char = meta.file_type().is_char_device();
         // On Linux, V4L2 devices are char devices at /dev/videoN. We accept any
         // char device whose name matches the convention; non-Linux/container
@@ -40,7 +41,7 @@ impl VideoDevice {
             .unwrap_or_default();
         let looks_like_video = name.starts_with("video") && is_char;
         if !looks_like_video {
-            return Err(DeviceAccessError::NotVideoDevice(candidate.to_string()));
+            return Err(DeviceValidationError::NotACharacterDevice(candidate.to_string()));
         }
         Ok(VideoDevice {
             path: candidate.to_string(),
@@ -75,7 +76,7 @@ impl VideoDevice {
             if !name.starts_with("video") {
                 continue;
             }
-            if let Ok(dev) = VideoDevice::validate(&format!("/dev/{name}")) {
+            if let Ok(dev) = VideoDevice::from_path(&format!("/dev/{name}")) {
                 found.push(dev);
             }
         }
@@ -84,20 +85,20 @@ impl VideoDevice {
     }
 }
 
-/// Why a device could not be accessed.
+/// Why a device could not be opened or validated.
 #[derive(Debug)]
-pub enum DeviceAccessError {
-    Missing(String),
+pub enum DeviceValidationError {
+    DeviceNotFound(String),
     Io(String, std::io::Error),
-    NotVideoDevice(String),
+    NotACharacterDevice(String),
 }
 
-impl std::fmt::Display for DeviceAccessError {
+impl std::fmt::Display for DeviceValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DeviceAccessError::Missing(p) => write!(f, "video device not found: {p}"),
-            DeviceAccessError::Io(p, e) => write!(f, "could not stat video device {p}: {e}"),
-            DeviceAccessError::NotVideoDevice(p) => write!(
+            DeviceValidationError::DeviceNotFound(p) => write!(f, "video device not found: {p}"),
+            DeviceValidationError::Io(p, e) => write!(f, "could not stat video device {p}: {e}"),
+            DeviceValidationError::NotACharacterDevice(p) => write!(
                 f,
                 "{p} is not a usable V4L2 video device (expected a /dev/videoN char device)"
             ),
@@ -105,10 +106,10 @@ impl std::fmt::Display for DeviceAccessError {
     }
 }
 
-impl std::error::Error for DeviceAccessError {
+impl std::error::Error for DeviceValidationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            DeviceAccessError::Io(_, e) => Some(e),
+            DeviceValidationError::Io(_, e) => Some(e),
             _ => None,
         }
     }
@@ -120,34 +121,34 @@ mod tests {
 
     #[test]
     fn missing_device_is_rejected() {
-        let err = VideoDevice::validate("/dev/video-does-not-exist-xyz").unwrap_err();
-        assert!(matches!(err, DeviceAccessError::Missing(_)));
+        let err = VideoDevice::from_path("/dev/video-does-not-exist-xyz").unwrap_err();
+        assert!(matches!(err, DeviceValidationError::DeviceNotFound(_)));
     }
 
     #[test]
     fn non_video_path_is_rejected() {
         // /etc/hostname exists but is not a /dev/videoN char device.
-        let err = VideoDevice::validate("/etc/hostname").unwrap_err();
-        assert!(matches!(err, DeviceAccessError::NotVideoDevice(_)));
+        let err = VideoDevice::from_path("/etc/hostname").unwrap_err();
+        assert!(matches!(err, DeviceValidationError::NotACharacterDevice(_)));
     }
 
     #[test]
     fn valid_video_device_is_accepted() {
         // We cannot assume a real camera exists, but a correctly-shaped path
-        // that is absent must at least surface the Missing (not NotVideoDevice)
+        // that is absent must at least surface the DeviceNotFound (not NotACharacterDevice)
         // error, proving the shape check runs before the existence check.
-        let err = VideoDevice::validate("/dev/video0").unwrap_err();
-        assert!(matches!(err, DeviceAccessError::Missing(_)));
+        let err = VideoDevice::from_path("/dev/video0").unwrap_err();
+        assert!(matches!(err, DeviceValidationError::DeviceNotFound(_)));
     }
 
     #[test]
     fn discover_returns_sorted_valid_devices() {
-        // Enumerate without panicking; every device returned must re-validate,
-        // and the list must be sorted by path. Real cameras may or may not be
+        // Enumerate without panicking; every device returned must validate
+        // via from_path again, and the list must be sorted by path. Real cameras may or may not be
         // present, so we only assert structural invariants.
         let devices = VideoDevice::discover();
         for d in &devices {
-            assert!(VideoDevice::validate(&d.path).is_ok());
+            assert!(VideoDevice::from_path(&d.path).is_ok());
         }
         let mut sorted = devices.clone();
         sorted.sort_by(|a, b| a.path.cmp(&b.path));

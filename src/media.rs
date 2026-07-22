@@ -19,9 +19,9 @@ pub enum SourceSpec {
     V4l2(String),
 }
 
-/// Pick the H.264 encoder element. Jetson has `nvv4l2h264enc` (NVENC, zero-copy
+/// Pick the H.264 encoder element name. Jetson has `nvv4l2h264enc` (NVENC, zero-copy
 /// NVMM); everywhere else we fall back to `x264enc`. Pure + testable.
-pub fn select_encoder_element(has_nvenc: bool) -> &'static str {
+pub fn encoder_element_name(has_nvenc: bool) -> &'static str {
     if has_nvenc {
         "nvv4l2h264enc"
     } else {
@@ -35,7 +35,7 @@ pub struct MediaPipeline {
 }
 
 /// Sample callback: receives each encoded H.264 frame as raw bytes.
-pub type OnSample = Box<dyn Fn(&[u8]) + Send + Sync + 'static>;
+pub type SampleCallback = Box<dyn Fn(&[u8]) + Send + Sync + 'static>;
 
 impl MediaPipeline {
     /// Build the pipeline. `source` chooses the input; `width/height/fps` set caps.
@@ -52,7 +52,7 @@ impl MediaPipeline {
         };
 
         let has_nvenc = gstreamer::ElementFactory::find("nvv4l2h264enc").is_some();
-        let enc = select_encoder_element(has_nvenc);
+        let enc = encoder_element_name(has_nvenc);
         tracing::info!(encoder = enc, "building media pipeline");
 
         let desc = format!(
@@ -67,7 +67,7 @@ impl MediaPipeline {
     }
 
     /// Start the pipeline; each encoded H.264 sample is delivered to `on_sample`.
-    pub fn start(&self, on_sample: OnSample) -> Result<()> {
+    pub fn start(&self, on_sample: SampleCallback) -> Result<()> {
         let appsink = self
             .pipeline
             .by_name("enc")
@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn encoder_selection() {
-        assert_eq!(select_encoder_element(true), "nvv4l2h264enc");
-        assert_eq!(select_encoder_element(false), "x264enc");
+        assert_eq!(encoder_element_name(true), "nvv4l2h264enc");
+        assert_eq!(encoder_element_name(false), "x264enc");
     }
 }

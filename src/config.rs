@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info};
 
-use crate::registry::{PublishOutcome, Registry};
+use crate::registry::{RegisterOutcome, Registry};
 use crate::rules::{Rules, Ruleset};
 use crate::transport::Transport;
 
@@ -128,7 +128,7 @@ pub async fn run_hot_reload_with_registry(
         let text = String::from_utf8_lossy(&bytes);
         match Ruleset::from_toml(&text) {
             Ok(rs) => match registry.publish(&rs, robot_id) {
-                Ok(PublishOutcome::Inserted) | Ok(PublishOutcome::Updated { .. }) => {
+                Ok(RegisterOutcome::Inserted) | Ok(RegisterOutcome::Updated { .. }) => {
                     match Rules::from_toml(&rs.to_toml()) {
                         Ok(rules) => {
                             let n = rules.rules.len();
@@ -142,10 +142,10 @@ pub async fn run_hot_reload_with_registry(
                         Err(e) => error!(error = %e, "compiled ruleset invalid; keeping previous"),
                     }
                 }
-                Ok(PublishOutcome::RejectedConflict) => {
+                Ok(RegisterOutcome::RejectedConflict) => {
                     error!("ruleset rejected: owner conflict; keeping previous");
                 }
-                Ok(PublishOutcome::Quarantined) => {
+                Ok(RegisterOutcome::Quarantined) => {
                     error!("ruleset quarantined; keeping previous");
                 }
                 Err(e) => error!(error = %e, "registry error; keeping previous"),
