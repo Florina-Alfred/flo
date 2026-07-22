@@ -11,7 +11,7 @@ use flo_rs::simulate;
 use flo_rs::transport::Transport;
 
 use crate::cli::Args;
-use crate::common::{spawn_video_peer, start_common_subsystems, block_indefinitely};
+use crate::common::{block_indefinitely, spawn_video_peer, start_common_subsystems};
 
 /// Run the local demo: simulated sensors + rule engine on a loopback zenoh mesh.
 pub async fn run_demo(

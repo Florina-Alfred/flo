@@ -12,7 +12,7 @@ use flo_rs::simulate;
 use flo_rs::transport::Transport;
 
 use crate::cli::Args;
-use crate::common::{spawn_video_peer, start_common_subsystems, block_indefinitely};
+use crate::common::{block_indefinitely, spawn_video_peer, start_common_subsystems};
 
 /// Run in production mode (k8s DaemonSet): load rules from `--config`, open a
 /// real zenoh session, and start the shared subsystems.
@@ -82,7 +82,8 @@ pub async fn run_production(
         let robot_id_sim = robot_id.clone();
         let period = args.simulate_period_ms.max(100);
         tokio::spawn(async move {
-            if let Err(e) = simulate::simulate_sensors(&transport_sim, &robot_id_sim, period).await {
+            if let Err(e) = simulate::simulate_sensors(&transport_sim, &robot_id_sim, period).await
+            {
                 error!(error = %e, "simulator exited");
             }
         });

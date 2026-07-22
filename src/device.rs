@@ -29,8 +29,8 @@ impl VideoDevice {
         if !path.exists() {
             return Err(DeviceValidationError::DeviceNotFound(candidate.to_string()));
         }
-        let meta =
-            std::fs::metadata(path).map_err(|e| DeviceValidationError::Io(candidate.to_string(), e))?;
+        let meta = std::fs::metadata(path)
+            .map_err(|e| DeviceValidationError::Io(candidate.to_string(), e))?;
         let is_char = meta.file_type().is_char_device();
         // On Linux, V4L2 devices are char devices at /dev/videoN. We accept any
         // char device whose name matches the convention; non-Linux/container
@@ -41,7 +41,9 @@ impl VideoDevice {
             .unwrap_or_default();
         let looks_like_video = name.starts_with("video") && is_char;
         if !looks_like_video {
-            return Err(DeviceValidationError::NotACharacterDevice(candidate.to_string()));
+            return Err(DeviceValidationError::NotACharacterDevice(
+                candidate.to_string(),
+            ));
         }
         Ok(VideoDevice {
             path: candidate.to_string(),

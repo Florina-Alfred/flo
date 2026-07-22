@@ -50,7 +50,11 @@ async fn sensor_sample_triggers_action() {
     }
 
     transport
-        .publish("sensor/foo", Qos::BestEffort, &serde_json::json!({"value": 42}))
+        .publish(
+            "sensor/foo",
+            Qos::BestEffort,
+            &serde_json::json!({"value": 42}),
+        )
         .await
         .expect("publish sensor sample");
 

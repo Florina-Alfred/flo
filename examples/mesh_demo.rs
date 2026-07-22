@@ -56,7 +56,7 @@ async fn main() -> anyhow::Result<()> {
         let t = transport.clone();
         let r = robot_id.clone();
         tokio::spawn(async move {
-            if let Err(e) = simulate::run_simulate(&t, &r, 1000).await {
+            if let Err(e) = simulate::simulate_sensors(&t, &r, 1000).await {
                 eprintln!("simulator exited: {e}");
             }
         });
