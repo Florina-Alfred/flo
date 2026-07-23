@@ -11,9 +11,11 @@ mod common;
 mod demo;
 mod device;
 mod health;
-mod mesh;
 mod production;
 mod server;
+
+#[cfg(feature = "media")]
+mod mesh;
 
 use cli::Command;
 use common::run_rule_command;

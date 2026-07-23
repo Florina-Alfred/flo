@@ -82,15 +82,15 @@ fn eval_tree(pred: &Predicate, payload: &Value, zones: &ZoneTracker) -> bool {
 }
 
 /// Compare two resolved JSON values under `op`. Floats use epsilon equality
-/// for `==`/`!=`; ordering uses the shared `cmp` helper (numbers/strings/bools).
+/// for `==`/`!=`; ordering uses the shared `json_cmp` helper (numbers/strings/bools).
 fn eval_comparison(op: Op, l: &Value, r: &Value, zones: &ZoneTracker) -> bool {
     match op {
         Op::Eq => values_equal(l, r),
         Op::Ne => !values_equal(l, r),
-        Op::Lt => cmp(l, r).is_some_and(|o| o.is_lt()),
-        Op::Gt => cmp(l, r).is_some_and(|o| o.is_gt()),
-        Op::Le => cmp(l, r).is_some_and(|o| o.is_le()),
-        Op::Ge => cmp(l, r).is_some_and(|o| o.is_ge()),
+        Op::Lt => json_cmp(l, r).is_some_and(|o| o.is_lt()),
+        Op::Gt => json_cmp(l, r).is_some_and(|o| o.is_gt()),
+        Op::Le => json_cmp(l, r).is_some_and(|o| o.is_le()),
+        Op::Ge => json_cmp(l, r).is_some_and(|o| o.is_ge()),
         Op::SameZoneAs => {
             let (Some(a), Some(b)) = (l.as_str(), r.as_str()) else {
                 return false;
@@ -140,7 +140,7 @@ fn prim_field(p: &PrimitiveRef) -> &'static str {
     }
 }
 
-fn cmp(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
+fn json_cmp(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
     match (a, b) {
         (Value::Number(x), Value::Number(y)) => {
             if let (Some(xf), Some(yf)) = (x.as_f64(), y.as_f64()) {

@@ -79,7 +79,7 @@ pub async fn publish_presence(
         streams,
     };
     let value = serde_json::to_value(&presence).map_err(|e| Box::new(e) as zenoh::Error)?;
-    transport.publish_json(&key, &value).await?;
+    transport.publish_signal(&key, &value).await?;
     info!(robot_id, "published presence");
     Ok(())
 }
@@ -163,7 +163,7 @@ async fn put_signal(
         ice,
     };
     let value = serde_json::to_value(&msg).map_err(|e| Box::new(e) as zenoh::Error)?;
-    transport.publish_json(key, &value).await
+    transport.publish_signal(key, &value).await
 }
 
 /// Callbacks invoked when inbound signaling messages arrive for this robot.

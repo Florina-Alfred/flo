@@ -38,13 +38,13 @@ pub struct VideoPeer {
     /// Optional consumer hook invoked when an inbound track arrives. Defaults to
     /// logging; a render-free "forward" consumer can attach a reader here.
     #[allow(dead_code)]
-    on_track: Arc<std::sync::Mutex<Option<OnTrack>>>,
+    on_track: Arc<std::sync::Mutex<Option<TrackCallback>>>,
 }
 
 /// Callback invoked when a remote track is received on this peer. Receives the
 /// inbound `TrackRemote` so a consumer can attach a sample reader; `flo` itself
 /// does no rendering.
-pub type OnTrack = Arc<dyn Fn(Arc<webrtc::track::track_remote::TrackRemote>) + Send + Sync>;
+pub type TrackCallback = Arc<dyn Fn(Arc<webrtc::track::track_remote::TrackRemote>) + Send + Sync>;
 
 impl VideoPeer {
     /// Build the `PeerConnection`, add the H.264 track, and wire trickle-ICE so
@@ -57,7 +57,7 @@ impl VideoPeer {
     ) -> anyhow::Result<(
         Arc<RTCPeerConnection>,
         Arc<TrackLocalStaticSample>,
-        Arc<std::sync::Mutex<Option<OnTrack>>>,
+        Arc<std::sync::Mutex<Option<TrackCallback>>>,
     )> {
         // Register the H.264 codec in the MediaEngine so `add_track` has a codec
         // to populate the SDP media section with (webrtc-rs rejects an
@@ -112,7 +112,7 @@ impl VideoPeer {
 
         // Inbound tracks: deliver to the user callback if registered, else log.
         // `flo` performs no rendering; a consumer attaches a reader here.
-        let on_track: Arc<std::sync::Mutex<Option<OnTrack>>> = Default::default();
+        let on_track: Arc<std::sync::Mutex<Option<TrackCallback>>> = Default::default();
         let cb = on_track.clone();
         let log_peer = peer_id.to_string();
         pc.on_track(Box::new(move |track, _receiver, _transceiver| {
@@ -189,7 +189,7 @@ impl VideoPeer {
     /// Register a callback invoked when an inbound track arrives. Default (until
     /// set) is to log only; pass a closure to forward/consume the remote track.
     #[allow(dead_code)]
-    pub fn set_on_track(&self, cb: OnTrack) {
+    pub fn set_on_track(&self, cb: TrackCallback) {
         *self.on_track.lock().unwrap() = Some(cb);
     }
 }

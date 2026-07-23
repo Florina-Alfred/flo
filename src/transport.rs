@@ -97,9 +97,10 @@ impl Transport {
         put.await.map(|_| ())
     }
 
-    /// Publish arbitrary JSON to a key-expression at best-effort (used for the
+    /// Publish arbitrary JSON to a key-expression at best-effort QoS (used for the
     /// WebRTC signaling control plane; not a class 1/2 actuator action).
-    pub async fn publish_json(
+    /// Named `publish_signal` to distinguish it from the QoS-aware `publish`.
+    pub async fn publish_signal(
         &self,
         key_expr: &str,
         payload: &serde_json::Value,
