@@ -3,6 +3,8 @@
 
 #![forbid(unsafe_code)]
 
+extern crate self as flo_rs;
+
 pub mod auth;
 pub mod cli;
 pub mod codec;
