@@ -5,8 +5,8 @@
 //! The `rule` subcommand (`flo rule check <path>`) is captured as
 //! `Command::Rule { args }` and handed to the existing `run_rule_command`.
 
-use clap::{Args as ClapArgs, Parser, Subcommand};
 use crate::codec::Codec;
+use clap::{Args as ClapArgs, Parser, Subcommand};
 
 /// flo - robot orchestration client.
 ///

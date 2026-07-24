@@ -231,7 +231,14 @@ pub async fn run_engine(
     let mut subscribers: Vec<ManagedSubscriber> = Vec::new();
     let mut current_topics: Vec<String> = Vec::new();
     let initial_rules = store.current().await;
-    subscribe_to_topics(&transport, &initial_rules, &sample_tx, &mut subscribers, &mut current_topics).await?;
+    subscribe_to_topics(
+        &transport,
+        &initial_rules,
+        &sample_tx,
+        &mut subscribers,
+        &mut current_topics,
+    )
+    .await?;
     info!(sensor_topics = ?current_topics, "rule engine subscribed");
 
     // Latest sample per topic, plus a re-evaluation tick so `when` holds compose.
@@ -300,7 +307,14 @@ pub async fn run_engine(
                 let old = std::mem::take(&mut subscribers);
                 // Dropping the old Vec drops all subscriber handles, unsubscribing.
                 drop(old);
-                subscribe_to_topics(&transport, &rules, &sample_tx, &mut subscribers, &mut current_topics).await?;
+                subscribe_to_topics(
+                    &transport,
+                    &rules,
+                    &sample_tx,
+                    &mut subscribers,
+                    &mut current_topics,
+                )
+                .await?;
                 info!(sensor_topics = ?current_topics, "subscribers rebuilt");
             }
         }

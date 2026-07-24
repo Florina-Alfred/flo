@@ -47,10 +47,7 @@ fn server_starts_with_config() {
         .map(|h| h.join().unwrap_or_default())
         .unwrap_or_default();
 
-    assert!(
-        !output.contains("panic"),
-        "flo-server panicked: {output}"
-    );
+    assert!(!output.contains("panic"), "flo-server panicked: {output}");
     assert!(
         output.contains("server mode started"),
         "expected 'server mode started', got: {output}"

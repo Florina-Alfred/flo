@@ -177,7 +177,9 @@ pub async fn run_registration_handler(
                     }
                 };
                 match reg.register(&payload.robot_id, payload.config).await {
-                    Ok(()) => { let _ = query.reply(REGISTRATION_KEY, "ack"); }
+                    Ok(()) => {
+                        let _ = query.reply(REGISTRATION_KEY, "ack");
+                    }
                     Err(RegistrationError::AlreadyRegistered) => {
                         let _ = query.reply(REGISTRATION_KEY, "reject:already_registered");
                     }
@@ -265,8 +267,7 @@ pub async fn run_heartbeat_monitor(
                                 config: None,
                             },
                         );
-                        let alert_topic =
-                            format!("{ALERT_HEARTBEAT_KEY}/{robot_id}");
+                        let alert_topic = format!("{ALERT_HEARTBEAT_KEY}/{robot_id}");
                         let _ = session.put(alert_topic, "poisoned").await;
                     }
                 }
@@ -293,9 +294,8 @@ pub async fn register_with_client(
         robot_id: robot_id.to_string(),
         config: config.clone(),
     };
-    let payload_json = serde_json::to_vec(&payload).map_err(|e| {
-        RegistrationError::ServerError(format!("failed to serialize payload: {e}"))
-    })?;
+    let payload_json = serde_json::to_vec(&payload)
+        .map_err(|e| RegistrationError::ServerError(format!("failed to serialize payload: {e}")))?;
 
     for attempt in 1..=REGISTRATION_RETRIES {
         let replies = transport
@@ -336,8 +336,7 @@ pub async fn register_with_client(
         if attempt < REGISTRATION_RETRIES {
             warn!(
                 attempt,
-                robot_id,
-                "registration not acknowledged, retrying..."
+                robot_id, "registration not acknowledged, retrying..."
             );
             tokio::time::sleep(Duration::from_millis(RETRY_BACKOFF_MS * attempt as u64)).await;
         }

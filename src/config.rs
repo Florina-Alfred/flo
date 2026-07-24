@@ -162,8 +162,6 @@ pub async fn run_hot_reload_with_registry(
     Ok(())
 }
 
-
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientConfig {
     pub client: ClientSection,
