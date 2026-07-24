@@ -10,8 +10,6 @@ fn help_lists_all_flags_including_video() {
     for flag in [
         "--robot-id",
         "--config",
-        "--simulate",
-        "--simulate-period-ms",
         "--video-peer",
         "--video-device",
         "--video-codec",

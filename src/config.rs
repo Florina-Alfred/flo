@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use serde::Deserialize;
 use tokio::sync::RwLock;
 use tracing::{error, info};
 
@@ -154,4 +155,149 @@ pub async fn run_hot_reload_with_registry(
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Client and server config schemas (Tickets #98, #99)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClientConfig {
+    pub client: ClientSection,
+    #[serde(default)]
+    pub server: Option<ServerSection>,
+    #[serde(default)]
+    pub default_subscriptions: Option<DefaultSubscriptions>,
+    #[serde(default)]
+    pub default_publishers: Option<DefaultPublishers>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClientSection {
+    pub heartbeat_interval_ms: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ServerSection {
+    #[serde(default)]
+    pub endpoints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DefaultSubscriptions {
+    pub location: Option<LocationSubscriptions>,
+    pub zone: Option<ZoneSubscriptions>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LocationSubscriptions {
+    pub x: String,
+    pub y: String,
+    pub z: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ZoneSubscriptions {
+    pub site_id: String,
+    pub zone_enter: String,
+    pub zone_exit: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DefaultPublishers {
+    pub location: Option<PublisherConfig>,
+    pub zone: Option<PublisherConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PublisherConfig {
+    pub topic: String,
+    pub period_ms: u64,
+}
+
+impl ClientConfig {
+    pub fn from_toml(text: &str) -> Result<Self, String> {
+        let cfg: ClientConfig =
+            toml::from_str(text).map_err(|e| format!("invalid client config TOML: {e}"))?;
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        let subs = self
+            .default_subscriptions
+            .as_ref()
+            .ok_or("missing [default_subscriptions] table")?;
+
+        let loc = subs
+            .location
+            .as_ref()
+            .ok_or("missing [default_subscriptions.location] table")?;
+        if loc.x.is_empty() {
+            return Err("default_subscriptions.location.x is empty".into());
+        }
+        if loc.y.is_empty() {
+            return Err("default_subscriptions.location.y is empty".into());
+        }
+        if loc.z.is_empty() {
+            return Err("default_subscriptions.location.z is empty".into());
+        }
+
+        let zone = subs
+            .zone
+            .as_ref()
+            .ok_or("missing [default_subscriptions.zone] table")?;
+        if zone.site_id.is_empty() {
+            return Err("default_subscriptions.zone.site_id is empty".into());
+        }
+        if zone.zone_enter.is_empty() {
+            return Err("default_subscriptions.zone.zone_enter is empty".into());
+        }
+        if zone.zone_exit.is_empty() {
+            return Err("default_subscriptions.zone.zone_exit is empty".into());
+        }
+
+        let pubs = self
+            .default_publishers
+            .as_ref()
+            .ok_or("missing [default_publishers] table")?;
+
+        let pub_loc = pubs
+            .location
+            .as_ref()
+            .ok_or("missing [default_publishers.location] table")?;
+        if pub_loc.topic.is_empty() {
+            return Err("default_publishers.location.topic is empty".into());
+        }
+
+        let pub_zone = pubs
+            .zone
+            .as_ref()
+            .ok_or("missing [default_publishers.zone] table")?;
+        if pub_zone.topic.is_empty() {
+            return Err("default_publishers.zone.topic is empty".into());
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ServerConfig {
+    #[serde(default)]
+    pub expected_clients: Vec<ExpectedClient>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExpectedClient {
+    pub robot_id: String,
+}
+
+impl ServerConfig {
+    pub fn from_toml(text: &str) -> Result<Self, String> {
+        if text.trim().is_empty() {
+            return Ok(ServerConfig::default());
+        }
+        toml::from_str(text).map_err(|e| format!("invalid server config TOML: {e}"))
+    }
 }

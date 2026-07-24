@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 
 use tracing::{info, warn};
 
-use flo_rs::signaling::{self, IceCandidate, SignalHandler, SignalMessage};
-use flo_rs::transport::Transport;
+use crate::signaling::{self, IceCandidate, SignalHandler, SignalMessage};
+use crate::transport::Transport;
 
 /// Signal handler for the always-on mesh listener. Unlike the one-shot
 /// [`flo_rs::video::start_video`] initiator, this answers inbound offers from any

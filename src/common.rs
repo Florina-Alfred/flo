@@ -6,9 +6,9 @@ use std::sync::Arc;
 
 use tracing::{error, info};
 
-use flo_rs::config::{RuleStore, run_hot_reload};
-use flo_rs::engine;
-use flo_rs::transport::Transport;
+use crate::config::{RuleStore, run_hot_reload};
+use crate::engine;
+use crate::transport::Transport;
 
 use crate::cli::Args;
 use crate::health;
@@ -130,12 +130,12 @@ pub fn spawn_video_peer(args: &Args, transport: Arc<Transport>, robot_id: String
         None => None,
     };
     tokio::spawn(async move {
-        use flo_rs::media::SourceSpec;
+        use crate::media::SourceSpec;
         let source = match device {
             Some(dev) => dev.to_source_spec(),
             None => SourceSpec::Videotest,
         };
-        if let Err(e) = flo_rs::video::start_video_with_source(&rid, &pid, tr, source).await {
+        if let Err(e) = crate::video::start_video_with_source(&rid, &pid, tr, source).await {
             tracing::error!(error = %e, "video failed");
         }
     });
@@ -160,8 +160,8 @@ pub fn run_rule_command(cmd: &[String]) -> Result<(), Box<dyn std::error::Error 
             let path = cmd.get(1).ok_or("usage: flo rule check <path>")?;
             let text =
                 std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
-            match flo_rs::semantic::parse_semantic(&text) {
-                Ok(doc) => match flo_rs::semantic::validate(&doc) {
+            match crate::semantic::parse_semantic(&text) {
+                Ok(doc) => match crate::semantic::validate(&doc) {
                     Ok(()) => {
                         println!("OK: {path} is a valid semantic ruleset");
                         Ok(())
