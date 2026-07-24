@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Single-binary Rust crate (package `flo`, edition 2024).
+Two-binary Rust crate (package `flo`, edition 2024).
 
 ## Dependencies
 
@@ -91,7 +91,7 @@ act push -W .github/workflows/security.yml --container-architecture linux/amd64
 - Dependabot (`cargo` + `github-actions`, weekly) keeps deps and action SHAs current.
 
 ## Notes
-- Entrypoint is `src/main.rs` (`fn main`).
+- Client entrypoint is `src/bin/flo-client.rs`; server entrypoint is `src/bin/flo-server.rs`.
 - `/target` is gitignored; `Cargo.lock` is committed.
 - Toolchain: cargo/rustc 1.97.1 (MSRV).
 
@@ -107,4 +107,4 @@ Default five roles (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-
 
 ### Domain docs
 
-Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`. Neither `CONTEXT.md` nor `docs/adr/` exist yet — create them when domain-modeling work begins.

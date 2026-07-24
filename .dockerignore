@@ -2,7 +2,6 @@
 .git
 .github
 target
-.scratch
 .agent
 .agents
 node_modules
