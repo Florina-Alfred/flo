@@ -2,14 +2,18 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
+use zenoh::sample::SampleKind;
 
 use crate::config::{ClientConfig, ServerConfig};
 use crate::transport::Transport;
 
 const REGISTRATION_KEY: &str = "fleet/registration";
 const DEREGISTRATION_KEY: &str = "fleet/deregistration";
+const LIVELINESS_PATTERN: &str = "robot/*/client/liveliness";
+const ALERT_HEARTBEAT_KEY: &str = "fleet/alerts/heartbeat";
 const REGISTRATION_RETRIES: u32 = 3;
 const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(5);
 const RETRY_BACKOFF_MS: u64 = 1000;
@@ -28,6 +32,7 @@ pub struct ClientEntry {
     pub config: Option<ClientConfig>,
 }
 
+#[derive(Clone)]
 pub struct RegistrationServer {
     clients: Arc<RwLock<HashMap<String, ClientEntry>>>,
     config: ServerConfig,
@@ -155,60 +160,31 @@ pub async fn run_registration_handler(
     transport: &Transport,
     reg_server: RegistrationServer,
 ) -> zenoh::Result<()> {
-    let clients = reg_server.clients.clone();
+    let reg = reg_server.clone();
 
     let _reg_qable = transport
         .session
         .declare_queryable(REGISTRATION_KEY)
         .callback(move |query| {
-            let clients = clients.clone();
+            let reg = reg.clone();
             tokio::spawn(async move {
-                let robot_id = query.selector().key_expr().to_string();
-                let payload = query.payload();
-                let payload_bytes = payload.map(|p| p.to_bytes()).unwrap_or_default();
-                let config_str = String::from_utf8_lossy(&payload_bytes);
-
-                match ClientConfig::from_toml(&config_str) {
-                    Ok(client_config) => {
-                        let result = async {
-                            let mut clients = clients.write().await;
-                            if let Some(entry) = clients.get(&robot_id) {
-                                match entry.state {
-                                    ClientState::Poisoned => {
-                                        return Err(RegistrationError::Poisoned);
-                                    }
-                                    ClientState::Registered => {
-                                        return Err(RegistrationError::AlreadyRegistered);
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            clients.insert(
-                                robot_id.clone(),
-                                ClientEntry {
-                                    state: ClientState::Registered,
-                                    config: Some(client_config),
-                                },
-                            );
-                            Ok(())
-                        }
-                        .await;
-                        match result {
-                            Ok(()) => {
-                                let _ = query.reply(REGISTRATION_KEY, "ack");
-                            }
-                            Err(RegistrationError::AlreadyRegistered) => {
-                                let _ = query.reply(REGISTRATION_KEY, "reject:already_registered");
-                            }
-                            Err(RegistrationError::Poisoned) => {
-                                let _ = query.reply(REGISTRATION_KEY, "reject:poisoned");
-                            }
-                            _ => {}
-                        }
-                    }
+                let bytes = query.payload().map(|p| p.to_bytes()).unwrap_or_default();
+                let payload: RegistrationPayload = match serde_json::from_slice(&bytes) {
+                    Ok(p) => p,
                     Err(e) => {
-                        let _ = query.reply(REGISTRATION_KEY, format!("reject:invalid_config:{e}"));
+                        let _ = query.reply(REGISTRATION_KEY, format!("reject:bad_payload:{e}"));
+                        return;
                     }
+                };
+                match reg.register(&payload.robot_id, payload.config).await {
+                    Ok(()) => { let _ = query.reply(REGISTRATION_KEY, "ack"); }
+                    Err(RegistrationError::AlreadyRegistered) => {
+                        let _ = query.reply(REGISTRATION_KEY, "reject:already_registered");
+                    }
+                    Err(RegistrationError::Poisoned) => {
+                        let _ = query.reply(REGISTRATION_KEY, "reject:poisoned");
+                    }
+                    _ => {}
                 }
             });
         })
@@ -221,7 +197,12 @@ pub async fn run_registration_handler(
         .callback(move |query| {
             let clients = clients_dereg.clone();
             tokio::spawn(async move {
-                let robot_id = query.selector().key_expr().to_string();
+                let bytes = query.payload().map(|p| p.to_bytes()).unwrap_or_default();
+                let robot_id = String::from_utf8_lossy(&bytes).to_string();
+                if robot_id.is_empty() {
+                    let _ = query.reply(DEREGISTRATION_KEY, "missing robot_id");
+                    return;
+                }
                 let mut clients = clients.write().await;
                 if let Some(entry) = clients.get(&robot_id)
                     && entry.state == ClientState::Registered
@@ -241,20 +222,86 @@ pub async fn run_registration_handler(
     Ok(())
 }
 
+pub async fn run_heartbeat_monitor(
+    transport: &Transport,
+    reg_server: RegistrationServer,
+) -> zenoh::Result<()> {
+    let clients = reg_server.clients;
+    let session = transport.session.clone();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, SampleKind)>();
+
+    let _sub = transport
+        .session
+        .liveliness()
+        .declare_subscriber(LIVELINESS_PATTERN)
+        .callback(move |sample| {
+            let key = sample.key_expr().to_string();
+            let kind = sample.kind();
+            let _ = tx.send((key, kind));
+        })
+        .await?;
+
+    tokio::spawn(async move {
+        while let Some((key, kind)) = rx.recv().await {
+            let parts: Vec<&str> = key.split('/').collect();
+            if parts.len() < 2 {
+                continue;
+            }
+            let robot_id = parts[1].to_string();
+            match kind {
+                SampleKind::Put => {
+                    info!(%robot_id, "heartbeat: client alive");
+                }
+                SampleKind::Delete => {
+                    let mut w = clients.write().await;
+                    if let Some(entry) = w.get(&robot_id)
+                        && entry.state == ClientState::Registered
+                    {
+                        warn!(%robot_id, "heartbeat: client disconnected unexpectedly — poisoning");
+                        w.insert(
+                            robot_id.clone(),
+                            ClientEntry {
+                                state: ClientState::Poisoned,
+                                config: None,
+                            },
+                        );
+                        let alert_topic =
+                            format!("{ALERT_HEARTBEAT_KEY}/{robot_id}");
+                        let _ = session.put(alert_topic, "poisoned").await;
+                    }
+                }
+            }
+        }
+    });
+
+    std::future::pending::<()>().await;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistrationPayload {
+    pub robot_id: String,
+    pub config: ClientConfig,
+}
+
 pub async fn register_with_client(
     transport: &Transport,
     robot_id: &str,
     config: &ClientConfig,
 ) -> Result<(), RegistrationError> {
-    let config_toml = toml::to_string(config).map_err(|e| {
-        RegistrationError::ServerError(format!("failed to serialize config: {e}"))
+    let payload = RegistrationPayload {
+        robot_id: robot_id.to_string(),
+        config: config.clone(),
+    };
+    let payload_json = serde_json::to_vec(&payload).map_err(|e| {
+        RegistrationError::ServerError(format!("failed to serialize payload: {e}"))
     })?;
 
     for attempt in 1..=REGISTRATION_RETRIES {
         let replies = transport
             .session
             .get(REGISTRATION_KEY)
-            .payload(config_toml.as_bytes())
+            .payload(payload_json.clone())
             .timeout(REGISTRATION_TIMEOUT)
             .await
             .map_err(|e| RegistrationError::ServerError(e.to_string()))?;

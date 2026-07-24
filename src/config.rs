@@ -16,6 +16,13 @@ pub struct RuleStore {
 }
 
 impl RuleStore {
+    /// Create a store from an already-compiled ruleset.
+    pub fn new(rules: Arc<Rules>) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(rules)),
+        }
+    }
+
     /// Bootstrap from TOML text (e.g. the ConfigMap mount). A bad parse is fatal at
     /// startup so misconfiguration fails fast rather than silently running stale rules.
     pub fn bootstrap(toml_text: &str) -> Result<Self, toml::de::Error> {
@@ -155,9 +162,7 @@ pub async fn run_hot_reload_with_registry(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Client and server config schemas (Tickets #98, #99)
-// ---------------------------------------------------------------------------
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientConfig {

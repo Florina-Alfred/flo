@@ -6,7 +6,7 @@ use tracing::info;
 use crate::auth::{AuthConfig, AuthMode};
 use crate::config::{RuleStore, ServerConfig, run_hot_reload_with_registry};
 use crate::engine;
-use crate::registration::{RegistrationServer, run_registration_handler};
+use crate::registration::{RegistrationServer, run_heartbeat_monitor, run_registration_handler};
 use crate::registry::Registry;
 use crate::transport::Transport;
 
@@ -56,7 +56,8 @@ pub async fn run_server(
     tokio::try_join!(
         engine::run_engine(transport.clone(), store.clone(), counter),
         run_hot_reload_with_registry(&transport, &robot_id, store.clone(), registry),
-        run_registration_handler(&transport, reg_server),
+        run_registration_handler(&transport, reg_server.clone()),
+        run_heartbeat_monitor(&transport, reg_server),
     )?;
     Ok(())
 }

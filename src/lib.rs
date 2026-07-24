@@ -12,6 +12,7 @@ pub mod demo;
 pub mod device;
 pub mod engine;
 pub mod health;
+pub mod mutation;
 pub mod production;
 pub mod registration;
 pub mod registry;

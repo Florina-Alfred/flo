@@ -33,6 +33,9 @@ pub struct Transport {
     _tokens: Vec<zenoh::liveliness::LivelinessToken>,
 }
 
+/// A subscriber that can be dropped to unsubscribe.
+pub type ManagedSubscriber = zenoh::pubsub::Subscriber<()>;
+
 impl Transport {
     /// Wrap an already-open `zenoh::Session` in a `Transport`. Used by the server
     /// mode which opens the session as a router via `zenoh::open` with an auth
@@ -120,6 +123,23 @@ impl Transport {
             .declare_subscriber(key_expr)
             .callback(on_sample)
             .background()
+            .await
+    }
+
+    /// Subscribe to a key-expression and return a handle that, when dropped,
+    /// unsubscribes. Useful for subscribers whose lifecycle must be managed
+    /// (e.g. hot-swap subscriber teardown).
+    pub async fn subscribe_managed<F>(
+        &self,
+        key_expr: &str,
+        on_sample: F,
+    ) -> zenoh::Result<ManagedSubscriber>
+    where
+        F: Fn(zenoh::sample::Sample) + Send + Sync + 'static,
+    {
+        self.session
+            .declare_subscriber(key_expr)
+            .callback(on_sample)
             .await
     }
 }

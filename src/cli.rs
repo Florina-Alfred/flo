@@ -19,9 +19,13 @@ pub struct Args {
     #[arg(long, value_name = "ID")]
     pub robot_id: Option<String>,
 
-    /// Rules TOML (production mode); omit for the built-in demo rules.
+    /// TOML config file path (required for client mode).
     #[arg(long, value_name = "PATH")]
     pub config: Option<String>,
+
+    /// Ruleset TOML file path (optional; uses built-in demo rules otherwise).
+    #[arg(long, value_name = "PATH")]
+    pub ruleset: Option<String>,
 
     /// Authentication mode: `mtls` (default), `ed25519`, or `none` (dev/air-gapped
     /// only; production blocks it unless --auth-allow-insecure is set).

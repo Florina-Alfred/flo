@@ -7,7 +7,7 @@ use tracing::{debug, info, warn};
 
 use crate::config::RuleStore;
 use crate::rules::{Action, EvalMode, Op, Operand, Predicate, PrimitiveRef, Rules, Trigger, When};
-use crate::transport::Transport;
+use crate::transport::{ManagedSubscriber, Transport};
 
 /// Epsilon for float equality so `==`/`!=` do not fail on IEEE rounding dust.
 const EPSILON: f64 = 1e-9;
@@ -221,82 +221,18 @@ pub async fn run_engine(
     store: RuleStore,
     eval_counter: Arc<AtomicU64>,
 ) -> zenoh::Result<()> {
-    let rules = store.current().await;
-    let mut topics: Vec<String> = Vec::new();
-    for rule in &rules.rules {
-        collect_topics(&rule.when, &mut topics);
-    }
-    topics.sort();
-    topics.dedup();
-
-    // Open one subscriber per distinct sensor topic; each pushes (topic, payload)
-    // into the engine's mpsc channel via a callback running on Zenoh's runtime.
-    // Subscriptions are kept alive by Zenoh until the session closes.
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<(String, Value)>(256);
-    for topic in &topics {
-        let tx = tx.clone();
-        let topic_key = topic.clone();
-        let topic_for_closure = topic_key.clone();
-        transport
-            .subscribe(&topic_key, move |sample: zenoh::sample::Sample| {
-                let payload: Value =
-                    serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
-                let _ = tx.try_send((topic_for_closure.clone(), payload));
-            })
-            .await?;
-    }
-    info!(sensor_topics = ?topics, "rule engine subscribed");
+    let (sample_tx, mut sample_rx) = tokio::sync::mpsc::channel::<(String, Value)>(256);
 
     // Zone-tracking: observe zone entered/cleared to support SameZoneAs.
     let zone_tracker = Arc::new(std::sync::Mutex::new(ZoneTracker::new()));
-    {
-        let zt = zone_tracker.clone();
-        let tr = transport.clone();
-        tokio::spawn(async move {
-            let entered = "zone/*/entered";
-            if let Err(e) = tr
-                .subscribe(entered, move |sample: zenoh::sample::Sample| {
-                    let key = sample.key_expr().to_string();
-                    let parts: Vec<&str> = key.split('/').collect();
-                    if parts.len() >= 3 {
-                        let zone_id = parts[1];
-                        let payload: Value = serde_json::from_slice(&sample.payload().to_bytes())
-                            .unwrap_or(Value::Null);
-                        if let Some(robot_id) = payload.get("robot_id").and_then(|v| v.as_str()) {
-                            zt.lock().unwrap().enter_zone(robot_id, zone_id);
-                        }
-                    }
-                })
-                .await
-            {
-                warn!(error = %e, topic = entered, "zone entered subscribe failed");
-            }
-        });
-    }
-    {
-        let zt = zone_tracker.clone();
-        let tr = transport.clone();
-        tokio::spawn(async move {
-            let cleared = "zone/*/cleared";
-            if let Err(e) = tr
-                .subscribe(cleared, move |sample: zenoh::sample::Sample| {
-                    let key = sample.key_expr().to_string();
-                    let parts: Vec<&str> = key.split('/').collect();
-                    if parts.len() >= 3 {
-                        let zone_id = parts[1];
-                        let payload: Value = serde_json::from_slice(&sample.payload().to_bytes())
-                            .unwrap_or(Value::Null);
-                        if let Some(robot_id) = payload.get("robot_id").and_then(|v| v.as_str()) {
-                            zt.lock().unwrap().clear_zone(robot_id, zone_id);
-                        }
-                    }
-                })
-                .await
-            {
-                warn!(error = %e, topic = cleared, "zone cleared subscribe failed");
-            }
-        });
-    }
+    zone_background(transport.as_ref(), &zone_tracker);
+
+    // Collect initial topics and create subscribers.
+    let mut subscribers: Vec<ManagedSubscriber> = Vec::new();
+    let mut current_topics: Vec<String> = Vec::new();
+    let initial_rules = store.current().await;
+    subscribe_to_topics(&transport, &initial_rules, &sample_tx, &mut subscribers, &mut current_topics).await?;
+    info!(sensor_topics = ?current_topics, "rule engine subscribed");
 
     // Latest sample per topic, plus a re-evaluation tick so `when` holds compose.
     let latest: HashMap<String, Value> = HashMap::new();
@@ -346,9 +282,117 @@ pub async fn run_engine(
         }
     });
 
-    while let Some((topic, payload)) = rx.recv().await {
+    // Process samples and detect topic changes.
+    while let Some((topic, payload)) = sample_rx.recv().await {
         latest.lock().await.insert(topic, payload);
+        // Periodically (every 1024 samples) check for topic changes due to hot-swap.
+        // This is cheaper than a per-event lock on the store.
+        if sample_rx.len() % 256 == 0 {
+            let rules = store.current().await;
+            let mut new_topics = Vec::new();
+            for rule in &rules.rules {
+                collect_topics(&rule.when, &mut new_topics);
+            }
+            new_topics.sort();
+            new_topics.dedup();
+            if new_topics != current_topics {
+                info!("sensor topics changed — rebuilding subscribers");
+                let old = std::mem::take(&mut subscribers);
+                // Dropping the old Vec drops all subscriber handles, unsubscribing.
+                drop(old);
+                subscribe_to_topics(&transport, &rules, &sample_tx, &mut subscribers, &mut current_topics).await?;
+                info!(sensor_topics = ?current_topics, "subscribers rebuilt");
+            }
+        }
     }
+    Ok(())
+}
+
+fn zone_background(transport: &Transport, zone_tracker: &Arc<std::sync::Mutex<ZoneTracker>>) {
+    let zt = zone_tracker.clone();
+    tokio::spawn({
+        let entered = "zone/*/entered";
+        let tr = transport.session.clone();
+        async move {
+            if let Err(e) = tr
+                .declare_subscriber(entered)
+                .callback(move |sample: zenoh::sample::Sample| {
+                    let key = sample.key_expr().to_string();
+                    let parts: Vec<&str> = key.split('/').collect();
+                    if parts.len() >= 3 {
+                        let zone_id = parts[1];
+                        let payload: Value = serde_json::from_slice(&sample.payload().to_bytes())
+                            .unwrap_or(Value::Null);
+                        if let Some(robot_id) = payload.get("robot_id").and_then(|v| v.as_str()) {
+                            zt.lock().unwrap().enter_zone(robot_id, zone_id);
+                        }
+                    }
+                })
+                .background()
+                .await
+            {
+                warn!(error = %e, topic = entered, "zone entered subscribe failed");
+            }
+        }
+    });
+    let zt = zone_tracker.clone();
+    tokio::spawn({
+        let cleared = "zone/*/cleared";
+        let tr = transport.session.clone();
+        async move {
+            if let Err(e) = tr
+                .declare_subscriber(cleared)
+                .callback(move |sample: zenoh::sample::Sample| {
+                    let key = sample.key_expr().to_string();
+                    let parts: Vec<&str> = key.split('/').collect();
+                    if parts.len() >= 3 {
+                        let zone_id = parts[1];
+                        let payload: Value = serde_json::from_slice(&sample.payload().to_bytes())
+                            .unwrap_or(Value::Null);
+                        if let Some(robot_id) = payload.get("robot_id").and_then(|v| v.as_str()) {
+                            zt.lock().unwrap().clear_zone(robot_id, zone_id);
+                        }
+                    }
+                })
+                .background()
+                .await
+            {
+                warn!(error = %e, topic = cleared, "zone cleared subscribe failed");
+            }
+        }
+    });
+}
+
+/// Subscribe to all distinct topics from the ruleset using managed subscribers.
+async fn subscribe_to_topics(
+    transport: &Transport,
+    rules: &Rules,
+    tx: &tokio::sync::mpsc::Sender<(String, Value)>,
+    subscribers: &mut Vec<ManagedSubscriber>,
+    topics: &mut Vec<String>,
+) -> zenoh::Result<()> {
+    let mut new_topics: Vec<String> = Vec::new();
+    for rule in &rules.rules {
+        collect_topics(&rule.when, &mut new_topics);
+    }
+    new_topics.sort();
+    new_topics.dedup();
+    for topic in &new_topics {
+        let tx = tx.clone();
+        let key_expr = topic.clone();
+        let sub = transport
+            .subscribe_managed(&key_expr, {
+                let key = key_expr.clone();
+                move |sample: zenoh::sample::Sample| {
+                    let payload: Value =
+                        serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
+                    let _ = tx.try_send((key.clone(), payload));
+                }
+            })
+            .await?;
+        subscribers.push(sub);
+    }
+    *topics = new_topics;
     Ok(())
 }
 
