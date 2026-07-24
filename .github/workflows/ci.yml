@@ -26,10 +26,8 @@ env:
 
 jobs:
   # Detect whether the change affects Rust (code/Cargo.toml/workflows) or is
-  # docs-only. Docs-only PRs skip the Rust gate entirely (the required checks
-  # report "skipped", which satisfies branch protection) so doc changes don't
-  # burn CI minutes or block on a full build. Implemented with plain git diff
-  # (no third-party action) so the supply-chain surface stays minimal.
+  # docs-only. Implemented with plain git diff (no third-party action) so the
+  # supply-chain surface stays minimal.
   changes:
     name: changes
     runs-on: ubuntu-latest
@@ -71,38 +69,40 @@ jobs:
   fmt:
     name: fmt
     needs: [changes]
-    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
+      - if: needs.changes.outputs.rust == 'true'
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
         with:
           toolchain: "1.97.1"
           components: rustfmt
-      - name: Check formatting
+      - if: needs.changes.outputs.rust == 'true'
+        name: Check formatting
         run: cargo fmt --all -- --check
 
   clippy:
     name: clippy
     needs: [changes]
-    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
+      - if: needs.changes.outputs.rust == 'true'
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
         with:
           toolchain: "1.97.1"
           components: clippy
-      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
-      - name: Clippy (deny warnings)
+      - if: needs.changes.outputs.rust == 'true'
+        uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
+      - if: needs.changes.outputs.rust == 'true'
+        name: Clippy (deny warnings)
         run: cargo clippy --all-targets -- -D warnings
 
   test:
     name: test (${{ matrix.rust }})
     needs: [changes]
-    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -111,13 +111,17 @@ jobs:
         rust: [stable, beta, "1.97.1"]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
+      - if: needs.changes.outputs.rust == 'true'
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
         with:
           toolchain: ${{ matrix.rust }}
-      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
-      - name: Cargo check
+      - if: needs.changes.outputs.rust == 'true'
+        uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
+      - if: needs.changes.outputs.rust == 'true'
+        name: Cargo check
         run: cargo check --all-targets
-      - name: Cargo test
+      - if: needs.changes.outputs.rust == 'true'
+        name: Cargo test
         run: cargo test --bin flo
 
   # The `media` feature needs system GStreamer, so it is excluded from the
