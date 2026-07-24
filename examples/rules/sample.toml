@@ -1,11 +1,8 @@
-# Example ruleset for `cargo run --example custom_rules`.
-# Fires a STOP when the bumper is pressed, exactly like the built-in demo rule.
-
 [[rules]]
 name = "e-stop-on-bumper"
 when.all = [
-  { topic = "robot/7/local/bumper", pred = "pressed == true" },
-  { topic = "robot/7/local/imu",     pred = "speed_mps > 0.2" },
+  { topic = "robot-7/local/bumper", pred = "pressed == true" },
+  { topic = "robot-7/local/imu",    pred = "speed_mps > 0.2" },
 ]
 actions = [
   { topic = "stop/fleet/cmd", qos = "reliable", payload = { stop = true } },

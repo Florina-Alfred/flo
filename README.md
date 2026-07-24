@@ -1,64 +1,195 @@
 # flo
 
-**`flo` is a Kubernetes robot orchestration client written in safe Rust: sensors and
-actuators run in a container, subscribe to data over a Zenoh mesh, and act on it locally
-using declarative, hot-reloadable TOML rules.**
+**flo** is a robot fleet orchestration system written in safe Rust. Two binaries
+— `flo-server` (fleet coordinator) and `flo-client` (robot agent) — communicate
+over a [Zenoh] mesh to provide declarative, hot-reloadable rule execution,
+registration, and heartbeat monitoring for a fleet of robots.
 
-## Install & quick start
+[Zenoh]: https://zenoh.io/
 
-```bash
-cargo install flo-rs     # publishes the binary as `flo`
-flo                      # runs the built-in demo on loopback Zenoh
+## Quick start — three-terminal demo
+
+### Terminal 1: Start the server
+
+Create a server config that tells the fleet coordinator which robots to expect:
+
+```toml
+# server-config.toml
+[[expected_clients]]
+robot_id = "robot-7"
+
+[[expected_clients]]
+robot_id = "robot-8"
 ```
 
-`cargo install flo-rs` installs the `flo` binary (the published crate is `flo-rs`; bare
-`flo` on crates.io is an unrelated project). Running `flo` with no arguments starts the
-local demo: synthetic sensors publish over a loopback Zenoh mesh and the real rule engine
-evaluates the two built-in demo rules:
-
-- `e-stop-on-bumper` — bumper pressed AND moving → reliable STOP command.
-- `lidar-block-slowdown` — lidar min range < 0.5 m → best-effort slowdown.
-
-No Kubernetes, devices, camera, or config file is required for the demo.
-
-## What you get
-
-- **Zenoh mesh transport** for sensor/actuator traffic (`zenoh` 1.9, unstable features).
-- **Hot-reloadable TOML rule engine** — rules live on a Zenoh topic and reload at runtime.
-- **Kubernetes fleet coordination** — nodes discover each other and coordinate over the
-  same Zenoh mesh (intended for DaemonSet deployment).
-- **WebRTC video** (feature-gated) — peer-to-peer video via `webrtc` 0.17, with GStreamer
-  encode. Requires the `media` feature **and** a system GStreamer install.
-- **`#![forbid(unsafe_code)]`** — every source file in this crate is compiled with the
-  `unsafe` code forbidden.
-- **Zero system dependencies by default** — the default build is pure Rust (Zenoh +
-  webrtc-rs). GStreamer is pulled in only by the `media` feature.
-- **CycloneDX SBOM** generated in CI (Security pipeline).
-
-## Examples
-
-Runnable examples live in [`examples/`](examples/). Exact commands (verbatim from the
-example headers):
+Launch the server (dev-mode, no mTLS):
 
 ```bash
-cargo run --example mesh_demo
-#   Run:  cargo run --example mesh_demo
-#   Then: cargo run --example mesh_demo -- --robot-id 8
-#   Two nodes mesh over loopback Zenoh and fire rules.
-
-cargo run --example custom_rules -- examples/rules/sample.toml
-#   Loads a TOML ruleset from a file and reacts to synthetic sensor publishes.
-
-cargo run --features media --example video_peer -- <peer-id>
-#   Requires the `media` feature + GStreamer. Without `media` it refuses to build.
+cargo run --bin flo-server -- \
+  --config server-config.toml \
+  --auth-mode none \
+  --auth-allow-insecure
 ```
 
-## Semantic rules (industrial)
+The server opens a Zenoh router, starts the registration handler on
+`fleet/registration`, and monitors client liveliness on
+`robot/*/client/liveliness`. It logs reachable endpoints — clients on the same
+machine will auto-discover it via multicast.
 
-Instead of raw Zenoh key-expressions, you can author rules against **zones, roles, poses,
-proximity, and human-presence**. `flo` compiles the semantic document to the same runtime rule
-engine — no engine change. Authoring is extended TOML (no new dependencies; `#![forbid(unsafe_code)]`
-preserved).
+### Terminal 2: Start the first robot
+
+Create a client config for `robot-7`:
+
+```toml
+[client]
+heartbeat_interval_ms = 1000
+
+[default_subscriptions.location]
+x = "robot-7/location/x"
+y = "robot-7/location/y"
+z = "robot-7/location/z"
+
+[default_subscriptions.zone]
+site_id = "robot-7/site"
+zone_enter = "zone/cell-3/7/enter"
+zone_exit = "zone/cell-3/7/exit"
+
+[default_publishers.location]
+topic = "robot-7/location"
+period_ms = 100
+
+[default_publishers.zone]
+topic = "robot-7/zone"
+period_ms = 1000
+```
+
+And a ruleset — a TOML file of `[[rules]]` that declare sensor triggers and
+actions:
+
+```toml
+# robot-7-rules.toml
+[[rules]]
+name = "e-stop-on-bumper"
+when.all = [
+  { topic = "robot-7/local/bumper", pred = "pressed == true" },
+  { topic = "robot-7/local/imu",    pred = "speed_mps > 0.2" },
+]
+actions = [
+  { topic = "stop/fleet/cmd", qos = "reliable", payload = { stop = true } },
+]
+```
+
+Launch the client:
+
+```bash
+cargo run --bin flo -- \
+  --robot-id robot-7 \
+  --config robot-7-config.toml \
+  --ruleset robot-7-rules.toml \
+  --auth-mode none \
+  --auth-allow-insecure
+```
+
+The client joins the Zenoh mesh, declares its liveliness token, sends its
+config to the server via `fleet/registration`, and starts the rule engine.
+
+### Terminal 3: Start a second robot
+
+Create the same files for `robot-8` (different topic paths, ruleset, and
+robot-id), then launch:
+
+```bash
+cargo run --bin flo -- \
+  --robot-id robot-8 \
+  --config robot-8-config.toml \
+  --ruleset robot-8-rules.toml \
+  --auth-mode none \
+  --auth-allow-insecure
+```
+
+The server now tracks both clients. If a client's liveliness token drops
+unexpectedly, the server transitions it to the **Poisoned** state and publishes
+an alert on `fleet/alerts/heartbeat/{robot_id}`.
+
+## Architecture
+
+```
+┌──────────────┐    Zenoh mesh (pub/sub + queryable + liveliness)
+│  flo-server  │◄──────────────────────────────────────────┐
+│  (fleet      │                                           │
+│  coordinator)│  fleet/registration ──────► register      │
+│              │  fleet/deregistration ───► deregister     │
+│              │  robot/*/client/liveliness ──► heartbeat  │
+│              │  fleet/alerts/heartbeat/* ──► poison      │
+└──────────────┘                                           │
+                                                           │
+┌──────────────┐    ┌──────────────┐                       │
+│  flo-client  │    │  flo-client  │                       │
+│  (robot-7)   │    │  (robot-8)   │                       │
+│              │    │              │                       │
+│  rule engine │    │  rule engine │                       │
+│  subscribers │    │  subscribers │                       │
+└──────────────┘    └──────────────┘                       │
+        │                      │                           │
+        │   robot-7/local/*    │   robot-8/local/*         │
+        ▼                      ▼                           │
+  [sensor data]          [sensor data]                     │
+                                                           │
+  Zone events are shared fleet-wide:                       │
+  zone/*/entered, zone/*/cleared ─────────► zone tracker   │
+```
+
+## Key concepts
+
+### Rules
+
+Rules are declarative TOML documents. Each rule has a name, a `when` condition,
+and one or more `actions`:
+
+```toml
+[[rules]]
+name = "slow-near-human"
+when.all = [
+  { topic = "robot-7/local/human_present", pred = "presence < 1.2" },
+]
+actions = [
+  { topic = "robot-7/local/drive", qos = "best_effort", payload = { speed_mps = 0.1 } },
+]
+```
+
+**Predicate operators:** `==`, `!=`, `>`, `>=`, `<`, `<=` on string, float, and
+boolean operands. Predicates are typed under the hood (`Comparison`, `And`,
+`Or`, `Not` trees).
+
+**Eval modes:** each trigger in `when.all` / `when.any` fires on **edge**
+(state change) by default. Set `mode = "level"` to fire continuously while
+true.
+
+**Hot-reload:** rulesets are loaded at startup from `--ruleset <path>`. The
+engine detects topic changes and rebuilds subscribers automatically (old
+subscriptions are dropped, new ones created).
+
+### Registration & state machine
+
+Clients register with the server via a Zenoh Queryable on `fleet/registration`.
+The server tracks each client through:
+
+```
+Unknown  ──►  Expected  ──►  Registered  ──►  Poisoned
+                  │                              │
+                  └── (from server config)        └── (liveliness drop)
+```
+
+- **Expected:** robot_id listed in the server's `[[expected_clients]]`.
+- **Registered:** client sent a valid registration payload and the server
+  accepted it.
+- **Poisoned:** client's liveliness token dropped without a clean
+  deregistration. Subsequent registration attempts are rejected.
+
+### Semantic rules (industrial)
+
+For higher-level authoring — against zones, sites, robot proximity, and
+human presence — use the semantic document format:
 
 ```toml
 [site]
@@ -75,142 +206,94 @@ Validate before deploy:
 
 ```bash
 flo rule check examples/rules/hrc-cell.toml
+flo rule check examples/rules/warehouse-fleet.toml
 ```
 
-Semantic `when` keys: `in_zone`, `not_in_zone`, `near_human`, `not_near_human`, `near`,
-`role`. Actions: `estop` (reliable STOP), `slow_to(speed)` (best-effort), `resume`. See
-`examples/rules/` for an HRC safety cell and a warehouse AMR fleet. **Full rules guide
-(mental model, topic contract, composition, fail-safe behavior, worked examples):
-[docs/RULES.md](docs/RULES.md).**
+See `docs/RULES.md` for the full semantic guide.
 
-**Safety posture:** `flo` is the software pre-estop / coordination layer. Missing or invalid
-config starts `flo` in a fail-safe state (no unrestricted motion commands); pose loss fails
-safe. Hardware STO / certified Safety-PLC remains the primary stop authority.
+## Configuration
 
-## Configuration / rules
+### Client config (`--config`)
 
-The demo ships with built-in rules. In production mode, pass your own rules file:
-
-```bash
-flo --robot-id 7 --config /etc/flo/rules.toml   # production mode (k8s DaemonSet)
-```
-
-With no `--config`, `flo` loads an **empty** ruleset (`rules = []`). Rules are TOML; the
-rule engine supports composable `when.all` / `when.any` triggers and publishes actions to
-Zenoh topics. A sample ruleset (`examples/rules/sample.toml`):
+Every field is required (missing fields are a fatal validation error):
 
 ```toml
-# Example ruleset for `cargo run --example custom_rules`.
-# Fires a STOP when the bumper is pressed, exactly like the built-in demo rule.
+[client]
+heartbeat_interval_ms = 1000
 
-[[rules]]
-name = "e-stop-on-bumper"
-when.all = [
-  { topic = "robot/7/local/bumper", pred = "pressed == true" },
-  { topic = "robot/7/local/imu",     pred = "speed_mps > 0.2" },
-]
-actions = [
-  { topic = "stop/fleet/cmd", qos = "reliable", payload = { stop = true } },
-]
+[default_subscriptions.location]
+x = "robot-7/location/x"
+y = "robot-7/location/y"
+z = "robot-7/location/z"
+
+[default_subscriptions.zone]
+site_id = "robot-7/site"
+zone_enter = "zone/cell-3/7/enter"
+zone_exit = "zone/cell-3/7/exit"
+
+[default_publishers.location]
+topic = "robot-7/location"
+period_ms = 100
+
+[default_publishers.zone]
+topic = "robot-7/zone"
+period_ms = 1000
 ```
 
-Rules can be hot-reloaded at runtime via the Zenoh topic `robot/<id>/local/rules`.
+Robot ID comes from `--robot-id` (or `FLO_ROBOT_ID` env), not from the config
+file — so the same config template can be used across the fleet with only the
+robot-id flag changing.
+
+### Server config
+
+```toml
+[[expected_clients]]
+robot_id = "robot-7"
+
+[[expected_clients]]
+robot_id = "robot-8"
+```
+
+If omitted, the server accepts all clients with a warning.
 
 ## Health & observability
 
-Every `flo` client exposes an HTTP server on `0.0.0.0:8080` with liveness,
-readiness, and Prometheus metrics endpoints. This is what Kubernetes probes
-and your monitoring stack scrape.
+Every `flo` client exposes an HTTP server on `0.0.0.0:8080`:
 
 | Endpoint | Method | Meaning |
 | --- | --- | --- |
-| `/healthz` | GET | **Liveness** — always `200 OK` while the process is up. |
-| `/readyz`  | GET | **Readiness** — `200` once `flo` has started and declared its subsystems (zenoh session + liveliness); `503` before that. |
-| `/metrics` | GET | **Prometheus** text exposition (`text/plain; version=0.0.4`) of `flo_uptime_seconds`, `flo_process_ready`, and `flo_rule_eval_total`. |
+| `/healthz` | GET | Liveness — `200 OK` while the process is up. |
+| `/readyz`  | GET | Readiness — `200` once subsystems are started. |
+| `/metrics` | GET | Prometheus exposition: `flo_uptime_seconds`, `flo_process_ready`, `flo_rule_eval_total`. |
 
 ```bash
-# Liveness probe (k8s)
 curl -f http://localhost:8080/healthz
-
-# Wait until flo is fully up
 curl -f http://localhost:8080/readyz
-
-# Scrape metrics for Prometheus
 curl -f http://localhost:8080/metrics
 ```
 
-Structured logging is initialized at startup. Set `FLO_JSON_LOGS=1` to emit
-JSON logs (for log aggregation); otherwise human-readable logs are printed.
-Log verbosity follows `RUST_LOG` (e.g. `RUST_LOG=info`, default `info`).
+Structured JSON logging: `FLO_JSON_LOGS=1`. Verbosity: `RUST_LOG` (default
+`info`).
 
-## Security & supply chain
-
-| Property | Status |
-| --- | --- |
-| `unsafe` code in our crate | Forbidden (`#![forbid(unsafe_code)]`) |
-| Default build system deps | None (pure Rust; Zenoh + webrtc-rs) |
-| SBOM | CycloneDX, generated in CI (Security pipeline) |
-| CI runners | `ubuntu-latest` only (standard, free) |
-| Dependency audit | `cargo-audit` hard gate in CI (RUSTSEC) |
-| Docker | Skeleton (distroless, non-root) — not yet published |
-
-CI notes (from AGENTS.md and `.github/workflows/security.yml`):
-
-- **Minimal gate** (`ci.yml`) runs on every branch/PR: `fmt`, `cargo clippy -- -D warnings`,
-  and a `test` matrix (`stable`, `beta`, `1.97.1`). It is the required status-check gate for
-  merging into `main`.
-- **Full security pipeline** (`security.yml`) runs only on `main` (push) and `v*` tags:
-  `cargo-audit` (RUSTSEC, hard gate with allowlisted advisories in `audit.toml`),
-  `cargo-deny` (licenses + banned deps), Trivy filesystem scan (SARIF), and CodeQL (Rust).
-- All third-party GitHub Actions are pinned to full commit SHAs.
-- The `media` feature is excluded from CI (needs system GStreamer); default features only.
-- The Dockerfile is a **skeleton** successfully built but **not** published by CI. It uses a
-  distroless base and runs as the non-root `nonroot` user.
-
-## Building from source / development
+## Building from source
 
 ```bash
 cargo build          # default features (no system deps)
-cargo run            # runs the built-in demo
-cargo test           # runs the test suite
-cargo clippy         # lints, -D warnings in CI
-cargo fmt            # formats the code
+cargo test           # 56+ tests
+cargo clippy         # lint (deny warnings)
+cargo fmt            # format
 ```
 
-The `media` feature requires a system GStreamer install
-(`gstreamer`, `gstreamer-app`, `gstreamer-video` 0.25). It is feature-gated so the default
-build needs no system libraries.
+The `media` feature (WebRTC video with GStreamer) is feature-gated — see
+`scripts/setup-dev.sh` for system package install, then build with
+`--features media`.
 
-### Media feature setup
+## Safety posture
 
-The `media` feature wraps GStreamer for video capture/encoding and is **not** part of
-the default build. Install the system dev packages with the provided helper:
-
-```bash
-./scripts/setup-dev.sh            # auto-detects apt (Debian/Ubuntu) or brew (macOS)
-./scripts/setup-dev.sh --apt      # force apt
-./scripts/setup-dev.sh --brew     # force Homebrew (macOS)
-```
-
-What it installs: the GStreamer dev libraries plus the base/good/bad/ugly runtime
-plugin packages — `libgstreamer1.0-dev`, `libgstreamer-plugins-base1.0-dev`,
-`libx264-dev`, `gstreamer1.0-plugins-base`, `gstreamer1.0-plugins-good`,
-`gstreamer1.0-plugins-bad`, `gstreamer1.0-plugins-ugly` (apt) or
-`gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly x264`
-(brew).
-
-Then build/test with the feature enabled:
-
-```bash
-cargo build  --features media
-cargo test   --features media --bin flo
-cargo run    --features media --example video_peer -- <peer-id>
-```
-
-`pkg-config` must resolve `gstreamer-1.0`, `gstreamer-app-1.0`, and
-`gstreamer-video-1.0`; set `PKG_CONFIG_PATH` if your install is in a non-standard
-location. CI installs the same packages in the `media` job (see
-`.github/workflows/ci.yml`).
+flo is the software pre-estop / coordination layer. Missing or invalid config
+starts flo in a fail-safe state. Hardware STO / certified Safety-PLC remains
+the primary stop authority. `#[forbid(unsafe_code)]` enforced on every source
+file.
 
 ## License
 
