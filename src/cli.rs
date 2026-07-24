@@ -5,13 +5,13 @@
 //! The `rule` subcommand (`flo rule check <path>`) is captured as
 //! `Command::Rule { args }` and handed to the existing `run_rule_command`.
 
+use crate::codec::Codec;
 use clap::{Args as ClapArgs, Parser, Subcommand};
-use flo_rs::codec::Codec;
 
 /// flo - robot orchestration client.
 ///
-/// With no arguments, runs the local demo (simulated sensors + rule engine on a
-/// loopback zenoh mesh). Provide `--robot-id` / `--config` for production mode.
+/// With no arguments, runs the local demo (rule engine on a loopback zenoh mesh).
+/// Provide `--robot-id` / `--config` for production mode.
 #[derive(Parser, Debug)]
 #[command(name = "flo", version, about, long_about = None)]
 pub struct Args {
@@ -19,9 +19,13 @@ pub struct Args {
     #[arg(long, value_name = "ID")]
     pub robot_id: Option<String>,
 
-    /// Rules TOML (production mode); omit for the built-in demo rules.
+    /// TOML config file path (required for client mode).
     #[arg(long, value_name = "PATH")]
     pub config: Option<String>,
+
+    /// Ruleset TOML file path (optional; uses built-in demo rules otherwise).
+    #[arg(long, value_name = "PATH")]
+    pub ruleset: Option<String>,
 
     /// Authentication mode: `mtls` (default), `ed25519`, or `none` (dev/air-gapped
     /// only; production blocks it unless --auth-allow-insecure is set).
@@ -45,14 +49,6 @@ pub struct Args {
     /// (ed25519).
     #[arg(long, value_name = "PATH")]
     pub auth_trust: Option<String>,
-
-    /// Publish synthetic sensor samples (demo input).
-    #[arg(long)]
-    pub simulate: bool,
-
-    /// Sensor round interval in milliseconds (default 1000; demo fires 1/s).
-    #[arg(long, value_name = "N", default_value_t = 1000)]
-    pub simulate_period_ms: u64,
 
     /// Run mode: client (default) or server (co-located router + rule engine).
     #[arg(long, value_name = "MODE", default_value_t = Mode::Client)]

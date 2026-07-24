@@ -1,12 +1,7 @@
-//! Load a TOML ruleset from a file and react to synthetic sensor publishes.
-//! Run:  cargo run --example custom_rules -- examples/rules/sample.toml
-//! The ruleset is also hot-reloadable via the Zenoh topic robot/<id>/local/rules.
-
 use std::sync::Arc;
 
 use flo_rs::config::{RuleStore, run_hot_reload};
 use flo_rs::engine;
-use flo_rs::simulate;
 use flo_rs::transport::{RULES_KEY, Transport};
 
 #[tokio::main]
@@ -50,15 +45,6 @@ async fn main() -> anyhow::Result<()> {
             .await
             {
                 eprintln!("engine exited: {e}");
-            }
-        });
-    }
-    {
-        let t = transport.clone();
-        let r = robot_id.clone();
-        tokio::spawn(async move {
-            if let Err(e) = simulate::simulate_sensors(&t, &r, 1000).await {
-                eprintln!("simulator exited: {e}");
             }
         });
     }

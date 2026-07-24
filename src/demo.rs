@@ -1,19 +1,18 @@
-//! Local demo mode: loopback zenoh, built-in rules, simulated sensors, loud
-//! verdicts. `cargo run` with no args lands here.
+//! Local demo mode: loopback zenoh, built-in rules, loud verdicts.
+//! `cargo run` with no args lands here.
 
 use std::sync::Arc;
 
-use tracing::{error, info};
+use tracing::info;
 
-use flo_rs::auth::{AuthConfig, AuthMode};
-use flo_rs::config::RuleStore;
-use flo_rs::simulate;
-use flo_rs::transport::Transport;
+use crate::auth::{AuthConfig, AuthMode};
+use crate::config::RuleStore;
+use crate::transport::Transport;
 
 use crate::cli::Args;
 use crate::common::{block_indefinitely, spawn_video_peer, start_common_subsystems};
 
-/// Run the local demo: simulated sensors + rule engine on a loopback zenoh mesh.
+/// Run the local demo: rule engine on a loopback zenoh mesh.
 pub async fn run_demo(
     args: Args,
     robot_id: String,
@@ -46,16 +45,6 @@ pub async fn run_demo(
     let store = RuleStore::bootstrap_demo(&robot_id);
 
     start_common_subsystems(&transport, &store, &robot_id, &args).await;
-
-    // Simulated sensor input (the demo's fake hardware). Demo always simulates.
-    let transport_sim = transport.clone();
-    let robot_id_sim = robot_id.clone();
-    let period = args.simulate_period_ms.max(100);
-    tokio::spawn(async move {
-        if let Err(e) = simulate::simulate_sensors(&transport_sim, &robot_id_sim, period).await {
-            error!(error = %e, "simulator exited");
-        }
-    });
 
     spawn_video_peer(&args, transport, robot_id);
 

@@ -3,11 +3,12 @@ use std::sync::atomic::AtomicU64;
 
 use tracing::info;
 
-use flo_rs::auth::{AuthConfig, AuthMode};
-use flo_rs::config::{RuleStore, run_hot_reload_with_registry};
-use flo_rs::engine;
-use flo_rs::registry::Registry;
-use flo_rs::transport::Transport;
+use crate::auth::{AuthConfig, AuthMode};
+use crate::config::{RuleStore, ServerConfig, run_hot_reload_with_registry};
+use crate::engine;
+use crate::registration::{RegistrationServer, run_heartbeat_monitor, run_registration_handler};
+use crate::registry::Registry;
+use crate::transport::Transport;
 
 use crate::cli;
 
@@ -26,6 +27,17 @@ pub async fn run_server(
     };
     auth.validate_production()?;
     let config = auth.zenoh_config(&robot_id)?;
+
+    // Load server config from environment or default.
+    let server_config = match &args.config {
+        Some(path) => {
+            let text = std::fs::read_to_string(path)
+                .map_err(|e| format!("cannot read server config {path}: {e}"))?;
+            ServerConfig::from_toml(&text)?
+        }
+        None => ServerConfig::default(),
+    };
+
     let session = zenoh::open(config).await?;
     let transport = Arc::new(Transport::from_session(session));
     let store = RuleStore::bootstrap_demo(&robot_id);
@@ -37,11 +49,15 @@ pub async fn run_server(
     std::fs::create_dir_all(db_path.parent().unwrap())?;
     let registry = Arc::new(Registry::new(&db_path)?);
 
+    let reg_server = RegistrationServer::new(server_config);
+
     info!("flo-engine server mode started (robot_id={robot_id})");
 
     tokio::try_join!(
         engine::run_engine(transport.clone(), store.clone(), counter),
         run_hot_reload_with_registry(&transport, &robot_id, store.clone(), registry),
+        run_registration_handler(&transport, reg_server.clone()),
+        run_heartbeat_monitor(&transport, reg_server),
     )?;
     Ok(())
 }

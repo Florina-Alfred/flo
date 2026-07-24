@@ -49,4 +49,8 @@ media = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video", "dep:webrt
 # The published crate is `flo-rs`, but the CLI binary users run stays `flo`.
 [[bin]]
 name = "flo"
-path = "src/main.rs"
+path = "src/bin/flo-client.rs"
+
+[[bin]]
+name = "flo-server"
+path = "src/bin/flo-server.rs"

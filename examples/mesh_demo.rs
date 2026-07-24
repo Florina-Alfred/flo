@@ -1,18 +1,11 @@
-//! Two-node loopback mesh + rule firing.
-//! Run:  cargo run --example mesh_demo
-//! Then in another terminal:  cargo run --example mesh_demo -- --robot-id 8
-//! Watch for "rule fired" as the two nodes mesh over loopback Zenoh.
-
 use std::sync::Arc;
 
 use flo_rs::config::RuleStore;
 use flo_rs::engine;
-use flo_rs::simulate;
 use flo_rs::transport::Transport;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Mirror the `flo` binary: accept --robot-id <id> or FLO_ROBOT_ID.
     let robot_id = std::env::var("FLO_ROBOT_ID")
         .ok()
         .or_else(|| {
@@ -49,15 +42,6 @@ async fn main() -> anyhow::Result<()> {
             .await
             {
                 eprintln!("engine exited: {e}");
-            }
-        });
-    }
-    {
-        let t = transport.clone();
-        let r = robot_id.clone();
-        tokio::spawn(async move {
-            if let Err(e) = simulate::simulate_sensors(&t, &r, 1000).await {
-                eprintln!("simulator exited: {e}");
             }
         });
     }
