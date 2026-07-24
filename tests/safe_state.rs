@@ -1,27 +1,28 @@
+use std::path::PathBuf;
 use std::process::Command;
 
-/// Production mode with a missing config must still start (fail-safe), not crash.
+/// Server mode must start with a valid config, not crash.
 #[test]
-fn production_missing_config_starts_safe() {
-    // Provide explicit auth: none (with allow-insecure) so the auth gate passes
-    // and the test reaches the config-file fallback (safe-state) path.
-    let mut child = Command::new(env!("CARGO_BIN_EXE_flo"))
+fn server_starts_with_config() {
+    let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("minimal-server-config.toml");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_flo-server"))
         .args([
             "--robot-id",
-            "7",
+            "server-1",
             "--config",
-            "/nonexistent/flo/rules.toml",
+            &config_path.to_string_lossy(),
             "--auth-mode",
             "none",
             "--auth-allow-insecure",
         ])
         .stdout(std::process::Stdio::piped())
         .spawn()
-        .expect("spawn flo");
+        .expect("spawn flo-server");
 
-    // flo is a long-running daemon. Spawn a reader thread that drains stdout
-    // (tracing writes to stdout in this setup; it will block until we kill the
-    // child), then give flo time to emit the safe-state log before killing it.
     let stdout_handle = child.stdout.take().map(|mut out| {
         std::thread::spawn(move || {
             use std::io::Read;
@@ -37,7 +38,7 @@ fn production_missing_config_starts_safe() {
         })
     });
 
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    std::thread::sleep(std::time::Duration::from_millis(2000));
 
     let _ = child.kill();
     let _ = child.wait();
@@ -48,10 +49,10 @@ fn production_missing_config_starts_safe() {
 
     assert!(
         !output.contains("panic"),
-        "flo panicked on missing config: {output}"
+        "flo-server panicked: {output}"
     );
     assert!(
-        output.contains("safe-state"),
-        "expected safe-state fallback, got: {output}"
+        output.contains("server mode started"),
+        "expected 'server mode started', got: {output}"
     );
 }

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{error, info};
 
@@ -29,14 +29,12 @@ impl RuleStore {
     /// `cargo run` with no args shows a rule firing immediately — no config file.
     /// `{id}` placeholders in the rules are rewritten to `robot_id`.
     pub fn bootstrap_demo(robot_id: &str) -> Self {
-        // e-stop-on-bumper: bumper pressed AND moving -> reliable STOP.
-        // lidar-block-slowdown: lidar min range < 0.5 -> best-effort slowdown.
         const DEMO: &str = r#"
 [[rules]]
 name = "e-stop-on-bumper"
 when.all = [
-  { topic = "robot/{id}/local/bumper", pred = "pressed == true" },
-  { topic = "robot/{id}/local/imu",     pred = "speed_mps > 0.2" },
+  { topic = "robot/{id}/local/bumper", pred = { Comparison = { op = "Eq", lhs = { Str = "pressed" }, rhs = { Bool = true } } } },
+  { topic = "robot/{id}/local/imu",    pred = { Comparison = { op = "Gt", lhs = { Str = "speed_mps" }, rhs = { Float = 0.2 } } } },
 ]
 actions = [
   { topic = "stop/fleet/cmd", qos = "reliable", payload = { stop = true } },
@@ -45,7 +43,7 @@ actions = [
 [[rules]]
 name = "lidar-block-slowdown"
 when.any = [
-  { topic = "lidar/fleet/scan", pred = "min_range_m < 0.5" },
+  { topic = "lidar/fleet/scan", pred = { Comparison = { op = "Lt", lhs = { Str = "min_range_m" }, rhs = { Float = 0.5 } } } },
 ]
 actions = [
   { topic = "robot/{id}/local/drive", qos = "best_effort", payload = { speed_mps = 0.1 } },
@@ -161,7 +159,7 @@ pub async fn run_hot_reload_with_registry(
 // Client and server config schemas (Tickets #98, #99)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientConfig {
     pub client: ClientSection,
     #[serde(default)]
@@ -172,44 +170,44 @@ pub struct ClientConfig {
     pub default_publishers: Option<DefaultPublishers>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientSection {
     pub heartbeat_interval_ms: u64,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ServerSection {
     #[serde(default)]
     pub endpoints: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DefaultSubscriptions {
     pub location: Option<LocationSubscriptions>,
     pub zone: Option<ZoneSubscriptions>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocationSubscriptions {
     pub x: String,
     pub y: String,
     pub z: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ZoneSubscriptions {
     pub site_id: String,
     pub zone_enter: String,
     pub zone_exit: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DefaultPublishers {
     pub location: Option<PublisherConfig>,
     pub zone: Option<PublisherConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublisherConfig {
     pub topic: String,
     pub period_ms: u64,

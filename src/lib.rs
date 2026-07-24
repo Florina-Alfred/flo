@@ -13,6 +13,7 @@ pub mod device;
 pub mod engine;
 pub mod health;
 pub mod production;
+pub mod registration;
 pub mod registry;
 pub mod rules;
 pub mod semantic;
