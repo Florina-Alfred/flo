@@ -17,7 +17,6 @@ FROM chef AS planner
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir -p src/bin && touch src/lib.rs src/bin/flo-server.rs src/bin/flo-client.rs
 RUN cargo chef prepare --recipe-path recipe.json
-RUN cargo chef prepare --features media --recipe-path recipe-media.json
 
 # === Builder: default features ===
 FROM chef AS build-default
@@ -34,8 +33,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgstreamer-plugins-base1.0-dev \
     libx264-dev \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=planner /app/recipe-media.json recipe-media.json
-RUN cargo chef cook --release --features media --recipe-path recipe-media.json
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --features media --recipe-path recipe.json
 COPY . .
 RUN cargo build --release --features media --bin flo-server && \
     cargo build --release --features media --bin flo

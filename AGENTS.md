@@ -72,11 +72,17 @@ merge — use the `code-review` skill (two axes: Standards + Spec). See `CONTRIB
 ### Local CI testing with `act`
 Before pushing, validate workflows locally with [nektos/act](https://github.com/nektos/act)
 (Docker required). `.actrc` maps `ubuntu-latest` to the act image.
+
+**Important:** `act pull_request` for `ci.yml` fails locally because there is no remote
+`github.base_ref`. Use `act push` (which bypasses the git-diff scope check and always
+sets `rust=true`) to test the full Rust toolchain pipeline.
 ```bash
-# minimal pipeline on a PR
-act pull_request -W .github/workflows/ci.yml --container-architecture linux/amd64
+# Rust toolchain pipeline (use push event — pull_request requires remote base ref)
+act push -W .github/workflows/ci.yml --container-architecture linux/amd64 --defaultbranch main
 # full security pipeline on a main push (heavy: pulls Trivy/CodeQL images)
 act push -W .github/workflows/security.yml --container-architecture linux/amd64
+# Container build (tests Dockerfile planner stage + cross-build; uses Docker-in-Docker)
+act push -W .github/workflows/container.yml --container-architecture linux/amd64
 ```
 
 ## Branch protection (configure in repo Settings → Branches)
