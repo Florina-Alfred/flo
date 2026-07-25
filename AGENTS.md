@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Single-binary Rust crate (package `flo`, edition 2024).
+Two-binary Rust crate (`flo-server` + `flo`) in package `flo-rs`, edition 2024.
 
 ## Dependencies
 
@@ -38,14 +38,21 @@ Repo is **public** → standard `ubuntu-latest` runners are free & unlimited. Al
 only `ubuntu-latest`; no larger/self-hosted runners.
 
 - `.github/workflows/ci.yml` — **minimal gate**, runs on every branch push and every PR.
-  Jobs: `fmt`, `clippy` (`-D warnings`), `test` matrix (`stable`, `beta`, `1.97.1`).
-  This is the required status-check gate for merging into `main`.
+  Jobs: `changes`, `fmt`, `clippy` (`-D warnings`), `test` matrix (`stable`, `beta`, `1.97.1`),
+  `media`. Required status checks: `fmt`, `clippy`, `test (stable)`, `test (beta)`, `test (1.97.1)`.
+  The `changes` job detects scope — docs-only PRs skip the Rust toolchain steps
+  (jobs always run and succeed, only the expensive steps are conditional).
 - `.github/workflows/security.yml` — **full security + release**, runs ONLY on `main`
   (push) and `v*` tags. Jobs: `cargo-audit` (hard gate — fails on any unlisted
   RUSTSEC advisory; reviewed exceptions in `audit.toml`), `cargo-deny`, `trivy` (SARIF,
   all severities), `codeql`
   (rust), and a tag-triggered `release` artifact build (30-day retention).
-- The `media` feature is excluded from CI (needs system GStreamer); default features only.
+- `.github/workflows/container.yml` — **container images**, runs on every branch push and PR
+  (PRs: build only, no push). Builds matrix of 4 images (`server`, `client`, `server-media`,
+  `client-media`) against `linux/amd64` + `linux/arm64`. On `main` push: tags `latest` + `sha-*`.
+  On `v*` tag: semver tags. **Signing:** keyless Cosign via Sigstore (GitHub OIDC → Fulcio +
+  Rekor). **SBOM:** Syft SPDX attested with Cosign. **Provenance:** SLSA via
+  `actions/attest-build-provenance`. Cosign signs by digest, never by tag.
 - `.github/workflows/publish.yml` — publishes to **crates.io** on `v*` tags only, using
   the `CARGO_REGISTRY_TOKEN` encrypted repo secret (Settings → Secrets and variables →
   Actions). The token is never committed; GitHub masks it in logs. `.env` files are NOT
@@ -65,11 +72,17 @@ merge — use the `code-review` skill (two axes: Standards + Spec). See `CONTRIB
 ### Local CI testing with `act`
 Before pushing, validate workflows locally with [nektos/act](https://github.com/nektos/act)
 (Docker required). `.actrc` maps `ubuntu-latest` to the act image.
+
+**Important:** `act pull_request` for `ci.yml` fails locally because there is no remote
+`github.base_ref`. Use `act push` (which bypasses the git-diff scope check and always
+sets `rust=true`) to test the full Rust toolchain pipeline.
 ```bash
-# minimal pipeline on a PR
-act pull_request -W .github/workflows/ci.yml --container-architecture linux/amd64
+# Rust toolchain pipeline (use push event — pull_request requires remote base ref)
+act push -W .github/workflows/ci.yml --container-architecture linux/amd64 --defaultbranch main
 # full security pipeline on a main push (heavy: pulls Trivy/CodeQL images)
 act push -W .github/workflows/security.yml --container-architecture linux/amd64
+# Container build (tests Dockerfile planner stage + cross-build; uses Docker-in-Docker)
+act push -W .github/workflows/container.yml --container-architecture linux/amd64
 ```
 
 ## Branch protection (configure in repo Settings → Branches)
@@ -91,9 +104,11 @@ act push -W .github/workflows/security.yml --container-architecture linux/amd64
 - Dependabot (`cargo` + `github-actions`, weekly) keeps deps and action SHAs current.
 
 ## Notes
-- Entrypoint is `src/main.rs` (`fn main`).
+- Entrypoints are `src/bin/flo-server.rs` and `src/bin/flo-client.rs` (both `fn main`).
 - `/target` is gitignored; `Cargo.lock` is committed.
 - Toolchain: cargo/rustc 1.97.1 (MSRV).
+- Container images: `ghcr.io/<owner>/flo-server`, `flo-client`, `flo-server-media`, `flo-client-media`.
+  Built by `container.yml` workflow with Cosign signing, SPDX SBOM, and SLSA provenance.
 
 ## Agent skills
 

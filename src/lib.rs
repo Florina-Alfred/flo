@@ -22,6 +22,7 @@ pub mod rules;
 pub mod semantic;
 pub mod server;
 pub mod signaling;
+pub mod topic;
 pub mod transport;
 
 #[cfg(feature = "media")]
