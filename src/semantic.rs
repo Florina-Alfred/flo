@@ -1,6 +1,3 @@
-//! Semantic rule-authoring layer: parse extended-TOML and compile to `rules::Rules`.
-//! See docs/superpowers/specs/2026-07-19-industrial-rules-design.md.
-
 use std::collections::HashMap;
 
 use serde::Deserialize;
@@ -14,16 +11,96 @@ fn default_qos() -> Qos {
     Qos::Reliable
 }
 
-/// Error type for semantic parse/validate/compile.
-#[derive(Debug)]
-pub struct SemanticError(pub String);
+// ---------------------------------------------------------------------------
+// Structured error type
+// ---------------------------------------------------------------------------
+
+/// Error code for a semantic rule error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorCode {
+    /// TOML parse failure.
+    Parse,
+    /// Action has no known verb.
+    NoActionVerb,
+    /// Distance value out of range.
+    InvalidDistance,
+    /// References a zone not defined in `[zones]`.
+    UnknownZone,
+    /// Missing required field.
+    MissingField,
+    /// Payload is not a primitive type.
+    NonPrimitivePayload,
+    /// Ruleset name is invalid.
+    InvalidRulesetName,
+    /// Topic does not match naming convention.
+    InvalidTopic,
+}
+
+impl ErrorCode {
+    fn as_str(&self) -> &'static str {
+        match self {
+            ErrorCode::Parse => "E001",
+            ErrorCode::NoActionVerb => "E002",
+            ErrorCode::InvalidDistance => "E003",
+            ErrorCode::UnknownZone => "E004",
+            ErrorCode::MissingField => "E005",
+            ErrorCode::NonPrimitivePayload => "E006",
+            ErrorCode::InvalidRulesetName => "E007",
+            ErrorCode::InvalidTopic => "E008",
+        }
+    }
+}
+
+/// Structured error for semantic rule parse, validate, and compile operations.
+#[derive(Debug, Clone)]
+pub struct SemanticError {
+    pub message: String,
+    pub code: ErrorCode,
+    pub field_path: Option<String>,
+    pub line: Option<usize>,
+    pub col: Option<usize>,
+}
+
+impl SemanticError {
+    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        SemanticError {
+            message: message.into(),
+            code,
+            field_path: None,
+            line: None,
+            col: None,
+        }
+    }
+
+    pub fn with_path(mut self, path: impl Into<String>) -> Self {
+        self.field_path = Some(path.into());
+        self
+    }
+
+    pub fn with_span(mut self, line: usize, col: usize) -> Self {
+        self.line = Some(line);
+        self.col = Some(col);
+        self
+    }
+}
 
 impl std::fmt::Display for SemanticError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "semantic rule error: {}", self.0)
+        write!(f, "error[{}]: {}", self.code.as_str(), self.message)?;
+        if let Some(ref path) = self.field_path {
+            write!(f, "\n  --> {path}")?;
+        }
+        if let (Some(line), Some(col)) = (self.line, self.col) {
+            write!(f, " at line {line}:{col}")?;
+        }
+        Ok(())
     }
 }
 impl std::error::Error for SemanticError {}
+
+// ---------------------------------------------------------------------------
+// Data types
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct Site {
@@ -100,24 +177,85 @@ pub struct SemanticDoc {
     pub rules: Vec<SemanticRule>,
 }
 
+// ---------------------------------------------------------------------------
+// Parse
+// ---------------------------------------------------------------------------
+
 /// Parse an extended-TOML semantic document.
 pub fn parse_semantic(text: &str) -> Result<SemanticDoc, SemanticError> {
-    toml::from_str(text).map_err(|e| SemanticError(e.to_string()))
+    toml::from_str(text).map_err(|e| SemanticError::new(ErrorCode::Parse, e.to_string()))
 }
+
+/// Parse a `Ruleset` envelope from extended-TOML.
+pub fn parse_semantic_ruleset(text: &str) -> Result<SemanticRuleset, SemanticError> {
+    toml::from_str(text).map_err(|e| SemanticError::new(ErrorCode::Parse, e.to_string()))
+}
+
+/// Attempt JSON parse, fall back to TOML. Detects format from first non-whitespace
+/// character (`{` means JSON, anything else means TOML).
+pub fn parse_semantic_auto(text: &str) -> Result<SemanticDoc, SemanticError> {
+    match guess_format(text) {
+        Format::Json => parse_semantic_json(text),
+        Format::Toml => parse_semantic(text),
+    }
+}
+
+/// Attempt JSON parse, fall back to TOML for the Ruleset envelope.
+pub fn parse_semantic_ruleset_auto(text: &str) -> Result<SemanticRuleset, SemanticError> {
+    match guess_format(text) {
+        Format::Json => parse_semantic_ruleset_json(text),
+        Format::Toml => parse_semantic_ruleset(text),
+    }
+}
+
+fn guess_format(text: &str) -> Format {
+    if text.trim().starts_with('{') {
+        Format::Json
+    } else {
+        Format::Toml
+    }
+}
+
+enum Format {
+    Json,
+    Toml,
+}
+
+/// Parse a semantic doc from JSON.
+pub fn parse_semantic_json(text: &str) -> Result<SemanticDoc, SemanticError> {
+    serde_json::from_str(text).map_err(|e| SemanticError::new(ErrorCode::Parse, e.to_string()))
+}
+
+/// Parse a Ruleset envelope from JSON.
+pub fn parse_semantic_ruleset_json(text: &str) -> Result<SemanticRuleset, SemanticError> {
+    serde_json::from_str(text).map_err(|e| SemanticError::new(ErrorCode::Parse, e.to_string()))
+}
+
+// ---------------------------------------------------------------------------
+// Validate (semantic doc)
+// ---------------------------------------------------------------------------
 
 /// Validate semantic invariants before compile.
 pub fn validate(doc: &SemanticDoc) -> Result<(), SemanticError> {
-    for rule in &doc.rules {
-        // every action must carry at least one known verb
-        for a in &rule.actions {
+    for (rule_idx, rule) in doc.rules.iter().enumerate() {
+        for (action_idx, a) in rule.actions.iter().enumerate() {
             if !a.estop && a.slow_to.is_none() && !a.resume {
-                return Err(SemanticError(format!(
-                    "rule '{}': action has no known verb (estop/slow_to/resume)",
-                    rule.name
-                )));
+                return Err(SemanticError::new(
+                    ErrorCode::NoActionVerb,
+                    format!(
+                        "rule '{}': action has no known verb (estop/slow_to/resume)",
+                        rule.name
+                    ),
+                )
+                .with_path(format!("rules[{rule_idx}].actions[{action_idx}]")));
             }
         }
-        validate_when(&rule.when, &rule.name, doc)?;
+        validate_when(
+            &rule.when,
+            &rule.name,
+            doc,
+            &format!("rules[{rule_idx}].when"),
+        )?;
     }
     Ok(())
 }
@@ -127,6 +265,7 @@ fn validate_when(
     when: &SemanticWhen,
     rule_name: &str,
     doc: &SemanticDoc,
+    path: &str,
 ) -> Result<(), SemanticError> {
     for d in [
         when.near_human,
@@ -137,9 +276,11 @@ fn validate_when(
     .flatten()
     {
         if d <= 0.0 {
-            return Err(SemanticError(format!(
-                "rule '{rule_name}': distance must be > 0, got {d}"
-            )));
+            return Err(SemanticError::new(
+                ErrorCode::InvalidDistance,
+                format!("rule '{rule_name}': distance must be > 0, got {d}"),
+            )
+            .with_path(path));
         }
     }
     for z in [when.in_zone.clone(), when.not_in_zone.clone()]
@@ -147,22 +288,33 @@ fn validate_when(
         .flatten()
     {
         if !doc.zones.contains_key(&z) {
-            return Err(SemanticError(format!(
-                "rule '{rule_name}': references unknown zone '{z}'"
-            )));
+            return Err(SemanticError::new(
+                ErrorCode::UnknownZone,
+                format!("rule '{rule_name}': references unknown zone '{z}'"),
+            )
+            .with_path(path));
         }
     }
-    for nested in when.all.iter().chain(when.any.iter()) {
-        validate_when(nested, rule_name, doc)?;
+    for (nested_idx, nested) in when.all.iter().enumerate() {
+        validate_when(nested, rule_name, doc, &format!("{path}.all[{nested_idx}]"))?;
+    }
+    for (nested_idx, nested) in when.any.iter().enumerate() {
+        validate_when(nested, rule_name, doc, &format!("{path}.any[{nested_idx}]"))?;
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Compile (semantic doc → runtime Rules)
+// ---------------------------------------------------------------------------
 
 /// Compile a validated semantic doc to the runtime `Rules` shape.
 pub fn compile(doc: &SemanticDoc, robot_id: &str) -> Result<Rules, SemanticError> {
     validate(doc)?;
     if doc.site.id.is_empty() {
-        return Err(SemanticError("missing [site].id".to_string()));
+        return Err(
+            SemanticError::new(ErrorCode::MissingField, "missing [site].id").with_path("site.id"),
+        );
     }
 
     let mut out = Vec::new();
@@ -184,14 +336,11 @@ pub fn compile(doc: &SemanticDoc, robot_id: &str) -> Result<Rules, SemanticError
     Ok(Rules { rules: out })
 }
 
+// ---------------------------------------------------------------------------
+// Expand when → triggers
+// ---------------------------------------------------------------------------
+
 /// Recursively expand a `SemanticWhen` into runtime trigger lists.
-///
-/// Returns `(all, any)` where every trigger in `all` must hold (logical AND)
-/// and any trigger in `any` may hold (logical OR).
-///
-/// Flat fields each contribute to `all` (matching prior flat-only behavior).
-/// `when.all` nests further AND-requirements; `when.any` nests OR-branches,
-/// each nested `SemanticWhen`'s own `all` triggers becoming an OR alternative.
 fn expand_when(when: &SemanticWhen, robot_id: &str) -> (Vec<Trigger>, Vec<Trigger>) {
     let mut all = Vec::new();
     let mut any = Vec::new();
@@ -263,12 +412,6 @@ fn expand_when(when: &SemanticWhen, robot_id: &str) -> (Vec<Trigger>, Vec<Trigge
         });
     }
 
-    // Flatten nested `when.all`/`when.any` into the parent trigger lists rather
-    // than wrapping them into a single multi-topic trigger. Each nested
-    // `SemanticWhen`'s own triggers keep their own `topic` + `pred`, so the
-    // engine evaluates every field against its own payload (fail-closed).
-    // Merging into one trigger would evaluate a cross-topic predicate against a
-    // single payload, silently passing absent-field exclusions (fail-open).
     for nested in &when.all {
         let (nested_all, _) = expand_when(nested, robot_id);
         all.extend(nested_all);
@@ -304,12 +447,10 @@ fn compile_action(a: &SemanticAction, robot_id: &str) -> Action {
 }
 
 // ---------------------------------------------------------------------------
-// Ruleset envelope path (additive; does not touch the legacy `compile` above).
+// Ruleset envelope path
 // ---------------------------------------------------------------------------
 
-/// Envelope-parse shape for a `Ruleset` authored as extended TOML. Distinct
-/// from `SemanticDoc`/`SemanticRule` (the legacy flat `Rules` path) so the two
-/// schemas can coexist without name collisions.
+/// Envelope-parse shape for a `Ruleset` authored as extended TOML.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SemanticRuleset {
     pub ruleset_name: String,
@@ -337,14 +478,8 @@ pub struct SemanticRulesetAction {
     pub payload: serde_json::Value,
 }
 
-/// Parse a `Ruleset` envelope from extended-TOML.
-pub fn parse_semantic_ruleset(text: &str) -> Result<SemanticRuleset, SemanticError> {
-    toml::from_str(text).map_err(|e| SemanticError(e.to_string()))
-}
-
 /// Compile a `Ruleset` envelope into the runtime `Ruleset` wire/storage unit.
 pub fn compile_ruleset(doc: &SemanticRuleset, robot_id: &str) -> Result<Ruleset, SemanticError> {
-    // Normalize ruleset_name: lowercase, restricted charset, 1..=64 bytes.
     let ruleset_name = doc.ruleset_name.to_lowercase();
     if !ruleset_name
         .chars()
@@ -352,16 +487,18 @@ pub fn compile_ruleset(doc: &SemanticRuleset, robot_id: &str) -> Result<Ruleset,
         || ruleset_name.is_empty()
         || ruleset_name.len() > 64
     {
-        return Err(SemanticError(format!(
-            "invalid ruleset_name '{ruleset_name}' (must match [a-z0-9-]{{1,64}})"
-        )));
+        return Err(SemanticError::new(
+            ErrorCode::InvalidRulesetName,
+            format!("invalid ruleset_name '{ruleset_name}' (must match [a-z0-9-]{{1,64}})"),
+        )
+        .with_path("ruleset_name"));
     }
 
     let mut rules = Vec::new();
-    for rule in &doc.rules {
+    for (rule_idx, rule) in doc.rules.iter().enumerate() {
         let (all, any) = expand_when(&rule.when, robot_id);
         let actions: Vec<Action> = rule.actions.iter().map(compile_ruleset_action).collect();
-        validate_rule_payloads(&actions, &rule.rule_name)?;
+        validate_rule_payloads(&actions, &rule.rule_name, &format!("rules[{rule_idx}]"))?;
         rules.push(Rule {
             name: rule.rule_name.clone(),
             when: When { all, any },
@@ -385,20 +522,22 @@ fn compile_ruleset_action(a: &SemanticRulesetAction) -> Action {
     }
 }
 
-fn validate_rule_payloads(actions: &[Action], rule_name: &str) -> Result<(), SemanticError> {
-    for a in actions {
+fn validate_rule_payloads(
+    actions: &[Action],
+    rule_name: &str,
+    path: &str,
+) -> Result<(), SemanticError> {
+    for (action_idx, a) in actions.iter().enumerate() {
         if !is_primitive(&a.payload) {
-            return Err(SemanticError(format!(
-                "rule '{rule_name}': action payload must be primitive (bool/int/float/string), got {a:?}"
-            )));
+            return Err(SemanticError::new(
+                ErrorCode::NonPrimitivePayload,
+                format!("rule '{rule_name}': action payload must be primitive (bool/int/float/string), got {a:?}"),
+            ).with_path(format!("{path}.actions[{action_idx}].payload")));
         }
     }
     Ok(())
 }
 
-/// A payload is primitive-only when it is a leaf (bool/int/float/string) or a
-/// flat object whose values are all leaves. Nested objects/arrays are rejected
-/// at author time (PRD: primitive-only payloads).
 fn is_primitive(v: &serde_json::Value) -> bool {
     match v {
         serde_json::Value::Bool(_)
@@ -414,4 +553,99 @@ fn is_leaf(v: &serde_json::Value) -> bool {
         v,
         serde_json::Value::Bool(_) | serde_json::Value::Number(_) | serde_json::Value::String(_)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_json_semantic_doc() {
+        let json = r#"{
+            "site": { "id": "cell-7", "frame": "cell-7/world" },
+            "zones": { "safety": { "shape": "rect", "x": 0.0, "y": 0.0, "w": 2.0, "h": 2.0 } },
+            "rules": [
+                { "name": "hrc-slow-near-human", "when": { "near_human": 1.2 }, "actions": [{ "slow_to": 0.1, "qos": "best_effort" }] }
+            ]
+        }"#;
+        let doc = parse_semantic_json(json).expect("parse JSON doc");
+        assert_eq!(doc.site.id, "cell-7");
+        assert_eq!(doc.rules.len(), 1);
+        assert_eq!(doc.rules[0].when.near_human, Some(1.2));
+    }
+
+    #[test]
+    fn parse_json_ruleset() {
+        let json = r#"{
+            "ruleset_name": "acme-site-a",
+            "version": 3,
+            "robot_owner": "robot/7",
+            "rule": [
+                {
+                    "rule_name": "slow_near_human",
+                    "when": { "in_zone": "zone_1", "near_human": 1.2 },
+                    "actions": [{ "topic": "robot/7/local/drive", "qos": "reliable", "payload": { "speed_mps": 0.3 } }]
+                }
+            ]
+        }"#;
+        let doc = parse_semantic_ruleset_json(json).expect("parse JSON ruleset");
+        assert_eq!(doc.ruleset_name, "acme-site-a");
+        assert_eq!(doc.rules.len(), 1);
+    }
+
+    #[test]
+    fn auto_detects_json_from_brace() {
+        let json = r#"{"site":{"id":"x"}}"#;
+        let doc = parse_semantic_auto(json).expect("auto-detect JSON");
+        assert_eq!(doc.site.id, "x");
+    }
+
+    #[test]
+    fn auto_detects_toml_from_non_brace() {
+        let toml = r#"[site]
+id = "x""#;
+        let doc = parse_semantic_auto(toml).expect("auto-detect TOML");
+        assert_eq!(doc.site.id, "x");
+    }
+
+    #[test]
+    fn json_compile_roundtrip() {
+        let json = r#"{
+            "site": { "id": "cell-7", "frame": "cell-7/world" },
+            "zones": { "safety": { "shape": "rect", "x": 0.0, "y": 0.0, "w": 2.0, "h": 2.0 } },
+            "rules": [
+                { "name": "test-rule", "when": { "near_human": 1.5 }, "actions": [{ "slow_to": 0.2 }] }
+            ]
+        }"#;
+        let doc = parse_semantic_json(json).unwrap();
+        let rules = compile(&doc, "7").unwrap();
+        assert_eq!(rules.rules.len(), 1);
+        assert_eq!(rules.rules[0].name, "test-rule");
+    }
+
+    #[test]
+    fn json_parse_fails_on_bad_json() {
+        let bad = r#"{"site": {"id":}"#;
+        assert!(parse_semantic_json(bad).is_err());
+    }
+
+    #[test]
+    fn json_ruleset_compile() {
+        let json = r#"{
+            "ruleset_name": "test-site",
+            "version": 1,
+            "robot_owner": "robot/7",
+            "rule": [
+                {
+                    "rule_name": "r1",
+                    "when": { "in_zone": "safety" },
+                    "actions": [{ "topic": "robot/7/local/drive", "payload": { "speed_mps": 0.1 } }]
+                }
+            ]
+        }"#;
+        let doc = parse_semantic_ruleset_json(json).unwrap();
+        let rs = compile_ruleset(&doc, "7").unwrap();
+        assert_eq!(rs.ruleset_name, "test-site");
+        assert_eq!(rs.rules[0].name, "r1");
+    }
 }
