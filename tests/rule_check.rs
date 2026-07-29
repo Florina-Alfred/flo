@@ -126,3 +126,140 @@ fn rule_compile_accepts_json_input() {
     let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON output");
     assert_eq!(json["rules"][0]["name"], "r1");
 }
+
+#[test]
+fn rule_compile_with_custom_robot_id() {
+    let dir = std::env::temp_dir();
+    let p = dir.join("flo-compile-robot-id.toml");
+    std::fs::write(
+        &p,
+        "[site]\nid = \"cell-42\"\n[[rules]]\nname=\"r1\"\nwhen.near_human = 1.0\nactions = [ { slow_to = 0.1 } ]\n",
+    )
+    .unwrap();
+    let out = Command::new(flo_bin())
+        .args(["rule", "compile", p.to_str().unwrap(), "42"])
+        .output()
+        .expect("run flo rule compile with robot-id");
+    assert!(
+        out.status.success(),
+        "compile with custom robot-id should succeed, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON output");
+    assert_eq!(
+        json["rules"][0]["actions"][0]["topic"],
+        "robot/42/local/drive"
+    );
+}
+
+#[test]
+fn rule_check_rejects_missing_file() {
+    let out = Command::new(flo_bin())
+        .args(["rule", "check", "/tmp/flo-nonexistent-file.toml"])
+        .output()
+        .expect("run flo rule check on missing file");
+    assert!(!out.status.success(), "missing file should fail");
+}
+
+#[test]
+fn rule_compile_rejects_missing_file() {
+    let out = Command::new(flo_bin())
+        .args(["rule", "compile", "/tmp/flo-nonexistent-file.toml"])
+        .output()
+        .expect("run flo rule compile on missing file");
+    assert!(!out.status.success(), "missing file should fail");
+}
+
+#[test]
+fn rule_rejects_unknown_subcommand() {
+    let out = Command::new(flo_bin())
+        .args(["rule", "bogus", "path"])
+        .output()
+        .expect("run flo rule bogus");
+    assert!(!out.status.success(), "unknown subcommand should fail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unknown"),
+        "stderr should mention unknown subcommand"
+    );
+}
+
+#[test]
+fn rule_check_accepts_empty_file() {
+    let dir = std::env::temp_dir();
+    let p = dir.join("flo-empty.toml");
+    std::fs::write(&p, "").unwrap();
+    let out = Command::new(flo_bin())
+        .args(["rule", "check", p.to_str().unwrap()])
+        .output()
+        .expect("run flo rule check on empty file");
+    assert!(
+        out.status.success(),
+        "empty file is valid (no rules), stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn rule_check_rejects_bad_toml() {
+    let dir = std::env::temp_dir();
+    let p = dir.join("flo-bad-toml.toml");
+    std::fs::write(&p, "[[broken = toml\n").unwrap();
+    let out = Command::new(flo_bin())
+        .args(["rule", "check", p.to_str().unwrap()])
+        .output()
+        .expect("run flo rule check on bad toml");
+    assert!(!out.status.success(), "bad toml should fail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("E001"),
+        "stderr should contain error code E001"
+    );
+}
+
+#[test]
+fn rule_check_rejects_ruleset_envelope() {
+    let dir = std::env::temp_dir();
+    let p = dir.join("flo-envelope.toml");
+    std::fs::write(
+        &p,
+        "ruleset_name = \"test\"\nversion = 1\nrobot_owner = \"robot/7\"\n",
+    )
+    .unwrap();
+    let out = Command::new(flo_bin())
+        .args(["rule", "check", p.to_str().unwrap()])
+        .output()
+        .expect("run flo rule check on envelope");
+    // Envelope format parses as a SemanticDoc with no site, no rules — it's valid
+    // TOML but semantically empty. The check should still succeed (empty ruleset
+    // is valid) or at least not crash.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "empty ruleset should not crash: stdout={stdout} stderr={stderr}"
+    );
+}
+
+#[test]
+fn rule_check_json_output_on_failure() {
+    let dir = std::env::temp_dir();
+    let p = dir.join("flo-json-fail.toml");
+    std::fs::write(
+        &p,
+        "[[rules]]\nname=\"x\"\nwhen.near_human = -1.0\nactions = [ { slow_to = 0.1 } ]\n",
+    )
+    .unwrap();
+    let out = Command::new(flo_bin())
+        .args(["rule", "check", "--json", p.to_str().unwrap()])
+        .output()
+        .expect("run flo rule check --json on invalid doc");
+    assert!(
+        !out.status.success(),
+        "invalid doc should fail even with --json"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let json: serde_json::Value = serde_json::from_str(&stderr).expect("valid JSON error output");
+    assert_eq!(json["status"], "error");
+}

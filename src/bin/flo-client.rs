@@ -56,7 +56,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
 
     // Open Zenoh session.
-    let mut transport = Transport::open_with(Transport::loopback_config()).await?;
+    let mut config = if args.connect.is_empty() {
+        Transport::loopback_config()
+    } else {
+        // When connecting to explicit peers, build a minimal config:
+        // no multicast scouting, no listen — just connect.
+        let mut c = zenoh::Config::default();
+        let _ = c.insert_json5("mode", "\"client\"");
+        c
+    };
+    if !args.connect.is_empty() {
+        let endpoints: Vec<String> = args.connect.iter().map(|e| format!("\"{e}\"")).collect();
+        let _ = config.insert_json5("connect/endpoints", &format!("[{}]", endpoints.join(",")));
+    }
+    let mut transport = Transport::open_with(config).await?;
     transport.declare_liveliness(&robot_id).await?;
     let transport = Arc::new(transport);
 

@@ -161,30 +161,33 @@ pub async fn run_registration_handler(
     reg_server: RegistrationServer,
 ) -> zenoh::Result<()> {
     let reg = reg_server.clone();
+    let session = transport.session.clone();
 
-    let _reg_qable = transport
+    let _reg_sub = transport
         .session
-        .declare_queryable(REGISTRATION_KEY)
-        .callback(move |query| {
+        .declare_subscriber(REGISTRATION_KEY)
+        .callback(move |sample| {
             let reg = reg.clone();
+            let session = session.clone();
             tokio::spawn(async move {
-                let bytes = query.payload().map(|p| p.to_bytes()).unwrap_or_default();
+                let bytes = sample.payload().to_bytes();
                 let payload: RegistrationPayload = match serde_json::from_slice(&bytes) {
                     Ok(p) => p,
                     Err(e) => {
-                        let _ = query.reply(REGISTRATION_KEY, format!("reject:bad_payload:{e}"));
+                        warn!("registration: bad payload: {e}");
                         return;
                     }
                 };
+                let response_key = format!("{}/response/{}", REGISTRATION_KEY, payload.robot_id);
                 match reg.register(&payload.robot_id, payload.config).await {
                     Ok(()) => {
-                        let _ = query.reply(REGISTRATION_KEY, "ack");
+                        let _ = session.put(&response_key, "ack").await;
                     }
                     Err(RegistrationError::AlreadyRegistered) => {
-                        let _ = query.reply(REGISTRATION_KEY, "reject:already_registered");
+                        let _ = session.put(&response_key, "reject:already_registered").await;
                     }
                     Err(RegistrationError::Poisoned) => {
-                        let _ = query.reply(REGISTRATION_KEY, "reject:poisoned");
+                        let _ = session.put(&response_key, "reject:poisoned").await;
                     }
                     _ => {}
                 }
@@ -192,17 +195,21 @@ pub async fn run_registration_handler(
         })
         .await?;
 
+    info!("registration subscriber active on {REGISTRATION_KEY}");
+
     let clients_dereg = reg_server.clients.clone();
-    let _dereg_qable = transport
+    let session_dereg = transport.session.clone();
+    let _dereg_sub = transport
         .session
-        .declare_queryable(DEREGISTRATION_KEY)
-        .callback(move |query| {
+        .declare_subscriber(DEREGISTRATION_KEY)
+        .callback(move |sample| {
             let clients = clients_dereg.clone();
+            let session = session_dereg.clone();
             tokio::spawn(async move {
-                let bytes = query.payload().map(|p| p.to_bytes()).unwrap_or_default();
-                let robot_id = String::from_utf8_lossy(&bytes).to_string();
+                let robot_id = String::from_utf8_lossy(&sample.payload().to_bytes()).to_string();
+                let response_key = format!("{}/response/{}", DEREGISTRATION_KEY, robot_id);
                 if robot_id.is_empty() {
-                    let _ = query.reply(DEREGISTRATION_KEY, "missing robot_id");
+                    let _ = session.put(&response_key, "missing robot_id").await;
                     return;
                 }
                 let mut clients = clients.write().await;
@@ -211,15 +218,14 @@ pub async fn run_registration_handler(
                 {
                     clients.remove(&robot_id);
                     info!(robot_id, "client deregistered");
-                    let _ = query.reply(DEREGISTRATION_KEY, "ack");
+                    let _ = session.put(&response_key, "ack").await;
                     return;
                 }
-                let _ = query.reply(DEREGISTRATION_KEY, "ignore");
+                let _ = session.put(&response_key, "ignore").await;
             });
         })
         .await?;
 
-    // Keep the queryables alive.
     std::future::pending::<()>().await;
     Ok(())
 }
@@ -297,40 +303,48 @@ pub async fn register_with_client(
     let payload_json = serde_json::to_vec(&payload)
         .map_err(|e| RegistrationError::ServerError(format!("failed to serialize payload: {e}")))?;
 
+    let response_key = format!("{}/response/{}", REGISTRATION_KEY, robot_id);
+
     for attempt in 1..=REGISTRATION_RETRIES {
-        let replies = transport
+        // Subscribe to response topic before sending request.
+        let response_sub = transport
             .session
-            .get(REGISTRATION_KEY)
-            .payload(payload_json.clone())
-            .timeout(REGISTRATION_TIMEOUT)
+            .declare_subscriber(&response_key)
             .await
             .map_err(|e| RegistrationError::ServerError(e.to_string()))?;
 
-        let mut acked = false;
-        while let Ok(reply) = replies.recv_async().await {
-            match reply.result() {
-                Ok(sample) => {
-                    let bytes = sample.payload().to_bytes();
-                    let text = String::from_utf8_lossy(&bytes);
-                    if text == "ack" {
-                        acked = true;
-                    } else if text.starts_with("reject:already_registered") {
-                        return Err(RegistrationError::AlreadyRegistered);
-                    } else if text.starts_with("reject:poisoned") {
-                        return Err(RegistrationError::Poisoned);
-                    } else if text.starts_with("reject:") {
-                        return Err(RegistrationError::ServerError(text.to_string()));
-                    }
-                }
-                Err(e) => {
-                    warn!(attempt, error = %e, "registration reply error");
-                }
-            }
-        }
+        // Send registration request.
+        transport
+            .session
+            .put(REGISTRATION_KEY, payload_json.clone())
+            .await
+            .map_err(|e| RegistrationError::ServerError(e.to_string()))?;
 
-        if acked {
-            info!(robot_id, "registration successful");
-            return Ok(());
+        // Wait for response with timeout.
+        let response = tokio::time::timeout(REGISTRATION_TIMEOUT, async {
+            response_sub.recv_async().await.ok().map(|sample| {
+                String::from_utf8_lossy(&sample.payload().to_bytes()).to_string()
+            })
+        })
+        .await;
+
+        drop(response_sub);
+
+        match response {
+            Ok(Some(text)) if text == "ack" => {
+                info!(robot_id, "registration successful");
+                return Ok(());
+            }
+            Ok(Some(text)) if text.starts_with("reject:already_registered") => {
+                return Err(RegistrationError::AlreadyRegistered);
+            }
+            Ok(Some(text)) if text.starts_with("reject:poisoned") => {
+                return Err(RegistrationError::Poisoned);
+            }
+            Ok(Some(text)) => {
+                return Err(RegistrationError::ServerError(text));
+            }
+            Ok(None) | Err(_) => {}
         }
 
         if attempt < REGISTRATION_RETRIES {
@@ -349,27 +363,29 @@ pub async fn deregister_with_server(
     transport: &Transport,
     robot_id: &str,
 ) -> Result<(), RegistrationError> {
-    let replies = transport
+    let response_key = format!("{}/response/{}", DEREGISTRATION_KEY, robot_id);
+
+    let response_sub = transport
         .session
-        .get(DEREGISTRATION_KEY)
-        .payload(robot_id.as_bytes())
-        .timeout(REGISTRATION_TIMEOUT)
+        .declare_subscriber(&response_key)
         .await
         .map_err(|e| RegistrationError::ServerError(e.to_string()))?;
 
-    while let Ok(reply) = replies.recv_async().await {
-        match reply.result() {
-            Ok(sample) => {
-                let bytes = sample.payload().to_bytes();
-                let text = String::from_utf8_lossy(&bytes);
-                if text == "ack" {
-                    return Ok(());
-                }
-            }
-            Err(e) => {
-                warn!(robot_id, error = %e, "deregistration reply error");
-            }
-        }
+    transport
+        .session
+        .put(DEREGISTRATION_KEY, robot_id.as_bytes().to_vec())
+        .await
+        .map_err(|e| RegistrationError::ServerError(e.to_string()))?;
+
+    let response = tokio::time::timeout(REGISTRATION_TIMEOUT, async {
+        response_sub.recv_async().await.ok().map(|sample| {
+            String::from_utf8_lossy(&sample.payload().to_bytes()).to_string()
+        })
+    })
+    .await;
+
+    match response {
+        Ok(Some(text)) if text == "ack" => Ok(()),
+        _ => Ok(()),
     }
-    Ok(())
 }
