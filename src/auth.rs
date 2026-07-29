@@ -147,9 +147,9 @@ impl AuthConfig {
         match self.mode {
             AuthMode::None => {
                 let mut c = Config::default();
-                let _ = c.insert_json5("mode", "\"peer\"");
+                let _ = c.insert_json5("mode", "\"router\"");
                 let _ = c.insert_json5("scouting/multicast/enabled", "true");
-                let _ = c.insert_json5("listen/endpoints/peer", "[\"tcp/127.0.0.1:0\"]");
+                let _ = c.insert_json5("listen/endpoints/router", "[\"tcp/127.0.0.1:0\"]");
                 Ok(c)
             }
             AuthMode::Mtls => {
