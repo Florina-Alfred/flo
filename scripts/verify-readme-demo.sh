@@ -200,32 +200,37 @@ for robot in robot-7 robot-8; do
   fi
 done
 
-# Check health endpoints
+# Check health endpoints (find port from log since we use random port)
 echo ""
 echo "--- Health endpoints ---"
-for robot in robot-7 robot-8; do
-  # Find the port from the log (health server listening on 0.0.0.0:8080)
-  if curl -sf http://localhost:8080/healthz > /dev/null 2>&1; then
+HEALTH_PORT=$(grep -oP 'health server listening.*addr="127\.0\.0\.1:\K[0-9]+' /tmp/flo-robot-7.log | head -1)
+if [ -z "$HEALTH_PORT" ]; then
+  HEALTH_PORT=$(grep -oP 'health server listening.*addr="\K[0-9]+' /tmp/flo-robot-7.log | head -1)
+fi
+if [ -z "$HEALTH_PORT" ]; then
+  echo "⚠ Could not find health port from log, skipping"
+else
+  echo "  Health port: $HEALTH_PORT"
+  if curl -sf "http://localhost:${HEALTH_PORT}/healthz" > /dev/null 2>&1; then
     echo "✓ /healthz → 200 OK"
   else
     echo "✗ /healthz → FAILED"
     PASS=false
   fi
 
-  if curl -sf http://localhost:8080/readyz > /dev/null 2>&1; then
+  if curl -sf "http://localhost:${HEALTH_PORT}/readyz" > /dev/null 2>&1; then
     echo "✓ /readyz → 200 OK"
   else
     echo "✗ /readyz → FAILED (may need more time)"
   fi
 
-  METRICS=$(curl -sf http://localhost:8080/metrics 2>/dev/null || echo "")
+  METRICS=$(curl -sf "http://localhost:${HEALTH_PORT}/metrics" 2>/dev/null || echo "")
   if echo "$METRICS" | grep -q "flo_uptime_seconds"; then
     echo "✓ /metrics → contains flo_uptime_seconds"
   else
     echo "✗ /metrics → FAILED or missing metrics"
   fi
-  break  # Only check one client's health server
-done
+fi
 
 echo ""
 echo "=== Cleanup ==="

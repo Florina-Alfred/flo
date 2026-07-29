@@ -32,7 +32,7 @@ pub async fn start_common_subsystems(
     let health_task = {
         let health = health.clone();
         tokio::spawn(async move {
-            if let Err(e) = health::serve(health, "0.0.0.0:8080").await {
+            if let Err(e) = health::serve(health, "0.0.0.0:0").await {
                 error!(error = %e, "health server exited");
             }
         })

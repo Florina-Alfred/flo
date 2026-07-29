@@ -116,9 +116,11 @@ pub fn router(health: Health) -> Router {
 }
 
 /// Serve the health router on the given address (e.g. `0.0.0.0:8080`).
+/// Use `"0.0.0.0:0"` to let the OS assign a random port.
 pub async fn serve(health: Health, addr: &str) -> std::io::Result<()> {
     let listener = TcpListener::bind(addr).await?;
-    info!(addr, "health server listening");
+    let actual = listener.local_addr()?;
+    info!(addr = %actual, "health server listening");
     axum::serve(listener, router(health)).await.map_err(|e| {
         tracing::error!(error = %e, "health server failed");
         std::io::Error::other(e)
