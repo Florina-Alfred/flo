@@ -71,8 +71,8 @@ actions:
 [[rules]]
 name = "e-stop-on-bumper"
 when.all = [
-  { topic = "robot-7/local/bumper", pred = "pressed == true" },
-  { topic = "robot-7/local/imu",    pred = "speed_mps > 0.2" },
+  { topic = "robot-7/local/bumper" },
+  { topic = "robot-7/local/imu" },
 ]
 actions = [
   { topic = "stop/fleet/cmd", qos = "reliable", payload = { stop = true } },
@@ -150,16 +150,16 @@ and one or more `actions`:
 [[rules]]
 name = "slow-near-human"
 when.all = [
-  { topic = "robot-7/local/human_present", pred = "presence < 1.2" },
+  { topic = "robot-7/local/human_present", pred = { Comparison = { op = "Lt", lhs = { Prim = "HumanPresence" }, rhs = { Float = 1.2 } } } },
 ]
 actions = [
   { topic = "robot-7/local/drive", qos = "best_effort", payload = { speed_mps = 0.1 } },
 ]
 ```
 
-**Predicate operators:** `==`, `!=`, `>`, `>=`, `<`, `<=` on string, float, and
-boolean operands. Predicates are typed under the hood (`Comparison`, `And`,
-`Or`, `Not` trees).
+**Predicate operators:** `Eq`, `Ne`, `Lt`, `Gt`, `Le`, `Ge` on typed operands
+(`Bool`, `Int`, `Float`, `Str`, or `Prim` for sensor fields). Predicates are
+typed under the hood (`Comparison`, `And`, `Or`, `Not` trees).
 
 **Eval modes:** each trigger in `when.all` / `when.any` fires on **edge**
 (state change) by default. Set `mode = "level"` to fire continuously while
