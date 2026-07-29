@@ -40,6 +40,7 @@ fn readme_flo_help_lists_flags() {
         "--ruleset",
         "--auth-mode",
         "--auth-allow-insecure",
+        "--connect",
     ] {
         assert!(text.contains(flag), "help missing flag: {flag}");
     }

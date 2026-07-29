@@ -1,0 +1,56 @@
+=== flo README demo verification ===
+
+[1/5] Building binaries...
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.16s
+
+[2/5] Creating config files...
+  Config files written to /tmp/flo-*.toml
+
+[3/5] Verifying rule check on example files...
+OK: examples/rules/hrc-cell.toml is a valid semantic ruleset
+OK: examples/rules/warehouse-fleet.toml is a valid semantic ruleset
+  All examples pass.
+
+[4/5] Starting flo-server in background...
+  Server PID: 42032
+  Logs: /tmp/flo-server.log
+  ✓ Server started successfully
+
+[5/5] Starting clients...
+  robot-7 PID: 42064
+  Logs: /tmp/flo-robot-7.log
+  robot-8 PID: 42351
+  Logs: /tmp/flo-robot-8.log
+
+=== Verification ===
+
+--- Server log (last 5 lines) ---
+[2m2026-07-29T17:57:04.617846Z[0m [32m INFO[0m [2mflo_rs::registration[0m[2m:[0m heartbeat: client alive [3mrobot_id[0m[2m=[0mrobot-8
+[2m2026-07-29T17:57:04.617997Z[0m [32m INFO[0m [2mflo_rs::registration[0m[2m:[0m client registered [3mrobot_id[0m[2m=[0m"robot-8"
+[2m2026-07-29T17:57:05.619248Z[0m [33m WARN[0m [2mflo_rs::registration[0m[2m:[0m registration rejected: already registered [3mrobot_id[0m[2m=[0m"robot-8"
+[2m2026-07-29T17:57:05.627941Z[0m [33m WARN[0m [2mflo_rs::registration[0m[2m:[0m registration rejected: already registered [3mrobot_id[0m[2m=[0m"robot-7"
+[2m2026-07-29T17:57:05.629308Z[0m [33m WARN[0m [2mflo_rs::registration[0m[2m:[0m heartbeat: client disconnected unexpectedly — poisoning [3mrobot_id[0m[2m=[0mrobot-7
+
+--- robot-7 log (last 5 lines) ---
+[2m2026-07-29T17:57:02.623703Z[0m [32m INFO[0m [2mflo[0m[2m:[0m registering with server... [3mrobot_id[0m[2m=[0mrobot-7
+[2m2026-07-29T17:57:02.624213Z[0m [33m WARN[0m [2mflo_rs::registration[0m[2m:[0m registration not acknowledged, retrying... [3mattempt[0m[2m=[0m1 [3mrobot_id[0m[2m=[0m"robot-7"
+[2m2026-07-29T17:57:03.626383Z[0m [33m WARN[0m [2mflo_rs::registration[0m[2m:[0m registration not acknowledged, retrying... [3mattempt[0m[2m=[0m2 [3mrobot_id[0m[2m=[0m"robot-7"
+[2m2026-07-29T17:57:05.628203Z[0m [32m INFO[0m [2mzenoh::api::session[0m[2m:[0m close session [3mzid[0m[2m=[0m140dfd7c671cb1a495d1c863b52451f5
+Error: "registration timed out after 3 retries"
+
+--- robot-8 log (last 5 lines) ---
+[2m2026-07-29T17:57:04.613976Z[0m [32m INFO[0m [2mzenoh::net::runtime::orchestrator[0m[2m:[0m Zenoh can be reached at: tcp/172.17.0.1:41851
+[2m2026-07-29T17:57:04.614017Z[0m [32m INFO[0m [2mzenoh::net::runtime::orchestrator[0m[2m:[0m Listening scout messages on 224.0.0.224:7446
+[2m2026-07-29T17:57:04.617637Z[0m [32m INFO[0m [2mflo[0m[2m:[0m registering with server... [3mrobot_id[0m[2m=[0mrobot-8
+[2m2026-07-29T17:57:04.618191Z[0m [33m WARN[0m [2mflo_rs::registration[0m[2m:[0m registration not acknowledged, retrying... [3mattempt[0m[2m=[0m1 [3mrobot_id[0m[2m=[0m"robot-8"
+[2m2026-07-29T17:57:05.619560Z[0m [33m WARN[0m [2mflo_rs::registration[0m[2m:[0m registration not acknowledged, retrying... [3mattempt[0m[2m=[0m2 [3mrobot_id[0m[2m=[0m"robot-8"
+
+✗ robot-7 registration FAILED
+✗ robot-8 registration FAILED
+
+--- Health endpoints ---
+✗ /healthz → FAILED
+✗ /readyz → FAILED (may need more time)
+✗ /metrics → FAILED or missing metrics
+
+=== Cleanup ===

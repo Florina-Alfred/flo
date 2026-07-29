@@ -50,6 +50,11 @@ pub struct Args {
     #[arg(long, value_name = "PATH")]
     pub auth_trust: Option<String>,
 
+    /// Zenoh peer endpoints to connect to (e.g. "tcp/127.0.0.1:7600").
+    /// Overrides multicast scouting. May be specified multiple times.
+    #[arg(long, value_name = "ENDPOINT")]
+    pub connect: Vec<String>,
+
     /// Run mode: client (default) or server (co-located router + rule engine).
     #[arg(long, value_name = "MODE", default_value_t = Mode::Client)]
     pub mode: Mode,
