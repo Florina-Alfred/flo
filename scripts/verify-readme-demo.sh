@@ -15,6 +15,11 @@ set -euo pipefail
 echo "=== flo README demo verification ==="
 echo ""
 
+# ── Cleanup any leftover processes from previous runs ──────────────
+pkill -f "target/debug/flo-server" 2>/dev/null || true
+pkill -f "target/debug/flo " 2>/dev/null || true
+sleep 1
+
 # ── Step 0: Build ──────────────────────────────────────────────────
 echo "[1/5] Building binaries..."
 cargo build --bin flo-server --bin flo 2>&1 | tail -1
