@@ -1,23 +1,62 @@
 === flo README demo verification ===
 
 [1/5] Building binaries...
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.16s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.15s
 
 [2/5] Creating config files...
   Config files written to /tmp/flo-*.toml
 
 [3/5] Verifying rule check on example files...
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.16s
+     Running `target/debug/flo rule check examples/rules/hrc-cell.toml`
 OK: examples/rules/hrc-cell.toml is a valid semantic ruleset
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.14s
+     Running `target/debug/flo rule check examples/rules/warehouse-fleet.toml`
 OK: examples/rules/warehouse-fleet.toml is a valid semantic ruleset
   All examples pass.
 
 [4/5] Starting flo-server in background...
-  Server PID: 50785
+  Server PID: 54210
   Logs: /tmp/flo-server.log
-  ✗ Server failed to start. Log:
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.15s
-     Running `target/debug/flo-server --config /tmp/flo-server-config.toml --auth-mode none --auth-allow-insecure`
-[2m2026-07-29T18:20:54.321918Z[0m [32m INFO[0m [2mzenoh::net::runtime[0m[2m:[0m Using ZID: b9c96eb137ccb3f0a9f9ec7fa2fc3129
-[2m2026-07-29T18:20:54.322787Z[0m [33m WARN[0m [2mzenoh::net::runtime::orchestrator[0m[2m:[0m Unable to open listener tcp/[::]:7447: Can not create a new TCP listener bound to tcp/[::]:7447: [[::]:7447: Address already in use (os error 98) at /home/user/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zenoh-link-commons-1.9.0/src/tcp.rs:52.] at /home/user/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zenoh-link-tcp-1.9.0/src/unicast.rs:332.
-[2m2026-07-29T18:20:54.322852Z[0m [32m INFO[0m [2mzenoh::api::session[0m[2m:[0m close session [3mzid[0m[2m=[0mb9c96eb137ccb3f0a9f9ec7fa2fc3129
-Error: Can not create a new TCP listener bound to tcp/[::]:7447: [[::]:7447: Address already in use (os error 98) at /home/user/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zenoh-link-commons-1.9.0/src/tcp.rs:52.] at /home/user/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zenoh-link-tcp-1.9.0/src/unicast.rs:332.
+  ✓ Server started successfully
+  Server port: 40909 (tcp/127.0.0.1:40909)
+
+[5/5] Starting clients...
+  robot-7 PID: 54247
+  Logs: /tmp/flo-robot-7.log
+  robot-8 PID: 54285
+  Logs: /tmp/flo-robot-8.log
+
+=== Verification ===
+
+--- Server log (last 5 lines) ---
+[2m2026-07-29T18:31:15.528340Z[0m [32m INFO[0m [2mflo_rs::registration[0m[2m:[0m registration subscriber active on fleet/registration
+[2m2026-07-29T18:31:20.089432Z[0m [32m INFO[0m [2mflo_rs::registration[0m[2m:[0m heartbeat: client alive [3mrobot_id[0m[2m=[0mrobot-7
+[2m2026-07-29T18:31:20.089631Z[0m [32m INFO[0m [2mflo_rs::registration[0m[2m:[0m client registered [3mrobot_id[0m[2m=[0m"robot-7"
+[2m2026-07-29T18:31:23.084808Z[0m [32m INFO[0m [2mflo_rs::registration[0m[2m:[0m heartbeat: client alive [3mrobot_id[0m[2m=[0mrobot-8
+[2m2026-07-29T18:31:23.084994Z[0m [32m INFO[0m [2mflo_rs::registration[0m[2m:[0m client registered [3mrobot_id[0m[2m=[0m"robot-8"
+
+--- robot-7 log (last 5 lines) ---
+[2m2026-07-29T18:31:20.089975Z[0m [32m INFO[0m [2mflo[0m[2m:[0m registration confirmed
+[2m2026-07-29T18:31:20.090000Z[0m [32m INFO[0m [2mflo_rs::common[0m[2m:[0m flo ready
+[2m2026-07-29T18:31:20.090045Z[0m [32m INFO[0m [2mflo_rs::health[0m[2m:[0m health server listening [3maddr[0m[2m=[0m0.0.0.0:36255
+[2m2026-07-29T18:31:20.090190Z[0m [32m INFO[0m [2mflo_rs::config[0m[2m:[0m hot-reload subscriber active [3mtopic[0m[2m=[0mrobot/robot-7/local/rules
+[2m2026-07-29T18:31:20.090383Z[0m [32m INFO[0m [2mflo_rs::engine[0m[2m:[0m rule engine subscribed [3msensor_topics[0m[2m=[0m["robot-7/local/bumper", "robot-7/local/imu"]
+
+--- robot-8 log (last 5 lines) ---
+[2m2026-07-29T18:31:23.085335Z[0m [32m INFO[0m [2mflo[0m[2m:[0m registration confirmed
+[2m2026-07-29T18:31:23.085362Z[0m [32m INFO[0m [2mflo_rs::common[0m[2m:[0m flo ready
+[2m2026-07-29T18:31:23.085408Z[0m [32m INFO[0m [2mflo_rs::health[0m[2m:[0m health server listening [3maddr[0m[2m=[0m0.0.0.0:41599
+[2m2026-07-29T18:31:23.085564Z[0m [32m INFO[0m [2mflo_rs::config[0m[2m:[0m hot-reload subscriber active [3mtopic[0m[2m=[0mrobot/robot-8/local/rules
+[2m2026-07-29T18:31:23.085747Z[0m [32m INFO[0m [2mflo_rs::engine[0m[2m:[0m rule engine subscribed [3msensor_topics[0m[2m=[0m["robot-8/local/bumper", "robot-8/local/imu"]
+
+✓ robot-7 registered successfully
+✓ robot-8 registered successfully
+
+--- Health endpoints ---
+  Health port: 36255
+✓ /healthz → 200 OK
+✓ /readyz → 200 OK
+✓ /metrics → contains flo_uptime_seconds
+
+=== Cleanup ===

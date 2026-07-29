@@ -139,7 +139,7 @@ else
 fi
 
 # Find the server's listening port
-SERVER_PORT=$(ss -tlnp 2>/dev/null | grep "flo-server" | grep -oP '\*:\K[0-9]+' | head -1)
+SERVER_PORT=$(ss -tlnp 2>/dev/null | grep "flo-server" | grep -oP '(?:\*|127\.0\.0\.1):\K[0-9]+' | head -1)
 if [ -z "$SERVER_PORT" ]; then
   echo "  ✗ Could not find server port in ss output"
   kill $SERVER_PID 2>/dev/null
@@ -208,28 +208,25 @@ done
 # Check health endpoints (find port from log since we use random port)
 echo ""
 echo "--- Health endpoints ---"
-HEALTH_PORT=$(grep -oP 'health server listening.*addr="127\.0\.0\.1:\K[0-9]+' /tmp/flo-robot-7.log | head -1)
-if [ -z "$HEALTH_PORT" ]; then
-  HEALTH_PORT=$(grep -oP 'health server listening.*addr="\K[0-9]+' /tmp/flo-robot-7.log | head -1)
-fi
+HEALTH_PORT=$(grep 'health server listening' /tmp/flo-robot-7.log | grep -oP '0\.0\.0\.0:\K[0-9]+' | head -1)
 if [ -z "$HEALTH_PORT" ]; then
   echo "⚠ Could not find health port from log, skipping"
 else
   echo "  Health port: $HEALTH_PORT"
-  if curl -sf "http://localhost:${HEALTH_PORT}/healthz" > /dev/null 2>&1; then
+  if curl -sf --connect-timeout 2 --max-time 5 "http://127.0.0.1:${HEALTH_PORT}/healthz" > /dev/null 2>&1; then
     echo "✓ /healthz → 200 OK"
   else
     echo "✗ /healthz → FAILED"
     PASS=false
   fi
 
-  if curl -sf "http://localhost:${HEALTH_PORT}/readyz" > /dev/null 2>&1; then
+  if curl -sf --connect-timeout 2 --max-time 5 "http://127.0.0.1:${HEALTH_PORT}/readyz" > /dev/null 2>&1; then
     echo "✓ /readyz → 200 OK"
   else
     echo "✗ /readyz → FAILED (may need more time)"
   fi
 
-  METRICS=$(curl -sf "http://localhost:${HEALTH_PORT}/metrics" 2>/dev/null || echo "")
+  METRICS=$(curl -sf --connect-timeout 2 --max-time 5 "http://127.0.0.1:${HEALTH_PORT}/metrics" 2>/dev/null || echo "")
   if echo "$METRICS" | grep -q "flo_uptime_seconds"; then
     echo "✓ /metrics → contains flo_uptime_seconds"
   else
