@@ -123,7 +123,7 @@ echo "  Server PID: $SERVER_PID"
 echo "  Logs: /tmp/flo-server.log"
 sleep 5
 
-# Check server started and find its listen port
+# Check server started
 if grep -q "flo-engine server mode started" /tmp/flo-server.log; then
   echo "  ✓ Server started successfully"
 else
@@ -133,14 +133,14 @@ else
   exit 1
 fi
 
-# Extract the server's listen port from the log
-SERVER_ENDPOINT=$(grep -oP 'Zenoh can be reached at: \Ktcp/\S+' /tmp/flo-server.log | head -1)
-if [ -z "$SERVER_ENDPOINT" ]; then
-  echo "  ✗ Could not find server endpoint in log"
+# Find the server's listening port
+SERVER_PORT=$(ss -tlnp 2>/dev/null | grep "flo-server" | grep -oP '\*:\K[0-9]+' | head -1)
+if [ -z "$SERVER_PORT" ]; then
+  echo "  ✗ Could not find server port in ss output"
   kill $SERVER_PID 2>/dev/null
   exit 1
 fi
-echo "  Server endpoint: $SERVER_ENDPOINT"
+echo "  Server port: $SERVER_PORT (tcp/127.0.0.1:$SERVER_PORT)"
 echo ""
 
 # ── Step 4: Start clients ──────────────────────────────────────────
@@ -152,7 +152,7 @@ cargo run --bin flo -- \
   --ruleset /tmp/flo-robot-7-rules.toml \
   --auth-mode none \
   --auth-allow-insecure \
-  --connect "$SERVER_ENDPOINT" \
+  --connect "tcp/127.0.0.1:${SERVER_PORT}" \
   > /tmp/flo-robot-7.log 2>&1 &
 ROBOT7_PID=$!
 echo "  robot-7 PID: $ROBOT7_PID"
@@ -165,7 +165,7 @@ cargo run --bin flo -- \
   --ruleset /tmp/flo-robot-8-rules.toml \
   --auth-mode none \
   --auth-allow-insecure \
-  --connect "$SERVER_ENDPOINT" \
+  --connect "tcp/127.0.0.1:${SERVER_PORT}" \
   > /tmp/flo-robot-8.log 2>&1 &
 ROBOT8_PID=$!
 echo "  robot-8 PID: $ROBOT8_PID"
