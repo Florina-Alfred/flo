@@ -145,7 +145,13 @@ impl AuthConfig {
     /// (returns an error until implemented, so we fail closed).
     pub fn zenoh_config(&self, robot_id: &str) -> Result<Config, AuthError> {
         match self.mode {
-            AuthMode::None => Ok(Config::default()),
+            AuthMode::None => {
+                let mut c = Config::default();
+                let _ = c.insert_json5("mode", "\"peer\"");
+                let _ = c.insert_json5("scouting/multicast/enabled", "true");
+                let _ = c.insert_json5("listen/endpoints/peer", "[\"tcp/127.0.0.1:0\"]");
+                Ok(c)
+            }
             AuthMode::Mtls => {
                 let mut c = Config::default();
                 let cert = self

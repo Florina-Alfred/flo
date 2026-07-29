@@ -192,6 +192,8 @@ pub async fn run_registration_handler(
         })
         .await?;
 
+    info!("registration queryable active on {REGISTRATION_KEY}");
+
     let clients_dereg = reg_server.clients.clone();
     let _dereg_qable = transport
         .session
