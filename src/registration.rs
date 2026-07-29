@@ -184,7 +184,9 @@ pub async fn run_registration_handler(
                         let _ = session.put(&response_key, "ack").await;
                     }
                     Err(RegistrationError::AlreadyRegistered) => {
-                        let _ = session.put(&response_key, "reject:already_registered").await;
+                        let _ = session
+                            .put(&response_key, "reject:already_registered")
+                            .await;
                     }
                     Err(RegistrationError::Poisoned) => {
                         let _ = session.put(&response_key, "reject:poisoned").await;
@@ -322,9 +324,11 @@ pub async fn register_with_client(
 
         // Wait for response with timeout.
         let response = tokio::time::timeout(REGISTRATION_TIMEOUT, async {
-            response_sub.recv_async().await.ok().map(|sample| {
-                String::from_utf8_lossy(&sample.payload().to_bytes()).to_string()
-            })
+            response_sub
+                .recv_async()
+                .await
+                .ok()
+                .map(|sample| String::from_utf8_lossy(&sample.payload().to_bytes()).to_string())
         })
         .await;
 
@@ -378,9 +382,11 @@ pub async fn deregister_with_server(
         .map_err(|e| RegistrationError::ServerError(e.to_string()))?;
 
     let response = tokio::time::timeout(REGISTRATION_TIMEOUT, async {
-        response_sub.recv_async().await.ok().map(|sample| {
-            String::from_utf8_lossy(&sample.payload().to_bytes()).to_string()
-        })
+        response_sub
+            .recv_async()
+            .await
+            .ok()
+            .map(|sample| String::from_utf8_lossy(&sample.payload().to_bytes()).to_string())
     })
     .await;
 
