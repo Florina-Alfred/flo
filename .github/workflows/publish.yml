@@ -58,41 +58,26 @@ jobs:
           grep -q -E '^# flo' README.md || { echo "::error::README.md missing expected heading"; exit 1; }
           grep -q -i 'license' README.md || { echo "::error::README.md missing license section"; exit 1; }
           echo "README.md content validation passed"
-      - name: Check README diff vs crates.io
+      - name: Check README diff vs last tag
         run: |
-          VERSION=$(cargo metadata --format-version=1 --no-deps | jq -r '.packages[0].version')
-          echo "Package version: ${VERSION}"
+          git fetch --tags origin
+          # Get the previous version tag (second-newest, excluding this one)
+          PREV_TAG=$(git tag -l 'v*' --sort=-version:refname | tail -n +2 | head -1)
 
-          API_JSON=$(curl -sL "https://crates.io/api/v1/crates/flo-rs")
-          LATEST_PUBLISHED=$(echo "$API_JSON" | jq -r '.crate.max_stable_version // .crate.max_version // empty')
-
-          if [ -z "$LATEST_PUBLISHED" ]; then
-            echo "No published version found — first publish. Skipping diff."
+          if [ -z "$PREV_TAG" ]; then
+            echo "No previous version tag found — first publish. Skipping diff."
             exit 0
           fi
 
-          echo "Latest published: ${LATEST_PUBLISHED}"
+          echo "Previous tag: ${PREV_TAG}"
 
-          TMPDIR=$(mktemp -d)
-          # Redirect follows to the CDN tarball
-          curl -sL "https://crates.io/api/v1/crates/flo-rs/${LATEST_PUBLISHED}/download" -o "${TMPDIR}/crate.tar.gz"
-          tar -xzf "${TMPDIR}/crate.tar.gz" -C "${TMPDIR}"
-          PUBLISHED_README="${TMPDIR}/flo-rs-${LATEST_PUBLISHED}/README.md"
-
-          if [ ! -f "$PUBLISHED_README" ]; then
-            echo "Could not extract README from published crate; skipping diff."
-            rm -rf "$TMPDIR"
-            exit 0
-          fi
-
-          if diff -q README.md "$PUBLISHED_README" >/dev/null 2>&1; then
-            echo "::warning title=README unchanged::README.md is identical to the last published version (${LATEST_PUBLISHED}). Consider updating it before publishing."
+          if git diff --quiet "${PREV_TAG}"..HEAD -- README.md; then
+            echo "::error::README.md has not changed since ${PREV_TAG}. Update README.md before publishing a new version."
+            exit 1
           else
-            echo "README.md differs from last published version:"
-            diff README.md "$PUBLISHED_README" || true
+            echo "README.md has changed since ${PREV_TAG}:"
+            git diff "${PREV_TAG}"..HEAD -- README.md || true
           fi
-
-          rm -rf "$TMPDIR"
       - name: Publish to crates.io
         run: cargo publish --token "${CARGO_REGISTRY_TOKEN}"
         env:
