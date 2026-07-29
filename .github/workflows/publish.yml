@@ -50,6 +50,11 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+      - name: Refresh lockfile
+        # cargo publish --dry-run downloads the latest index, which can update
+        # Cargo.lock during dependency resolution, causing a dirty-tree error.
+        # Pre-refresh to keep the tree clean.
+        run: cargo generate-lockfile
       - name: Verify package
         run: cargo publish --dry-run
       - name: Validate README
