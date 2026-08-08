@@ -61,18 +61,30 @@ spec:
     spec:
       # Pin each pod to a robot node that has the advertised devices.
       # nodeSelector / nodeAffinity set per-site; omitted for the skeleton.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: flo
-          image: flo:latest  # TODO: pin digest
+          image: ghcr.io/florina-alfred/flo-client:v0.1.3  # pin a semver/digest, not :latest
+          imagePullPolicy: IfNotPresent
           # Device files are injected by the generic Device Plugin (map 01);
           # the consumer pod is NON-privileged.
           resources:
-            limits:
-              # Advertised by squat/generic-device-plugin / smarter-device-manager.
-              # Request exactly the devices this robot needs; example:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+              # Device files are injected by the generic Device Plugin (map 01);
+              # request exactly the devices this robot needs; example:
               devic.es/ttyUSB0: "1"
               devic.es/video0: "1"
-            requests:
+            limits:
+              cpu: 500m
+              memory: 256Mi
               devic.es/ttyUSB0: "1"
               devic.es/video0: "1"
           # Minimal non-privileged posture (map 01). Device access needs only
@@ -80,6 +92,8 @@ spec:
           securityContext:
             privileged: false
             allowPrivilegeEscalation: false
+            runAsUser: 65532
+            runAsGroup: 65532
             capabilities:
               drop: ["ALL"]
             readOnlyRootFilesystem: true

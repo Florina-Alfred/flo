@@ -9,6 +9,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let args = cli::parse_args();
 
+    if args.healthcheck {
+        let addr =
+            std::env::var("FLO_HEALTH_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+        return if flo_rs::health::probe(&addr) {
+            Ok(())
+        } else {
+            Err(format!("health probe failed at {addr}").into())
+        };
+    }
+
     let robot_id = args
         .robot_id
         .clone()

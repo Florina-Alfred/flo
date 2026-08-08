@@ -20,35 +20,45 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 # === Builder: default features ===
 FROM chef AS build-default
+ARG CARGO_TARGET_DIR=/app/target
 COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry \
+    cargo chef cook --release --recipe-path recipe.json
 COPY . .
-RUN cargo build --release --bin flo-server && \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry \
+    cargo build --release --bin flo-server && \
     cargo build --release --bin flo
 
 # === Builder: media features ===
 FROM chef AS build-media
+ARG CARGO_TARGET_DIR=/app/target
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgstreamer1.0-dev \
     libgstreamer-plugins-base1.0-dev \
     libx264-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --features media --recipe-path recipe.json
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry \
+    cargo chef cook --release --features media --recipe-path recipe.json
 COPY . .
-RUN cargo build --release --features media --bin flo-server && \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry \
+    cargo build --release --features media --bin flo-server && \
     cargo build --release --features media --bin flo
 
 # === Runtime: flo-server (default) ===
 FROM gcr.io/distroless/cc-debian12:nonroot AS server
 COPY --from=build-default /app/target/release/flo-server /flo-server
+ENV FLO_HEALTH_ADDR=0.0.0.0:8080
 EXPOSE 8080
+HEALTHCHECK CMD ["/flo-server", "--healthcheck"]
 ENTRYPOINT ["/flo-server"]
 
 # === Runtime: flo-client (default) ===
 FROM gcr.io/distroless/cc-debian12:nonroot AS client
 COPY --from=build-default /app/target/release/flo /flo
+ENV FLO_HEALTH_ADDR=0.0.0.0:8080
 EXPOSE 8080
+HEALTHCHECK CMD ["/flo", "--healthcheck"]
 ENTRYPOINT ["/flo"]
 
 # === Runtime: flo-server (media) ===
@@ -61,8 +71,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgstreamer1.0-0 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build-media /app/target/release/flo-server /flo-server
+ENV FLO_HEALTH_ADDR=0.0.0.0:8080
 EXPOSE 8080
 USER nobody:nogroup
+HEALTHCHECK CMD ["/flo-server", "--healthcheck"]
 ENTRYPOINT ["/flo-server"]
 
 # === Runtime: flo-client (media) ===
@@ -75,6 +87,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgstreamer1.0-0 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build-media /app/target/release/flo /flo
+ENV FLO_HEALTH_ADDR=0.0.0.0:8080
 EXPOSE 8080
 USER nobody:nogroup
+HEALTHCHECK CMD ["/flo", "--healthcheck"]
 ENTRYPOINT ["/flo"]
