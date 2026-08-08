@@ -95,7 +95,7 @@ jobs:
           toolchain: "1.97.1"
           components: clippy
       - if: needs.changes.outputs.rust == 'true'
-        uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - if: needs.changes.outputs.rust == 'true'
         name: Clippy (deny warnings)
         run: cargo clippy --all-targets -- -D warnings
@@ -116,7 +116,7 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
       - if: needs.changes.outputs.rust == 'true'
-        uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - if: needs.changes.outputs.rust == 'true'
         name: Cargo check
         run: cargo check --all-targets
@@ -139,7 +139,7 @@ jobs:
         with:
           toolchain: "1.97.1"
           components: clippy
-      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Install GStreamer dev packages
         run: |
           sudo apt-get update
