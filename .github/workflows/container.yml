@@ -26,8 +26,44 @@ permissions:
   contents: read
 
 jobs:
+  # Detect whether the change touches the image inputs (Dockerfile, Rust
+  # source, Cargo manifest) or is limited to workflow/docs files. Deps-only
+  # PRs (e.g. action pin bumps) do NOT need 4x1h cross-arch builds; on `push`
+  # (main / tags) the build always runs so images are produced.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      build: ${{ steps.scope.outputs.build }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - id: scope
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch origin "${{ github.base_ref }}" --depth=1
+          BASE="origin/${{ github.base_ref }}"
+          FILES=$(git diff --name-only "$BASE"..HEAD)
+          echo "Changed files:"
+          echo "$FILES"
+          if echo "$FILES" | grep -Eq '^(Dockerfile|Cargo\.toml|Cargo\.lock)$|^src/'; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          fi
+
   images:
     name: ${{ matrix.binary }}-${{ matrix.variant }}
+    needs: [changes]
+    # Skip image builds for PRs that do not change image content (e.g.
+    # workflow-action pin bumps), avoiding 4x1h cold QEMU cross-builds.
+    if: needs.changes.outputs.build == 'true'
     strategy:
       fail-fast: false
       matrix:
