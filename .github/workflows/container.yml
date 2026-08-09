@@ -195,6 +195,7 @@ jobs:
           # embedded newlines), and use each ref as-is.
           mapfile -t tags_to_push < <(printf '%s\n' '${{ steps.meta.outputs.tags }}')
           for tag in "${tags_to_push[@]}"; do
+            [[ -n "$tag" ]] || continue
             echo "Tagging $tag (amd64 + arm64)"
             docker buildx imagetools create \
               --tag "$tag" \
