@@ -189,13 +189,17 @@ jobs:
           ARM="$REPO:${{ github.sha }}-arm64"
           digest=""
           # Point every final tag (latest / sha-* / v*) at a multi-arch index
-          # assembled from the two single-platform images.
-          for tag in ${{ steps.meta.outputs.tags }}; do
-            echo "Tagging $REPO:$tag (amd64 + arm64)"
+          # assembled from the two single-platform images. The metadata-action
+          # emits full refs (ghcr.io/.../name:tag), one per line, so absorb them
+          # into an array first (a bare `for tag in $OUTPUT` would mis-parse the
+          # embedded newlines), and use each ref as-is.
+          mapfile -t tags_to_push < <(printf '%s\n' '${{ steps.meta.outputs.tags }}')
+          for tag in "${tags_to_push[@]}"; do
+            echo "Tagging $tag (amd64 + arm64)"
             docker buildx imagetools create \
-              --tag "$REPO:$tag" \
+              --tag "$tag" \
               "$AMD" "$ARM"
-            digest="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$REPO:$tag")"
+            digest="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$tag")"
           done
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
