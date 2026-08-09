@@ -9,8 +9,8 @@
 #   - 04 observability: HTTP health server (axum) on /healthz + /readyz; zenoh
 #       LivelinessToken `robot/<id>/client/liveliness`.
 #
-# TODO before production: pin image, set resource requests/limits, add nodeSelector
-# for robot hardware, wire zenoh router endpoints, add NetworkPolicy (Cilium/Istio).
+# TODO before production: add nodeSelector for robot hardware, wire zenoh router
+# endpoints, add NetworkPolicy (Cilium/Istio).
 
 ---
 # Rules config consumed by the in-container rule engine (see map ticket 02).
