@@ -1,23 +1,34 @@
 name: Publish to crates.io
 
-# Publishes `flo-rs` to crates.io when a version tag (v*) is pushed.
-# The token is provided by the CARGO_REGISTRY_TOKEN encrypted secret
+# Publishes `flo-rs` to crates.io and creates a GitHub Release when a version
+# tag (v*) is pushed. Can also be run manually (workflow_dispatch) to create a
+# GitHub Release for an existing tag without touching crates.io again.
+#
+# The crates.io token is provided by the CARGO_REGISTRY_TOKEN encrypted secret
 # (repo Settings -> Secrets and variables -> Actions). It is NEVER committed
 # to the repo and GitHub masks it in logs.
 #
 # Best-practice notes:
-# - Fires ONLY on a `v*` tag push, so it cannot fire on a branch push or PR.
-# - A `v*` tag can only reach main via a merged PR, which branch protection
+# - Fires on a `v*` tag push AND on manual workflow_dispatch.
+# - A `v*` tag can only reach main via a successful PR, which branch protection
 #   already requires to pass the CI gate (ci.yml) + independent review first.
 # - A guard step aborts if the tagged commit is not on the main lineage, so a
 #   tag pushed on a feature branch will not publish an unintended version.
 # - `cargo publish` is idempotent: if the version already exists it errors.
+# - The GitHub Release is created ONLY after `cargo publish` succeeds (so the
+#   release never exists without the crate version being live), except on
+#   manual dispatch where no publish happens.
 # - Bump `version` in Cargo.toml, merge to main, then tag: `git tag vX.Y.Z &&
 #   git push origin vX.Y.Z`.
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to create a GitHub Release for (e.g. v0.1.3). No crates.io publish is performed."
+        required: false
 
 concurrency:
   group: publish-${{ github.ref }}
@@ -32,6 +43,7 @@ env:
 jobs:
   publish:
     name: cargo publish
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -87,3 +99,69 @@ jobs:
         run: cargo publish --token "${CARGO_REGISTRY_TOKEN}"
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  release:
+    name: GitHub Release
+    # On a tag push, only after crates.io publish succeeded. On manual
+    # dispatch, always (no crates.io publish is performed).
+    needs: publish
+    if: always() && (github.event_name == 'workflow_dispatch' || needs.publish.result == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0  # full history + tags so release notes can diff tags
+          ref: ${{ env.RELEASE_TAG }}
+      - name: Guard — release tag exists
+        run: |
+          if [ -z "${RELEASE_TAG}" ]; then
+            echo "::error::No tag provided. Run manually with the tag input, or push a v* tag."
+            exit 1
+          fi
+          case "${RELEASE_TAG}" in
+            v*) : ;;
+            *) echo "::error::'${RELEASE_TAG}' is not a version tag (expected vX.Y.Z)."; exit 1 ;;
+          esac
+          git rev-parse --verify --quiet "refs/tags/${RELEASE_TAG}" >/dev/null || {
+            echo "::error::Tag ${RELEASE_TAG} does not exist."
+            exit 1
+          }
+          echo "Releasing ${RELEASE_TAG}"
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Build release binary
+        run: cargo build --release --bin flo
+      - name: Generate SBOM
+        run: |
+          cargo install cargo-cyclonedx@0.5.9 --locked
+          cargo cyclonedx -f json --override-filename sbom.cdx
+      - name: Generate release notes
+        # Older tags may predate scripts/release-notes.sh; pull it from main
+        # so backfilled releases still get structured notes.
+        run: |
+          if [ ! -f scripts/release-notes.sh ]; then
+            echo "scripts/release-notes.sh missing from this tag; fetching from main."
+            git fetch origin main
+            git show origin/main:scripts/release-notes.sh > scripts/release-notes.sh
+            [ -s scripts/release-notes.sh ] || { echo "::error::Could not fetch release-notes.sh"; exit 1; }
+          fi
+          bash scripts/release-notes.sh "${RELEASE_TAG}" > release-notes.md
+      - name: Create GitHub Release
+        run: |
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "Release ${RELEASE_TAG} already exists; skipping."
+            exit 0
+          fi
+          gh release create "${RELEASE_TAG}" \
+            --title "flo-rs ${RELEASE_TAG}" \
+            --notes-file release-notes.md \
+            target/release/flo \
+            sbom.cdx.json
+          echo "Created GitHub Release ${RELEASE_TAG}"
