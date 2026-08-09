@@ -35,7 +35,8 @@ stance has been relaxed to reflect reality:
 ## CI / GitHub Actions (free-tier safe)
 
 Repo is **public** → standard `ubuntu-latest` runners are free & unlimited. All CI uses
-only `ubuntu-latest`; no larger/self-hosted runners.
+only standard hosted runners (`ubuntu-latest` for x64, plus the free `ubuntu-24.04-arm`
+for the native arm64 image build in `container.yml`); no larger/self-hosted runners.
 
 - `.github/workflows/ci.yml` — **minimal gate**, runs on every branch push and every PR.
   Jobs: `changes`, `fmt`, `clippy` (`-D warnings`), `test` matrix (`stable`, `beta`, `1.97.1`),
@@ -48,10 +49,14 @@ only `ubuntu-latest`; no larger/self-hosted runners.
   all severities), `codeql`
   (rust), and a tag-triggered `release` artifact build (30-day retention).
 - `.github/workflows/container.yml` — **container images**, runs on every branch push and PR
-  (PRs: build only, no push). Builds matrix of 4 images (`server`, `client`, `server-media`,
-  `client-media`) against `linux/amd64` + `linux/arm64`. On `main` push: tags `latest` + `sha-*`.
-  On `v*` tag: semver tags. **Signing:** keyless Cosign via Sigstore (GitHub OIDC → Fulcio +
-  Rekor). **SBOM:** Syft SPDX attested with Cosign. **Provenance:** SLSA via
+  (PRs: build only, no push). Matrix of 4 images (`server`, `client`, `server-media`,
+  `client-media`) × 2 platforms. Each platform is built **natively** — `linux/amd64` on
+  `ubuntu-latest`, `linux/arm64` on the free `ubuntu-24.04-arm` hosted runner — so no QEMU
+  emulation (which previously blew the 60-min timeout on cold cache; see #152). A `merge`
+  job (main/tags only) assembles the multi-arch manifest index for the final tags: `latest`
+  + `sha-*` on `main` push, semver tags on `v*` tag. **Signing:** keyless Cosign via Sigstore
+  (GitHub OIDC → Fulcio + Rekor). **SBOM:** Syft SPDX attested with Cosign.
+  **Provenance:** SLSA via
   `actions/attest-build-provenance`. Cosign signs by digest, never by tag.
 - `.github/workflows/publish.yml` — publishes to **crates.io** on `v*` tags only, using
   the `CARGO_REGISTRY_TOKEN` encrypted repo secret (Settings → Secrets and variables →
