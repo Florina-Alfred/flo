@@ -8,6 +8,11 @@ updates:
       time: "02:00"
       timezone: "Europe/Berlin"
     open-pull-requests-limit: 10
+    # webrtc 0.20 is a complete Sans-I/O API rewrite; tracking in issue #161.
+    # Ignore all webrtc updates until the media-feature migration lands — a
+    # dependabot bump would just reopen the broken-build PR (#159).
+    ignore:
+      - dependency-name: "webrtc"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

@@ -258,7 +258,10 @@ If omitted, the server accepts all clients with a warning.
 
 ## Health & observability
 
-Every `flo` client exposes an HTTP server on `0.0.0.0:8080`:
+Every `flo` process exposes an HTTP health server on the address from
+`FLO_HEALTH_ADDR` (default: an OS-assigned port on `0.0.0.0`). The container
+images set `FLO_HEALTH_ADDR=0.0.0.0:8080`, so inside a container the health
+server is always reachable on `8080`:
 
 | Endpoint | Method | Meaning |
 | --- | --- | --- |
@@ -272,6 +275,12 @@ curl -f http://localhost:8080/readyz
 curl -f http://localhost:8080/metrics
 ```
 
+The server logs the bound address as `health server listening addr=...`. For a
+one-shot liveness probe from a shell script or container `HEALTHCHECK`, use
+`flo --healthcheck` (or `flo-server --healthcheck`) — it connects to
+`FLO_HEALTH_ADDR` (default `127.0.0.1:8080`) and exits `0` on a `200` from
+`/healthz`.
+
 Structured JSON logging: `FLO_JSON_LOGS=1`. Verbosity: `RUST_LOG` (default
 `info`).
 
@@ -279,7 +288,7 @@ Structured JSON logging: `FLO_JSON_LOGS=1`. Verbosity: `RUST_LOG` (default
 
 ```bash
 cargo build          # default features (no system deps)
-cargo test           # 93 tests
+cargo test           # 103 tests
 cargo clippy         # lint (deny warnings)
 cargo fmt            # format
 ```
