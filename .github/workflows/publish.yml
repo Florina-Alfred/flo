@@ -157,6 +157,8 @@ jobs:
           fi
           bash scripts/release-notes.sh "${RELEASE_TAG}" > release-notes.md
       - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
             echo "Release ${RELEASE_TAG} already exists; skipping."
