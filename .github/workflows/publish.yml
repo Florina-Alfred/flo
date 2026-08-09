@@ -31,7 +31,10 @@ on:
         required: false
 
 concurrency:
-  group: publish-${{ github.ref }}
+  # On tag pushes the ref is the tag itself. On manual dispatch multiple tags
+  # would share refs/heads/main, so key on the target tag to avoid cancelling
+  # concurrent backfilled releases.
+  group: publish-${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.tag || 'manual') || github.ref }}
   cancel-in-progress: true
 
 permissions:
