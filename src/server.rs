@@ -6,6 +6,7 @@ use tracing::info;
 use crate::auth::{AuthConfig, AuthMode};
 use crate::config::{RuleStore, ServerConfig, run_hot_reload_with_registry};
 use crate::engine;
+use crate::health::Health;
 use crate::registration::{RegistrationServer, run_heartbeat_monitor, run_registration_handler};
 use crate::registry::Registry;
 use crate::transport::Transport;
@@ -53,11 +54,27 @@ pub async fn run_server(
 
     info!("flo-engine server mode started (robot_id={robot_id})");
 
+    let health = Health::new();
+    let health_task = {
+        let health = health.clone();
+        tokio::spawn(async move {
+            let addr = std::env::var("FLO_HEALTH_ADDR").unwrap_or_else(|_| "0.0.0.0:0".to_string());
+            if let Err(e) = crate::health::serve(health, &addr).await {
+                tracing::error!(error = %e, "health server exited");
+            }
+        })
+    };
+    health.set_ready();
+
     tokio::try_join!(
         engine::run_engine(transport.clone(), store.clone(), counter),
         run_hot_reload_with_registry(&transport, &robot_id, store.clone(), registry),
         run_registration_handler(&transport, reg_server.clone()),
         run_heartbeat_monitor(&transport, reg_server),
+        async {
+            health_task.await.ok();
+            Ok(())
+        },
     )?;
     Ok(())
 }

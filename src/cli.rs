@@ -59,6 +59,12 @@ pub struct Args {
     #[arg(long, value_name = "MODE", default_value_t = Mode::Client)]
     pub mode: Mode,
 
+    /// One-shot liveness probe for container HEALTHCHECKs. Connects to the
+    /// address from `FLO_HEALTH_ADDR` (default `127.0.0.1:8080`), exits 0 on a
+    /// 200 from `/healthz`, 1 otherwise.
+    #[arg(long)]
+    pub healthcheck: bool,
+
     #[command(flatten)]
     pub video: VideoArgs,
 

@@ -24,9 +24,10 @@
 - `.github/workflows/publish.yml` — publishes to crates.io on `v*` tags only, using
   the `CARGO_REGISTRY_TOKEN` encrypted secret.
 
-All jobs use `ubuntu-latest` standard runners (free & unlimited on a public repo).
-No larger/self-hosted runners. Third-party actions are pinned to verified commit
-SHAs (see AGENTS.md).
+All jobs use **standard hosted runners** (free & unlimited on a public repo):
+`ubuntu-latest` for x64 and the free `ubuntu-24.04-arm` for native arm64
+container-image builds. No larger/self-hosted runners. Third-party actions are
+pinned to verified commit SHAs (see AGENTS.md).
 
 ## Local CI testing
 
