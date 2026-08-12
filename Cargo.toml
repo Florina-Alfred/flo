@@ -1,8 +1,9 @@
 [package]
 name = "flo-rs"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 rust-version = "1.97.1"
+authors = ["Florina-Alfred"]
 
 description = "Kubernetes robot orchestration in safe Rust with a peer-to-peer WebRTC video pipeline."
 license = "Apache-2.0"

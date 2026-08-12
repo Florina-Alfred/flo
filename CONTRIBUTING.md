@@ -35,7 +35,7 @@ Validate workflows before pushing with [nektos/act](https://github.com/nektos/ac
 (`.actrc` is committed):
 
 ```bash
-act pull_request -W .github/workflows/ci.yml --container-architecture linux/amd64
+act push -W .github/workflows/ci.yml --container-architecture linux/amd64 --defaultbranch main
 ```
 
 ## Releasing to crates.io
