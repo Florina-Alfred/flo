@@ -146,6 +146,8 @@ impl Transport {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -154,5 +156,75 @@ mod tests {
             .replace("{site}", "cell-7")
             .replace("{name}", "acme");
         assert_eq!(k, "fleet/cell-7/ruleset/acme");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn loopback_transport_round_trips_best_effort() {
+        assert_round_trip(
+            "robot/7/local/probe",
+            Qos::BestEffort,
+            serde_json::json!({"probe": 42}),
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn loopback_transport_round_trips_reliable() {
+        assert_round_trip(
+            "robot/7/local/stop",
+            Qos::Reliable,
+            serde_json::json!({"stop": true}),
+        )
+        .await;
+    }
+
+    async fn assert_round_trip(topic: &str, qos: Qos, payload: serde_json::Value) {
+        let transport = Transport::open_with(Transport::loopback_config())
+            .await
+            .expect("open loopback transport");
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let key = String::from(topic);
+        let _sub = transport
+            .subscribe_managed(&key, move |s: zenoh::sample::Sample| {
+                let _ = tx.send(s.payload().to_bytes().to_vec());
+            })
+            .await
+            .expect("declare subscriber");
+
+        transport
+            .publish(topic, qos, &payload)
+            .await
+            .expect("publish");
+
+        let got = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timeout waiting for sample")
+            .expect("channel closed");
+        let value: serde_json::Value = serde_json::from_slice(&got).unwrap();
+        assert_eq!(value, payload, "round-trip payload mismatch on {topic}");
+    }
+
+    #[test]
+    fn loopback_config_sets_router_mode_and_localhost_listener() {
+        // The demo config hardens default peer discovery: router mode + multicast
+        // scouting on loopback + an ephemeral localhost listener. Assert the
+        // mutations landed in the config tree (so distinct sessions mesh).
+        let cfg = Transport::loopback_config();
+        assert_eq!(
+            cfg.get_json("mode").unwrap(),
+            "\"router\"",
+            "mode must be router, not the default peer"
+        );
+        assert_eq!(
+            cfg.get_json("scouting/multicast/enabled").unwrap(),
+            "true",
+            "multicast scouting must be enabled on loopback"
+        );
+        let endpoints = cfg.get_json("listen/endpoints").unwrap();
+        assert!(
+            endpoints.contains("tcp/127.0.0.1:0"),
+            "missing ephemeral localhost listener, got: {endpoints}"
+        );
     }
 }
