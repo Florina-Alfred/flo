@@ -130,14 +130,14 @@ mod tests {
         let count = samples.clone();
         pipeline
             .start(Box::new(move |_frame| {
-                count.fetch_add(1, Ordering::SeqCst);
+                count.fetch_add(1, Ordering::Relaxed);
             }))
             .expect("start pipeline");
 
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             if pipeline.pipeline.current_state() == gstreamer::State::Playing
-                && samples.load(Ordering::SeqCst) > 0
+                && samples.load(Ordering::Relaxed) > 0
             {
                 break;
             }
@@ -145,7 +145,7 @@ mod tests {
                 Instant::now() < deadline,
                 "pipeline never reached Playing (state={:?}, samples={:?})",
                 pipeline.pipeline.current_state(),
-                samples.load(Ordering::SeqCst)
+                samples.load(Ordering::Relaxed)
             );
             std::thread::sleep(Duration::from_millis(25));
         }
