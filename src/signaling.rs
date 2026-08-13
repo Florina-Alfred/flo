@@ -258,3 +258,89 @@ fn parse_signal(sample: &zenoh::sample::Sample) -> Option<SignalMessage> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn offer_msg() -> SignalMessage {
+        SignalMessage {
+            sdp: "v=0\r\n".into(),
+            kind: SignalKind::Offer,
+            from: "robot-7".into(),
+            to: "robot-9".into(),
+            ice: vec![IceCandidate {
+                candidate: "candidate:1 1 UDP 1 127.0.0.1 5000 typ host".into(),
+                sdp_mid: Some("0".into()),
+                mline_index: Some(0),
+            }],
+        }
+    }
+
+    #[test]
+    fn signal_message_round_trips_offer() {
+        let msg = offer_msg();
+        let back: SignalMessage =
+            serde_json::from_slice(&serde_json::to_vec(&msg).unwrap()).unwrap();
+        assert_eq!(back.sdp, msg.sdp);
+        assert!(matches!(back.kind, SignalKind::Offer));
+        assert_eq!(back.from, "robot-7");
+        assert_eq!(back.to, "robot-9");
+        assert_eq!(back.ice.len(), 1);
+        assert_eq!(back.ice[0].candidate, msg.ice[0].candidate);
+        assert_eq!(back.ice[0].sdp_mid.as_deref(), Some("0"));
+        assert_eq!(back.ice[0].mline_index, Some(0));
+    }
+
+    #[test]
+    fn signal_kind_serde_is_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&SignalKind::Offer).unwrap(),
+            "\"offer\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SignalKind::Answer).unwrap(),
+            "\"answer\""
+        );
+        let k: SignalKind = serde_json::from_str("\"answer\"").unwrap();
+        assert!(matches!(k, SignalKind::Answer));
+        assert!(serde_json::from_str::<SignalKind>("\"OFFER\"").is_err());
+    }
+
+    #[test]
+    fn answer_without_ice_defaults_defaults_empty() {
+        let msg = SignalMessage {
+            sdp: "v=0".into(),
+            kind: SignalKind::Answer,
+            from: "robot-9".into(),
+            to: "robot-7".into(),
+            ice: vec![],
+        };
+        let back: SignalMessage =
+            serde_json::from_slice(&serde_json::to_vec(&msg).unwrap()).unwrap();
+        assert!(back.ice.is_empty());
+    }
+
+    #[test]
+    fn presence_round_trips() {
+        let p = Presence {
+            id: "robot-7".into(),
+            streams: vec!["robot/7/local/cam0".into()],
+        };
+        let back: Presence = serde_json::from_slice(&serde_json::to_vec(&p).unwrap()).unwrap();
+        assert_eq!(back.id, "robot-7");
+        assert_eq!(back.streams, vec!["robot/7/local/cam0"]);
+    }
+
+    #[test]
+    fn replace_substitutes_self_and_peer() {
+        assert_eq!(
+            replace("robot/{self}/signal/{peer}/offer", "robot-7", "robot-9"),
+            "robot/robot-7/signal/robot-9/offer"
+        );
+        assert_eq!(
+            replace(crate::transport::SIGNAL_OFFER_KEY, "a", "b"),
+            "robot/a/signal/b/offer"
+        );
+    }
+}
