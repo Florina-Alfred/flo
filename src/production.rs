@@ -108,3 +108,53 @@ fn compile_rules_or_default(text: &str, robot_id: &str) -> RuleStore {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VALID_TOML: &str = r#"
+[[rules]]
+name = "e-stop-on-bumper"
+when.all = [
+  { topic = "robot/7/local/bumper", pred = { Comparison = { op = "Eq", lhs = { Str = "pressed" }, rhs = { Bool = true } } } },
+]
+actions = [
+  { topic = "stop/fleet/cmd", qos = "reliable", payload = { stop = true } },
+]
+"#;
+
+    // A minimal semantic (extended-TOML) doc, mirroring tests/semantic_compile.rs.
+    const SEMANTIC_DOC: &str = r#"
+[site]
+id = "cell-7"
+frame = "cell-7/world"
+[zones]
+safety = { shape = "rect", x = 0.0, y = 0.0, w = 2.0, h = 2.0 }
+[[rules]]
+name = "hrc-slow-near-human"
+when.near_human = 1.2
+actions = [ { slow_to = 0.1, qos = "best_effort" } ]
+"#;
+
+    #[tokio::test]
+    async fn compiles_valid_raw_rules() {
+        let store = compile_rules_or_default(VALID_TOML, "robot-7");
+        assert_eq!(store.current().await.rules.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn compiles_semantic_doc() {
+        // Semantic doc goes through semantic::compile, not the raw TOML fallback.
+        let store = compile_rules_or_default(SEMANTIC_DOC, "robot-7");
+        assert_eq!(store.current().await.rules.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn garbage_falls_back_to_fail_safe_state() {
+        // Neither a semantic doc nor raw TOML: must land in safe-state (0 rules,
+        // no motion commands).
+        let store = compile_rules_or_default("this is {{{ not toml at all", "robot-7");
+        assert_eq!(store.current().await.rules.len(), 0);
+    }
+}

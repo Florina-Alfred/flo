@@ -288,7 +288,7 @@ Structured JSON logging: `FLO_JSON_LOGS=1`. Verbosity: `RUST_LOG` (default
 
 ```bash
 cargo build          # default features (no system deps)
-cargo test           # 103 tests
+cargo test           # full test suite (count: cargo test -- --list | grep -c ': test')
 cargo clippy         # lint (deny warnings)
 cargo fmt            # format
 ```

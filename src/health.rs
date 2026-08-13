@@ -199,17 +199,20 @@ mod tests {
             axum::serve(listener, router(Health::new())).await.unwrap();
         });
 
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-        let mut ok = false;
-        for _ in 0..5 {
-            ok = probe(&addr);
-            if ok {
+        // Poll for readiness instead of sleeping a fixed amount (which flaked
+        // under load: the server may not be bound when probes start). Bounded
+        // by a hard deadline so a genuinely broken server still fails fast.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if probe(&addr) {
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            assert!(
+                std::time::Instant::now() < deadline,
+                "health server did not become reachable in time"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
-        assert!(ok, "live health server should respond 200");
 
         serve.abort();
     }

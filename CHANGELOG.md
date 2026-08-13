@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Server and client TOML configs now reject unknown fields (`deny_unknown_fields`):
+  typos fail fast instead of being silently ignored.
+
 ## [0.1.4] - unreleased
 
 ### Added
