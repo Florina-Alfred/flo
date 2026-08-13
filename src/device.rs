@@ -55,36 +55,6 @@ impl VideoDevice {
     pub fn to_source_spec(&self) -> flo_rs::media::SourceSpec {
         flo_rs::media::SourceSpec::V4l2(self.path.clone())
     }
-
-    /// Enumerate the V4L2 capture devices currently attached to this node.
-    ///
-    /// Scans `/dev` for character devices named `videoN` and returns each as a
-    /// validated [`VideoDevice`]. Non-device or non-video entries are skipped
-    /// rather than erroring, so a partially-populated `/dev` (common in
-    /// containers) yields an empty list instead of a failure.
-    #[allow(dead_code)]
-    pub fn discover() -> Vec<VideoDevice> {
-        let mut found = Vec::new();
-        let entries = match std::fs::read_dir("/dev") {
-            Ok(e) => e,
-            Err(_) => return found,
-        };
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name = match name.to_str() {
-                Some(n) => n,
-                None => continue,
-            };
-            if !name.starts_with("video") {
-                continue;
-            }
-            if let Ok(dev) = VideoDevice::from_path(&format!("/dev/{name}")) {
-                found.push(dev);
-            }
-        }
-        found.sort_by(|a, b| a.path.cmp(&b.path));
-        found
-    }
 }
 
 /// Why a device could not be opened or validated.
@@ -141,19 +111,5 @@ mod tests {
         // error, proving the shape check runs before the existence check.
         let err = VideoDevice::from_path("/dev/video0").unwrap_err();
         assert!(matches!(err, DeviceValidationError::DeviceNotFound(_)));
-    }
-
-    #[test]
-    fn discover_returns_sorted_valid_devices() {
-        // Enumerate without panicking; every device returned must validate
-        // via from_path again, and the list must be sorted by path. Real cameras may or may not be
-        // present, so we only assert structural invariants.
-        let devices = VideoDevice::discover();
-        for d in &devices {
-            assert!(VideoDevice::from_path(&d.path).is_ok());
-        }
-        let mut sorted = devices.clone();
-        sorted.sort_by(|a, b| a.path.cmp(&b.path));
-        assert_eq!(devices, sorted);
     }
 }
