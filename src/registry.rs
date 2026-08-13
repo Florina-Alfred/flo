@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
-use crate::rules::{Rule, Ruleset};
+use crate::rules::Ruleset;
 
 #[derive(Debug)]
 pub enum RegistryError {
@@ -12,6 +12,7 @@ pub enum RegistryError {
     Io(std::io::Error),
     BadName,
     Lock(String),
+    Ser(String),
 }
 impl std::fmt::Display for RegistryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -20,6 +21,7 @@ impl std::fmt::Display for RegistryError {
             RegistryError::Io(e) => write!(f, "registry io error: {e}"),
             RegistryError::BadName => write!(f, "invalid ruleset_name"),
             RegistryError::Lock(e) => write!(f, "registry lock poisoned: {e}"),
+            RegistryError::Ser(e) => write!(f, "registry serialization error: {e}"),
         }
     }
 }
@@ -28,36 +30,24 @@ impl std::error::Error for RegistryError {}
 #[derive(Debug, PartialEq)]
 pub enum RegisterOutcome {
     Inserted,
-    Updated {
-        version: u64,
-        sha: String,
-    },
+    Updated { version: u64, sha: String },
     RejectedConflict,
-    #[allow(dead_code)]
-    Quarantined,
 }
 
 pub struct Registry {
     conn: Mutex<Connection>,
 }
 
-fn canonical_ruleset(rs: &Ruleset) -> String {
+fn canonical_ruleset(rs: &Ruleset) -> Result<String, RegistryError> {
     let mut rs = rs.clone();
     rs.rules.sort_by(|a, b| a.name.cmp(&b.name));
-    toml::to_string(&rs).expect("Ruleset serializable")
+    toml::to_string(&rs).map_err(|e| RegistryError::Ser(e.to_string()))
 }
 
-pub fn ruleset_digest(rs: &Ruleset) -> String {
+pub fn ruleset_digest(rs: &Ruleset) -> Result<String, RegistryError> {
     let mut h = Sha256::new();
-    h.update(canonical_ruleset(rs).as_bytes());
-    to_hex(&h.finalize())
-}
-
-#[allow(dead_code)]
-pub fn rule_digest(rule: &Rule) -> String {
-    let mut h = Sha256::new();
-    h.update(toml::to_string(rule).expect("Rule serializable").as_bytes());
-    to_hex(&h.finalize())
+    h.update(canonical_ruleset(rs)?.as_bytes());
+    Ok(to_hex(&h.finalize()))
 }
 
 fn to_hex(bytes: &[u8]) -> String {
@@ -120,7 +110,7 @@ impl Registry {
         {
             return Err(RegistryError::BadName);
         }
-        let sha = ruleset_digest(rs);
+        let sha = ruleset_digest(rs)?;
         let ts = unix_timestamp_secs();
         let existing: Option<(String, i64, String)> = self
             .conn
@@ -184,7 +174,7 @@ impl Registry {
         sha: &str,
         status: &str,
     ) -> Result<(), RegistryError> {
-        let blob = canonical_ruleset(rs);
+        let blob = canonical_ruleset(rs)?;
         self.conn
             .lock()
             .map_err(|e| RegistryError::Lock(e.to_string()))?

@@ -151,9 +151,6 @@ pub async fn run_hot_reload_with_registry(
                 Ok(RegisterOutcome::RejectedConflict) => {
                     error!("ruleset rejected: owner conflict; keeping previous");
                 }
-                Ok(RegisterOutcome::Quarantined) => {
-                    error!("ruleset quarantined; keeping previous");
-                }
                 Err(e) => error!(error = %e, "registry error; keeping previous"),
             },
             Err(e) => error!(error = %e, "rejected bad ruleset update; keeping previous"),

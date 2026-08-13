@@ -28,23 +28,11 @@ pub fn h264_track(id: String, stream_id: String) -> Arc<TrackLocalStaticSample> 
 /// answers/ICE from the peer are applied to this PeerConnection.
 pub struct VideoPeer {
     robot_id: String,
-    /// Remote peer id (set on construction; retained for diagnostics/logging).
-    #[allow(dead_code)]
-    peer_id: String,
     pc: Arc<RTCPeerConnection>,
     #[cfg_attr(not(feature = "media"), allow(dead_code))]
     track: Arc<TrackLocalStaticSample>,
     transport: Arc<crate::transport::Transport>,
-    /// Optional consumer hook invoked when an inbound track arrives. Defaults to
-    /// logging; a render-free "forward" consumer can attach a reader here.
-    #[allow(dead_code)]
-    on_track: Arc<std::sync::Mutex<Option<TrackCallback>>>,
 }
-
-/// Callback invoked when a remote track is received on this peer. Receives the
-/// inbound `TrackRemote` so a consumer can attach a sample reader; `flo` itself
-/// does no rendering.
-pub type TrackCallback = Arc<dyn Fn(Arc<webrtc::track::track_remote::TrackRemote>) + Send + Sync>;
 
 impl VideoPeer {
     /// Build the `PeerConnection`, add the H.264 track, and wire trickle-ICE so
@@ -54,11 +42,7 @@ impl VideoPeer {
         robot_id: &str,
         peer_id: &str,
         transport: Arc<crate::transport::Transport>,
-    ) -> anyhow::Result<(
-        Arc<RTCPeerConnection>,
-        Arc<TrackLocalStaticSample>,
-        Arc<std::sync::Mutex<Option<TrackCallback>>>,
-    )> {
+    ) -> anyhow::Result<(Arc<RTCPeerConnection>, Arc<TrackLocalStaticSample>)> {
         // Register the H.264 codec in the MediaEngine so `add_track` has a codec
         // to populate the SDP media section with (webrtc-rs rejects an
         // RTPSender with no registered codec). Without this, offer/answer
@@ -110,23 +94,16 @@ impl VideoPeer {
             })
         }));
 
-        // Inbound tracks: deliver to the user callback if registered, else log.
-        // `flo` performs no rendering; a consumer attaches a reader here.
-        let on_track: Arc<std::sync::Mutex<Option<TrackCallback>>> = Default::default();
-        let cb = on_track.clone();
+        // Inbound tracks: `flo` performs no rendering, so just log their arrival.
         let log_peer = peer_id.to_string();
-        pc.on_track(Box::new(move |track, _receiver, _transceiver| {
-            let cb = cb.clone();
+        pc.on_track(Box::new(move |_track, _receiver, _transceiver| {
             let log_peer = log_peer.clone();
             Box::pin(async move {
                 info!(from = %log_peer, "▶ video track received");
-                if let Some(f) = cb.lock().unwrap().clone() {
-                    f(track);
-                }
             })
         }));
 
-        Ok((pc, track, on_track))
+        Ok((pc, track))
     }
 
     /// Create the PC, add the H.264 track, wire ICE, create+publish an offer.
@@ -136,7 +113,7 @@ impl VideoPeer {
         peer_id: &str,
         transport: Arc<crate::transport::Transport>,
     ) -> anyhow::Result<Arc<Self>> {
-        let (pc, track, on_track) = Self::build(robot_id, peer_id, transport.clone()).await?;
+        let (pc, track) = Self::build(robot_id, peer_id, transport.clone()).await?;
 
         // Create + publish the offer.
         let offer = pc.create_offer(None).await.context("create_offer")?;
@@ -150,11 +127,9 @@ impl VideoPeer {
 
         Ok(Arc::new(Self {
             robot_id: robot_id.to_string(),
-            peer_id: peer_id.to_string(),
             pc,
             track,
             transport,
-            on_track,
         }))
     }
 
@@ -168,15 +143,13 @@ impl VideoPeer {
         peer_id: &str,
         transport: Arc<crate::transport::Transport>,
     ) -> anyhow::Result<Arc<Self>> {
-        let (pc, track, on_track) = Self::build(robot_id, peer_id, transport.clone()).await?;
+        let (pc, track) = Self::build(robot_id, peer_id, transport.clone()).await?;
         info!(robot_id, peer_id, "video responder PeerConnection ready");
         Ok(Arc::new(Self {
             robot_id: robot_id.to_string(),
-            peer_id: peer_id.to_string(),
             pc,
             track,
             transport,
-            on_track,
         }))
     }
 
@@ -184,13 +157,6 @@ impl VideoPeer {
     #[cfg_attr(not(feature = "media"), allow(dead_code))]
     pub fn track(&self) -> Arc<TrackLocalStaticSample> {
         self.track.clone()
-    }
-
-    /// Register a callback invoked when an inbound track arrives. Default (until
-    /// set) is to log only; pass a closure to forward/consume the remote track.
-    #[allow(dead_code)]
-    pub fn set_on_track(&self, cb: TrackCallback) {
-        *self.on_track.lock().unwrap() = Some(cb);
     }
 }
 
