@@ -405,6 +405,13 @@ period_ms = 1000
         assert!(ServerConfig::from_toml("bogus = 1\n").is_err());
     }
 
+    #[test]
+    fn server_rejects_expected_client_without_robot_id() {
+        // `robot_id` is a required field: an expected-client entry that omits it
+        // must fail closed rather than silently allow an anonymous client.
+        assert!(ServerConfig::from_toml("[[expected_clients]]\n").is_err());
+    }
+
     #[tokio::test]
     async fn bootstrap_parses_empty_ruleset() {
         let store = RuleStore::bootstrap("rules = []\n").expect("empty rules parse");

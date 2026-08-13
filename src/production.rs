@@ -124,9 +124,29 @@ actions = [
 ]
 "#;
 
+    // A minimal semantic (extended-TOML) doc, mirroring tests/semantic_compile.rs.
+    const SEMANTIC_DOC: &str = r#"
+[site]
+id = "cell-7"
+frame = "cell-7/world"
+[zones]
+safety = { shape = "rect", x = 0.0, y = 0.0, w = 2.0, h = 2.0 }
+[[rules]]
+name = "hrc-slow-near-human"
+when.near_human = 1.2
+actions = [ { slow_to = 0.1, qos = "best_effort" } ]
+"#;
+
     #[tokio::test]
     async fn compiles_valid_raw_rules() {
         let store = compile_rules_or_default(VALID_TOML, "robot-7");
+        assert_eq!(store.current().await.rules.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn compiles_semantic_doc() {
+        // Semantic doc goes through semantic::compile, not the raw TOML fallback.
+        let store = compile_rules_or_default(SEMANTIC_DOC, "robot-7");
         assert_eq!(store.current().await.rules.len(), 1);
     }
 
@@ -136,17 +156,5 @@ actions = [
         // no motion commands).
         let store = compile_rules_or_default("this is {{{ not toml at all", "robot-7");
         assert_eq!(store.current().await.rules.len(), 0);
-    }
-
-    #[tokio::test]
-    async fn unreadable_semantic_compiles_falls_back_to_raw() {
-        // Valid raw TOML but not a semantic doc: raw path is used.
-        let store = compile_rules_or_default(VALID_TOML, "robot-7");
-        assert_eq!(store.current().await.rules.len(), 1);
-    }
-
-    #[test]
-    fn empty_ruleset_is_no_motion() {
-        assert_eq!(empty_ruleset_toml(), "rules = []\n");
     }
 }

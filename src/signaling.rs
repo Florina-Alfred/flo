@@ -308,17 +308,23 @@ mod tests {
     }
 
     #[test]
-    fn answer_without_ice_defaults_defaults_empty() {
-        let msg = SignalMessage {
-            sdp: "v=0".into(),
-            kind: SignalKind::Answer,
-            from: "robot-9".into(),
-            to: "robot-7".into(),
-            ice: vec![],
-        };
-        let back: SignalMessage =
-            serde_json::from_slice(&serde_json::to_vec(&msg).unwrap()).unwrap();
-        assert!(back.ice.is_empty());
+    fn answer_without_ice_field_defaults_empty() {
+        // The `ice` field is `#[serde(default)]`: a wire message that omits it
+        // (common for the first offer/answer) must deserialize with an empty vec.
+        let wire = br#"{"sdp":"v=0","kind":"answer","from":"robot-9","to":"robot-7"}"#;
+        let msg: SignalMessage = serde_json::from_slice(wire).unwrap();
+        assert!(msg.ice.is_empty());
+        assert!(matches!(msg.kind, SignalKind::Answer));
+    }
+
+    #[test]
+    fn malformed_signal_json_is_rejected() {
+        // `parse_signal` maps a failed decode to `None` (fail-closed); the serde
+        // layer it wraps must reject both non-JSON and a JSON object missing a
+        // required field (e.g. `sdp`).
+        assert!(serde_json::from_slice::<SignalMessage>(b"{ not json").is_err());
+        let missing_sdp = br#"{"kind":"answer","from":"robot-9","to":"robot-7"}"#;
+        assert!(serde_json::from_slice::<SignalMessage>(missing_sdp).is_err());
     }
 
     #[test]
