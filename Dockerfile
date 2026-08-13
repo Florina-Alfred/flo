@@ -61,11 +61,11 @@ EXPOSE 8080
 HEALTHCHECK CMD ["/flo", "--healthcheck"]
 ENTRYPOINT ["/flo"]
 
-# === Runtime: flo-server (media) ===
+# === Runtime base: media (shared) ===
 # GStreamer is runtime-loaded by the binary, so media images keep a slim
 # debian base (plugins + loader env) instead of distroless; posture below
 # mirrors the distroless non-root UID used by the default images.
-FROM debian:bookworm-slim AS server-media
+FROM debian:bookworm-slim AS media-runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gstreamer1.0-plugins-base \
     gstreamer1.0-plugins-good \
@@ -73,6 +73,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gstreamer1.0-plugins-ugly \
     libgstreamer1.0-0 \
     && rm -rf /var/lib/apt/lists/*
+
+# === Runtime: flo-server (media) ===
+FROM media-runtime AS server-media
 COPY --from=build-media /app/target/release/flo-server /flo-server
 ENV FLO_HEALTH_ADDR=0.0.0.0:8080
 EXPOSE 8080
@@ -81,14 +84,7 @@ HEALTHCHECK CMD ["/flo-server", "--healthcheck"]
 ENTRYPOINT ["/flo-server"]
 
 # === Runtime: flo-client (media) ===
-FROM debian:bookworm-slim AS client-media
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gstreamer1.0-plugins-base \
-    gstreamer1.0-plugins-good \
-    gstreamer1.0-plugins-bad \
-    gstreamer1.0-plugins-ugly \
-    libgstreamer1.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+FROM media-runtime AS client-media
 COPY --from=build-media /app/target/release/flo /flo
 ENV FLO_HEALTH_ADDR=0.0.0.0:8080
 EXPOSE 8080
