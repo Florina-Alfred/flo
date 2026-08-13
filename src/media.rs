@@ -155,21 +155,43 @@ mod tests {
 
     #[test]
     fn missing_v4l2_device_fails_cleanly() {
-        // Building only parses the description; opening the missing device surface
-        // must turn into an Err (from build or start), never a panic.
-        let result = (|| -> Result<()> {
-            let pipeline = MediaPipeline::build(
-                &SourceSpec::V4l2("/dev/definitely-not-a-video-device".into()),
-                320,
-                240,
-                10,
-            )
-            .context("build")?;
-            pipeline.start(Box::new(|_frame| {})).context("start")
-        })();
-        assert!(
-            result.is_err(),
-            "a missing device must yield Err, not panic"
-        );
+        // A non-existent device must fail as a clean GStreamer error, never panic.
+        // The failure can surface on either axis: `set_state` may return Err
+        // synchronously, or the element posts an Error message on the pipeline bus
+        // asynchronously after an Async state-change reply. Accept whichever the
+        // running gstreamer does, within a bounded window.
+        let Some(pipeline) = MediaPipeline::build(
+            &SourceSpec::V4l2("/dev/definitely-not-a-video-device".into()),
+            320,
+            240,
+            10,
+        )
+        .ok() else {
+            // No v4l2src factory on the host → build surfaced the failure; also clean.
+            return;
+        };
+
+        let bus = pipeline.pipeline.bus().expect("pipeline bus");
+        let start_failed = pipeline.start(Box::new(|_frame| {})).is_err();
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if start_failed
+                || bus
+                    .timed_pop_filtered(
+                        gstreamer::ClockTime::from_mseconds(25),
+                        &[gstreamer::MessageType::Error],
+                    )
+                    .is_some()
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "missing device never surfaced as a bus Error within 10s"
+            );
+        }
+
+        pipeline.stop();
     }
 }

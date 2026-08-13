@@ -160,78 +160,71 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn loopback_transport_round_trips_best_effort() {
-        let transport = Transport::open_with(Transport::loopback_config())
-            .await
-            .expect("open loopback transport");
-
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-        let _sub = transport
-            .subscribe_managed("robot/7/local/probe", move |s: zenoh::sample::Sample| {
-                let _ = tx.send(s.payload().to_bytes().to_vec());
-            })
-            .await
-            .expect("declare subscriber");
-
-        transport
-            .publish(
-                "robot/7/local/probe",
-                Qos::BestEffort,
-                &serde_json::json!({"probe": 42}),
-            )
-            .await
-            .expect("publish probe");
-
-        let payload = tokio::time::timeout(Duration::from_secs(5), rx.recv())
-            .await
-            .expect("timeout waiting for sample")
-            .expect("probe channel closed");
-        let value: serde_json::Value = serde_json::from_slice(&payload).unwrap();
-        assert_eq!(value["probe"], 42);
+        assert_round_trip(
+            "robot/7/local/probe",
+            Qos::BestEffort,
+            serde_json::json!({"probe": 42}),
+        )
+        .await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn loopback_transport_round_trips_reliable() {
+        assert_round_trip(
+            "robot/7/local/stop",
+            Qos::Reliable,
+            serde_json::json!({"stop": true}),
+        )
+        .await;
+    }
+
+    async fn assert_round_trip(topic: &str, qos: Qos, payload: serde_json::Value) {
         let transport = Transport::open_with(Transport::loopback_config())
             .await
             .expect("open loopback transport");
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let key = String::from(topic);
         let _sub = transport
-            .subscribe_managed("robot/7/local/stop", move |s: zenoh::sample::Sample| {
+            .subscribe_managed(&key, move |s: zenoh::sample::Sample| {
                 let _ = tx.send(s.payload().to_bytes().to_vec());
             })
             .await
             .expect("declare subscriber");
 
         transport
-            .publish(
-                "robot/7/local/stop",
-                Qos::Reliable,
-                &serde_json::json!({"stop": true}),
-            )
+            .publish(topic, qos, &payload)
             .await
-            .expect("publish stop");
+            .expect("publish");
 
-        let payload = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        let got = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("timeout waiting for sample")
-            .expect("stop channel closed");
-        let value: serde_json::Value = serde_json::from_slice(&payload).unwrap();
-        assert_eq!(value["stop"], true);
+            .expect("channel closed");
+        let value: serde_json::Value = serde_json::from_slice(&got).unwrap();
+        assert_eq!(value, payload, "round-trip payload mismatch on {topic}");
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn loopback_open_and_default_open_are_distinct_sessions() {
-        let default_session = Transport::open_with(zenoh::Config::default())
-            .await
-            .expect("open default session");
-        let loopback = Transport::open_with(Transport::loopback_config())
-            .await
-            .expect("open loopback session");
-        assert_ne!(
-            default_session.session.zid(),
-            loopback.session.zid(),
-            "loopback_config() must yield a session distinct from the default"
+    #[test]
+    fn loopback_config_sets_router_mode_and_localhost_listener() {
+        // The demo config hardens default peer discovery: router mode + multicast
+        // scouting on loopback + an ephemeral localhost listener. Assert the
+        // mutations landed in the config tree (so distinct sessions mesh).
+        let cfg = Transport::loopback_config();
+        assert_eq!(
+            cfg.get_json("mode").unwrap(),
+            "\"router\"",
+            "mode must be router, not the default peer"
+        );
+        assert_eq!(
+            cfg.get_json("scouting/multicast/enabled").unwrap(),
+            "true",
+            "multicast scouting must be enabled on loopback"
+        );
+        let endpoints = cfg.get_json("listen/endpoints").unwrap();
+        assert!(
+            endpoints.contains("tcp/127.0.0.1:0"),
+            "missing ephemeral localhost listener, got: {endpoints}"
         );
     }
 }
