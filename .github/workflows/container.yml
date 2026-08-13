@@ -79,10 +79,10 @@ jobs:
         platform: [amd64, arm64]
     runs-on: ${{ matrix.platform == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     # Native builds removed the QEMU-emulation cost (#152), but a cold-cache
-    # `media` arm64 build can still run long. 90 min of headroom keeps a
-    # cold build from timing out (a timed-out build never exports its GHA
-    # cache, so it could never warm). Residual cold-cache risk is documented
-    # in AGENTS.md.
+    # `media` arm64 build can still run long. 90 min of headroom (was 60) keeps
+    # a cold build from timing out and protects the cache-exports guarantee in
+    # the block comment above. Residual cold-cache risk is documented in
+    # AGENTS.md.
     timeout-minutes: 90
     permissions:
       contents: read
