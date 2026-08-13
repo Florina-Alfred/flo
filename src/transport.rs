@@ -146,6 +146,8 @@ impl Transport {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -154,5 +156,82 @@ mod tests {
             .replace("{site}", "cell-7")
             .replace("{name}", "acme");
         assert_eq!(k, "fleet/cell-7/ruleset/acme");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn loopback_transport_round_trips_best_effort() {
+        let transport = Transport::open_with(Transport::loopback_config())
+            .await
+            .expect("open loopback transport");
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let _sub = transport
+            .subscribe_managed("robot/7/local/probe", move |s: zenoh::sample::Sample| {
+                let _ = tx.send(s.payload().to_bytes().to_vec());
+            })
+            .await
+            .expect("declare subscriber");
+
+        transport
+            .publish(
+                "robot/7/local/probe",
+                Qos::BestEffort,
+                &serde_json::json!({"probe": 42}),
+            )
+            .await
+            .expect("publish probe");
+
+        let payload = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timeout waiting for sample")
+            .expect("probe channel closed");
+        let value: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(value["probe"], 42);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn loopback_transport_round_trips_reliable() {
+        let transport = Transport::open_with(Transport::loopback_config())
+            .await
+            .expect("open loopback transport");
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let _sub = transport
+            .subscribe_managed("robot/7/local/stop", move |s: zenoh::sample::Sample| {
+                let _ = tx.send(s.payload().to_bytes().to_vec());
+            })
+            .await
+            .expect("declare subscriber");
+
+        transport
+            .publish(
+                "robot/7/local/stop",
+                Qos::Reliable,
+                &serde_json::json!({"stop": true}),
+            )
+            .await
+            .expect("publish stop");
+
+        let payload = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timeout waiting for sample")
+            .expect("stop channel closed");
+        let value: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(value["stop"], true);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn loopback_open_and_default_open_are_distinct_sessions() {
+        let default_session = Transport::open_with(zenoh::Config::default())
+            .await
+            .expect("open default session");
+        let loopback = Transport::open_with(Transport::loopback_config())
+            .await
+            .expect("open loopback session");
+        assert_ne!(
+            default_session.session.zid(),
+            loopback.session.zid(),
+            "loopback_config() must yield a session distinct from the default"
+        );
     }
 }

@@ -110,11 +110,66 @@ impl MediaPipeline {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
+
     use super::*;
 
     #[test]
     fn encoder_selection() {
         assert_eq!(encoder_element_name(true), "nvv4l2h264enc");
         assert_eq!(encoder_element_name(false), "x264enc");
+    }
+
+    #[test]
+    fn videotest_pipeline_builds_and_reaches_playing() {
+        let pipeline = MediaPipeline::build(&SourceSpec::Videotest, 320, 240, 10)
+            .expect("build videotest pipeline");
+        let samples = Arc::new(AtomicU64::new(0));
+        let count = samples.clone();
+        pipeline
+            .start(Box::new(move |_frame| {
+                count.fetch_add(1, Ordering::SeqCst);
+            }))
+            .expect("start pipeline");
+
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if pipeline.pipeline.current_state() == gstreamer::State::Playing
+                && samples.load(Ordering::SeqCst) > 0
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "pipeline never reached Playing (state={:?}, samples={:?})",
+                pipeline.pipeline.current_state(),
+                samples.load(Ordering::SeqCst)
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+
+        pipeline.stop();
+    }
+
+    #[test]
+    fn missing_v4l2_device_fails_cleanly() {
+        // Building only parses the description; opening the missing device surface
+        // must turn into an Err (from build or start), never a panic.
+        let result = (|| -> Result<()> {
+            let pipeline = MediaPipeline::build(
+                &SourceSpec::V4l2("/dev/definitely-not-a-video-device".into()),
+                320,
+                240,
+                10,
+            )
+            .context("build")?;
+            pipeline.start(Box::new(|_frame| {})).context("start")
+        })();
+        assert!(
+            result.is_err(),
+            "a missing device must yield Err, not panic"
+        );
     }
 }
