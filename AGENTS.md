@@ -52,7 +52,10 @@ for the native arm64 image build in `container.yml`); no larger/self-hosted runn
   (PRs: build only, no push). Matrix of 4 images (`server`, `client`, `server-media`,
   `client-media`) × 2 platforms. Each platform is built **natively** — `linux/amd64` on
   `ubuntu-latest`, `linux/arm64` on the free `ubuntu-24.04-arm` hosted runner — so no QEMU
-  emulation (which previously blew the 60-min timeout on cold cache; see #152). A `merge`
+  emulation (which previously blew the 60-min timeout on cold cache; see #152). The
+  `images` job runs at `timeout-minutes: 90` for cold-cache headroom; a cold `media` arm64
+  build can still run long, so keep native builds and watch the first build after a scope
+  cache purge. A `merge`
   job (main/tags only) assembles the multi-arch manifest index for the final tags: `latest`
   + `sha-*` on `main` push, semver tags on `v*` tag. **Signing:** keyless Cosign via Sigstore
   (GitHub OIDC → Fulcio + Rekor). **SBOM:** Syft SPDX attested with Cosign.
@@ -76,7 +79,7 @@ merge — use the `code-review` skill (two axes: Standards + Spec). See `CONTRIB
   `git ls-remote`), not a mutable tag. First-party `github/codeql-action` uses `@v3`
   (GitHub-maintained rolling tag, acceptable). Dependabot keeps SHAs fresh.
 - After the 2026-03 `aquasecurity/trivy-action` compromise, the Trivy pin is
-  `57a97c7e7821a5776cebc9bb87c984fa69cba8f1` (v0.35.0, the known-good signed release).
+  `ed142fd0673e97e23eac54620cfb913e5ce36c25` (v0.36.0, verified against the signed GitHub release).
 
 ### Local CI testing with `act`
 Before pushing, validate workflows locally with [nektos/act](https://github.com/nektos/act)
