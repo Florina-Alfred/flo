@@ -62,6 +62,9 @@ HEALTHCHECK CMD ["/flo", "--healthcheck"]
 ENTRYPOINT ["/flo"]
 
 # === Runtime: flo-server (media) ===
+# GStreamer is runtime-loaded by the binary, so media images keep a slim
+# debian base (plugins + loader env) instead of distroless; posture below
+# mirrors the distroless non-root UID used by the default images.
 FROM debian:bookworm-slim AS server-media
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gstreamer1.0-plugins-base \
@@ -73,7 +76,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=build-media /app/target/release/flo-server /flo-server
 ENV FLO_HEALTH_ADDR=0.0.0.0:8080
 EXPOSE 8080
-USER nobody:nogroup
+USER 65532:65532
 HEALTHCHECK CMD ["/flo-server", "--healthcheck"]
 ENTRYPOINT ["/flo-server"]
 
@@ -89,6 +92,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=build-media /app/target/release/flo /flo
 ENV FLO_HEALTH_ADDR=0.0.0.0:8080
 EXPOSE 8080
-USER nobody:nogroup
+USER 65532:65532
 HEALTHCHECK CMD ["/flo", "--healthcheck"]
 ENTRYPOINT ["/flo"]
