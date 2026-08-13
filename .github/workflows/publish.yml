@@ -232,4 +232,8 @@ jobs:
       - name: Attach SLSA build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: ${{ steps.stage.outputs.subject }} ${{ steps.stage.outputs.sbom }}
+          # subject-path is a newline- or comma-delimited list — a
+          # space-joined single string is treated as one glob and fails.
+          subject-path: |
+            ${{ steps.stage.outputs.subject }}
+            ${{ steps.stage.outputs.sbom }}
