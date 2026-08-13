@@ -30,13 +30,8 @@ impl std::error::Error for RegistryError {}
 #[derive(Debug, PartialEq)]
 pub enum RegisterOutcome {
     Inserted,
-    Updated {
-        version: u64,
-        sha: String,
-    },
+    Updated { version: u64, sha: String },
     RejectedConflict,
-    #[allow(dead_code)]
-    Quarantined,
 }
 
 pub struct Registry {

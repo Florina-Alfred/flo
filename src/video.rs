@@ -34,11 +34,6 @@ pub struct VideoPeer {
     transport: Arc<crate::transport::Transport>,
 }
 
-/// Callback invoked when a remote track is received on this peer. Receives the
-/// inbound `TrackRemote` so a consumer can attach a sample reader; `flo` itself
-/// does no rendering.
-pub type TrackCallback = Arc<dyn Fn(Arc<webrtc::track::track_remote::TrackRemote>) + Send + Sync>;
-
 impl VideoPeer {
     /// Build the `PeerConnection`, add the H.264 track, and wire trickle-ICE so
     /// candidates are relayed to the peer over zenoh. Shared by [`VideoPeer::offer`] and
@@ -99,19 +94,12 @@ impl VideoPeer {
             })
         }));
 
-        // Inbound tracks: deliver to the user callback if registered, else log.
-        // `flo` performs no rendering; a consumer attaches a reader here.
-        let on_track: Arc<std::sync::Mutex<Option<TrackCallback>>> = Default::default();
-        let cb = on_track.clone();
+        // Inbound tracks: `flo` performs no rendering, so just log their arrival.
         let log_peer = peer_id.to_string();
-        pc.on_track(Box::new(move |track, _receiver, _transceiver| {
-            let cb = cb.clone();
+        pc.on_track(Box::new(move |_track, _receiver, _transceiver| {
             let log_peer = log_peer.clone();
             Box::pin(async move {
                 info!(from = %log_peer, "▶ video track received");
-                if let Some(f) = cb.lock().unwrap().clone() {
-                    f(track);
-                }
             })
         }));
 
