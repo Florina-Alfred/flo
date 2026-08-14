@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Server and client TOML configs now reject unknown fields (`deny_unknown_fields`):
   typos fail fast instead of being silently ignored.
+- Migrated the optional `media` feature from `webrtc 0.17` to `webrtc 0.21.0-alpha.1`
+  (Sans-I/O API rewrite). Behavior preserved: single H.264 outbound track, host-only
+  trickle ICE, receive no-op. Adds `rtc` + `async-trait` as direct deps and drops the
+  dormant `gstreamer-video` dependency. Alpha status is a documented risk — tracked
+  upstream for a stable 0.21.
 
 ## [0.1.4] - unreleased
 

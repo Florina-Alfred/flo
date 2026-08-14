@@ -2,35 +2,104 @@
 //! Signaling rides the existing zenoh mesh via `signaling` (unchanged schema).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Instant;
 
 use anyhow::Context;
+use rtc::media_stream::MediaStreamTrack;
+use rtc::rtp_transceiver::rtp_sender::{
+    RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
+};
 use tracing::{info, warn};
-use webrtc::api::APIBuilder;
-use webrtc::ice_transport::ice_candidate::{RTCIceCandidate, RTCIceCandidateInit};
-use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::peer_connection::configuration::RTCConfiguration;
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
+use webrtc::media_stream::Track;
+use webrtc::media_stream::track_local::TrackLocal;
+use webrtc::media_stream::track_local::static_sample::TrackLocalStaticSample;
+use webrtc::media_stream::track_remote::TrackRemote;
+use webrtc::peer_connection::{
+    MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
+    RTCConfigurationBuilder, RTCIceCandidateInit, RTCPeerConnectionIceEvent,
+    RTCPeerConnectionState, RTCSessionDescription,
+};
+use webrtc::rtp_transceiver::RtpSender;
 
-use crate::codec::h264_codec_capability;
+use crate::codec::h264_codec_parameters;
 use crate::signaling::{IceCandidate, SignalHandler, SignalMessage};
+
+/// Deterministic SSRC source: a simple counter (no `rand` dependency). Uniqueness
+/// per peer is all that matters for the single outbound H.264 track.
+static NEXT_SSRC: AtomicU32 = AtomicU32::new(0x5100_0000);
 
 /// Build an H.264 track local (clock rate 90 kHz) for webrtc-rs.
 pub fn h264_track(id: String, stream_id: String) -> Arc<TrackLocalStaticSample> {
-    Arc::new(TrackLocalStaticSample::new(
-        h264_codec_capability(),
-        id,
+    let ssrc = NEXT_SSRC.fetch_add(1, Ordering::Relaxed);
+    let track = MediaStreamTrack::new(
         stream_id,
-    ))
+        id,
+        "flo-h264".to_owned(),
+        RtpCodecKind::Video,
+        vec![RTCRtpEncodingParameters {
+            rtp_coding_parameters: RTCRtpCodingParameters {
+                ssrc: Some(ssrc),
+                ..Default::default()
+            },
+            codec: h264_codec_parameters().rtp_codec,
+            ..Default::default()
+        }],
+    );
+    Arc::new(
+        TrackLocalStaticSample::new(Instant::now(), track)
+            .expect("H.264 codec has a registered payloader"),
+    )
+}
+
+/// Async event handler wired into the `PeerConnectionBuilder`. Replaces the 0.17
+/// closure callbacks: trickles ICE candidates to the peer over zenoh and logs
+/// receive-side events (flo does not render inbound media).
+struct VideoHandler {
+    transport: Arc<crate::transport::Transport>,
+    robot_id: String,
+    peer_id: String,
+}
+
+#[async_trait::async_trait]
+impl PeerConnectionEventHandler for VideoHandler {
+    async fn on_ice_candidate(&self, event: RTCPeerConnectionIceEvent) {
+        let Ok(init) = event.candidate.to_json() else {
+            warn!("ice candidate to_json failed");
+            return;
+        };
+        let ice = IceCandidate {
+            candidate: init.candidate,
+            sdp_mid: init.sdp_mid,
+            mline_index: init.sdp_mline_index,
+        };
+        if let Err(e) =
+            crate::signaling::publish_ice(&self.transport, &self.robot_id, &self.peer_id, ice).await
+        {
+            warn!(error = %e, "publish_ice failed");
+        }
+    }
+
+    async fn on_track(&self, _track: Arc<dyn TrackRemote>) {
+        info!(from = %self.peer_id, "▶ video track received");
+    }
+
+    async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
+        info!(from = %self.peer_id, ?state, "peer connection state changed");
+    }
 }
 
 /// State for one outbound video call. Implements `SignalHandler` so inbound
 /// answers/ICE from the peer are applied to this PeerConnection.
 pub struct VideoPeer {
     robot_id: String,
-    pc: Arc<RTCPeerConnection>,
+    pc: Arc<dyn PeerConnection>,
     #[cfg_attr(not(feature = "media"), allow(dead_code))]
     track: Arc<TrackLocalStaticSample>,
+    /// Sender for the outbound track; used to resolve the negotiated payload
+    /// type when starting capture.
+    #[cfg_attr(not(feature = "media"), allow(dead_code))]
+    sender: Arc<dyn RtpSender>,
     transport: Arc<crate::transport::Transport>,
 }
 
@@ -42,68 +111,42 @@ impl VideoPeer {
         robot_id: &str,
         peer_id: &str,
         transport: Arc<crate::transport::Transport>,
-    ) -> anyhow::Result<(Arc<RTCPeerConnection>, Arc<TrackLocalStaticSample>)> {
+    ) -> anyhow::Result<(
+        Arc<dyn PeerConnection>,
+        Arc<TrackLocalStaticSample>,
+        Arc<dyn RtpSender>,
+    )> {
         // Register the H.264 codec in the MediaEngine so `add_track` has a codec
         // to populate the SDP media section with (webrtc-rs rejects an
         // RTPSender with no registered codec). Without this, offer/answer
         // creation fails with "RTPSender created with no codecs".
-        let mut media_engine = webrtc::api::media_engine::MediaEngine::default();
+        let mut media_engine = MediaEngine::default();
         media_engine
-            .register_codec(
-                webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters {
-                    capability: h264_codec_capability(),
-                    payload_type: 102,
-                    stats_id: String::new(),
-                },
-                webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video,
-            )
+            .register_codec(h264_codec_parameters(), RtpCodecKind::Video)
             .context("register h264 codec")?;
-        let api = APIBuilder::new().with_media_engine(media_engine).build();
-        let pc = Arc::new(
-            api.new_peer_connection(RTCConfiguration::default())
+        let config = RTCConfigurationBuilder::new().build();
+        let pc: Arc<dyn PeerConnection> = Arc::new(
+            PeerConnectionBuilder::new()
+                .with_configuration(config)
+                .with_media_engine(media_engine)
+                .with_handler(Arc::new(VideoHandler {
+                    transport: transport.clone(),
+                    robot_id: robot_id.to_string(),
+                    peer_id: peer_id.to_string(),
+                }))
+                .with_udp_addrs(vec!["0.0.0.0:0"])
+                .build()
                 .await
                 .context("new_peer_connection")?,
         );
 
         let track = h264_track(format!("{robot_id}-cam0"), format!("{robot_id}-stream0"));
-        pc.add_track(track.clone()).await.context("add_track")?;
+        let sender = pc
+            .add_track(Arc::clone(&track) as Arc<dyn TrackLocal>)
+            .await
+            .context("add_track")?;
 
-        // Trickle ICE candidates to the peer over zenoh.
-        let t_robot = robot_id.to_string();
-        let t_peer = peer_id.to_string();
-        let t_tr = transport.clone();
-        pc.on_ice_candidate(Box::new(move |c: Option<RTCIceCandidate>| {
-            let t_robot = t_robot.clone();
-            let t_peer = t_peer.clone();
-            let t_tr = t_tr.clone();
-            Box::pin(async move {
-                if let Some(c) = c
-                    && let Ok(init) = c.to_json()
-                {
-                    let ice = IceCandidate {
-                        candidate: init.candidate,
-                        sdp_mid: init.sdp_mid,
-                        mline_index: init.sdp_mline_index,
-                    };
-                    if let Err(e) =
-                        crate::signaling::publish_ice(&t_tr, &t_robot, &t_peer, ice).await
-                    {
-                        warn!(error = %e, "publish_ice failed");
-                    }
-                }
-            })
-        }));
-
-        // Inbound tracks: `flo` performs no rendering, so just log their arrival.
-        let log_peer = peer_id.to_string();
-        pc.on_track(Box::new(move |_track, _receiver, _transceiver| {
-            let log_peer = log_peer.clone();
-            Box::pin(async move {
-                info!(from = %log_peer, "▶ video track received");
-            })
-        }));
-
-        Ok((pc, track))
+        Ok((pc, track, sender))
     }
 
     /// Create the PC, add the H.264 track, wire ICE, create+publish an offer.
@@ -113,7 +156,7 @@ impl VideoPeer {
         peer_id: &str,
         transport: Arc<crate::transport::Transport>,
     ) -> anyhow::Result<Arc<Self>> {
-        let (pc, track) = Self::build(robot_id, peer_id, transport.clone()).await?;
+        let (pc, track, sender) = Self::build(robot_id, peer_id, transport.clone()).await?;
 
         // Create + publish the offer.
         let offer = pc.create_offer(None).await.context("create_offer")?;
@@ -129,6 +172,7 @@ impl VideoPeer {
             robot_id: robot_id.to_string(),
             pc,
             track,
+            sender,
             transport,
         }))
     }
@@ -143,12 +187,13 @@ impl VideoPeer {
         peer_id: &str,
         transport: Arc<crate::transport::Transport>,
     ) -> anyhow::Result<Arc<Self>> {
-        let (pc, track) = Self::build(robot_id, peer_id, transport.clone()).await?;
+        let (pc, track, sender) = Self::build(robot_id, peer_id, transport.clone()).await?;
         info!(robot_id, peer_id, "video responder PeerConnection ready");
         Ok(Arc::new(Self {
             robot_id: robot_id.to_string(),
             pc,
             track,
+            sender,
             transport,
         }))
     }
@@ -181,6 +226,7 @@ impl SignalHandler for VideoPeer {
             sdp_mid: candidate.sdp_mid.clone(),
             sdp_mline_index: candidate.mline_index,
             username_fragment: None,
+            url: None,
         };
         tokio::spawn(async move {
             if let Err(e) = pc.add_ice_candidate(init).await {
@@ -274,7 +320,7 @@ pub async fn start_video_with_source(
     if let Err(e) = start_capture(peer.clone(), source, 1280, 720, 30).await {
         warn!(error = %e, "media capture failed to start");
     }
-    crate::signaling::run_signal_receiver(&transport, robot_id, peer.clone())
+    crate::signaling::run_signal_receiver(&transport, robot_id, peer)
         .await
         .map_err(|e| anyhow::anyhow!("signal receiver: {e}"))?;
     Ok(())
@@ -293,24 +339,44 @@ pub async fn start_capture(
     fps: u32,
 ) -> anyhow::Result<()> {
     use crate::media::MediaPipeline;
-    use webrtc::media::Sample as MediaSample;
+    use rtc::media::Sample;
 
     let pipeline = MediaPipeline::build(&source, width, height, fps)?;
     let track = peer.track();
-    let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
-    let ticks_per_frame = 90_000 / fps.max(1);
+
+    // Resolve the outbound SSRC and negotiated payload type once, up front.
+    let ssrc = *track
+        .ssrcs()
+        .await
+        .first()
+        .expect("outbound track has an SSRC");
+    // Prefer the negotiated payload type; fall back to the registered one (102)
+    // until an offer/answer populates the sender's codecs (the answerer side can
+    // start capture before any negotiation).
+    let payload_type = peer
+        .sender
+        .get_parameters()
+        .await?
+        .rtp_parameters
+        .codecs
+        .first()
+        .map(|c| c.payload_type)
+        .unwrap_or_else(|| h264_codec_parameters().payload_type);
+
+    let duration = std::time::Duration::from_secs_f64(1.0 / fps.max(1) as f64);
     pipeline.start(Box::new(move |bytes: &[u8]| {
-        let ts = counter.fetch_add(ticks_per_frame, std::sync::atomic::Ordering::SeqCst);
         let track = track.clone();
-        let sample = MediaSample {
+        let sample = Sample {
             data: bytes::Bytes::copy_from_slice(bytes),
-            timestamp: std::time::SystemTime::now(),
-            duration: std::time::Duration::from_secs_f64(1.0 / fps as f64),
-            packet_timestamp: ts,
-            ..Default::default()
+            duration,
+            ..Sample::new(Instant::now())
         };
         tokio::spawn(async move {
-            if let Err(e) = track.write_sample(&sample).await {
+            if let Err(e) = track
+                .sample_writer(ssrc, payload_type)
+                .write_sample(&sample)
+                .await
+            {
                 tracing::warn!(error = %e, "write_sample failed");
             }
         });
@@ -327,17 +393,17 @@ pub async fn start_capture(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "media")]
-    use webrtc::track::track_local::TrackLocal;
 
-    #[test]
-    fn h264_track_has_correct_codec() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn h264_track_has_correct_codec() {
         let t = h264_track("cam0".into(), "stream0".into());
+        let ssrc = *t.ssrcs().await.first().expect("one ssrc");
+        let codec = t.codec(ssrc).await.expect("codec for ssrc");
         assert_eq!(
-            t.codec().mime_type,
-            webrtc::api::media_engine::MIME_TYPE_H264
+            codec.mime_type,
+            rtc::peer_connection::configuration::media_engine::MIME_TYPE_H264
         );
-        assert_eq!(t.codec().clock_rate, 90_000);
+        assert_eq!(codec.clock_rate, 90_000);
     }
 
     /// The answering side must be able to start a capture pipeline against its
@@ -357,7 +423,7 @@ mod tests {
             .await
             .expect("answering PeerConnection");
         // The outbound track is usable before any remote description is set.
-        assert_eq!(peer.track().id(), format!("{}-cam0", "robot7"));
+        assert_eq!(peer.track().track_id().await, format!("{}-cam0", "robot7"));
 
         // Capture must start cleanly on the answerer (the Phase 2 wiring).
         start_capture(peer, crate::media::SourceSpec::Videotest, 1280, 720, 30)
