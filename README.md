@@ -295,7 +295,9 @@ cargo fmt            # format
 
 The `media` feature (WebRTC video with GStreamer) is feature-gated — see
 `scripts/setup-dev.sh` for system package install, then build with
-`--features media`.
+`--features media`. It builds on the `webrtc 0.21` line (Sans-I/O API), pinned
+to `0.21.0-alpha.1` until a stable 0.21 publishes; the alpha status is tracked
+upstream.
 
 ## Safety posture
 
