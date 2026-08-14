@@ -350,6 +350,9 @@ pub async fn start_capture(
         .await
         .first()
         .expect("outbound track has an SSRC");
+    // Prefer the negotiated payload type; fall back to the registered one (102)
+    // until an offer/answer populates the sender's codecs (the answerer side can
+    // start capture before any negotiation).
     let payload_type = peer
         .sender
         .get_parameters()
