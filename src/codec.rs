@@ -29,14 +29,17 @@ impl std::str::FromStr for Codec {
     }
 }
 
-/// Build the webrtc-rs codec capability for H.264 (clock rate 90 kHz, per RFC 6184).
+/// Build the webrtc-rs codec parameters for H.264 (clock rate 90 kHz, per RFC 6184).
 #[cfg(feature = "media")]
-pub fn h264_codec_capability() -> webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
-    webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
-        mime_type: webrtc::api::media_engine::MIME_TYPE_H264.to_owned(),
-        clock_rate: 90_000,
-        channels: 0,
-        sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1".to_owned(),
-        rtcp_feedback: vec![],
+pub fn h264_codec_parameters() -> rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters {
+    rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters {
+        rtp_codec: rtc::rtp_transceiver::rtp_sender::RTCRtpCodec {
+            mime_type: rtc::peer_connection::configuration::media_engine::MIME_TYPE_H264.to_owned(),
+            clock_rate: 90_000,
+            channels: 0,
+            sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1".to_owned(),
+            rtcp_feedback: vec![],
+        },
+        payload_type: 102,
     }
 }
