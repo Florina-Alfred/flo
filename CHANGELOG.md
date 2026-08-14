@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-08-14
+
 ### Changed
 - Server and client TOML configs now reject unknown fields (`deny_unknown_fields`):
   typos fail fast instead of being silently ignored.
@@ -16,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dormant `gstreamer-video` dependency. Alpha status is a documented risk — tracked
   upstream for a stable 0.21.
 
-## [0.1.4] - unreleased
+## [0.1.4] - 2026-08-13
 
 ### Added
 - `CHANGELOG.md` and a `keep-a-changelog` discipline for releases.
