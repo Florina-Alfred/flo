@@ -18,8 +18,8 @@ name: Publish to crates.io
 # - The GitHub Release is created ONLY after `cargo publish` succeeds (so the
 #   release never exists without the crate version being live), except on
 #   manual dispatch where no publish happens.
-# - Bump `version` in Cargo.toml, merge to main, then tag: `git tag vX.Y.Z &&
-#   git push origin vX.Y.Z`.
+# - Bump `version` in Cargo.toml, refresh + commit Cargo.lock, merge to main,
+#   then tag: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 
 on:
   push:
@@ -63,18 +63,33 @@ jobs:
           fi
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # pinned action commit
         with:
-          # Pinned to the MSRV (1.97.1, same as ci.yml) so the 'Refresh
-          # lockfile' step below reproduces the committed Cargo.lock exactly.
-          # A rolling `stable` here would generate a differently-ordered lock
-          # and trip cargo's built-in dirty-tree check (the `cargo publish
-          # --dry-run` verify step) on every release.
+          # Pinned to the MSRV (1.97.1, same as ci.yml) so the 'Check lockfile
+          # is in sync with the index' step below reproduces the committed
+          # Cargo.lock exactly. A rolling `stable` here would generate a
+          # differently-ordered lock and trip the sync check (and the `cargo
+          # publish --dry-run` verify step) on every release.
           toolchain: "1.97.1"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Refresh lockfile
-        # cargo publish --dry-run downloads the latest index, which can update
-        # Cargo.lock during dependency resolution, causing a dirty-tree error.
-        # Pre-refresh to keep the tree clean.
-        run: cargo generate-lockfile
+      - name: Check lockfile is in sync with the index
+        # cargo publish --dry-run rejects a dirty tree, and its own index
+        # resolution can update Cargo.lock mid-run. The committed Cargo.lock
+        # must already match what the current crates.io index resolves to
+        # (regenerated on the pinned MSRV toolchain above). If it has drifted —
+        # e.g. a transitive bump landed since the last release — fail fast with
+        # an actionable message instead of cargo's opaque dirty-tree error.
+        run: |
+          cargo generate-lockfile
+          if ! git diff --exit-code -- Cargo.lock; then
+            {
+              echo "Cargo.lock is stale vs the current crates.io index."
+              echo "Run 'cargo generate-lockfile' locally, review + commit the diff"
+              echo "(conventional: 'release: refresh Cargo.lock (unblock vX.Y.Z)'), merge to"
+              echo "main, then move the tag to the merged commit and re-push."
+              git diff -- Cargo.lock
+            } >&2
+            exit 1
+          fi
+          echo "Cargo.lock is in sync with the index."
       - name: Verify package
         run: cargo publish --dry-run
       - name: Validate README

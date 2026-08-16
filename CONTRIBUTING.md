@@ -44,12 +44,16 @@ The crate publishes as **`flo-rs`** (the bare name `flo` is taken on crates.io b
 unrelated 2018 crate). The CLI binary users run stays `flo`.
 
 1. Bump `version` in `Cargo.toml`.
-2. Commit and merge to `main`.
-3. Tag the release commit: `git tag vX.Y.Z && git push origin vX.Y.Z`.
-4. The `publish.yml` workflow publishes using the `CARGO_REGISTRY_TOKEN` secret
+2. Refresh the lockfile: run `cargo generate-lockfile` on the MSRV toolchain
+   (1.97.1); if `Cargo.lock` changed, commit it (conventional
+   `release: refresh Cargo.lock ...`). The publish workflow rejects a stale
+   lockfile, so this must land before the tag.
+3. Commit and merge to `main`.
+4. Tag the release commit: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+5. The `publish.yml` workflow publishes using the `CARGO_REGISTRY_TOKEN` secret
    (set in repo Settings → Secrets and variables → Actions). The token is never
    committed and GitHub masks it in logs.
-5. After publish, users install with `cargo install flo-rs` and run the `flo` binary.
+6. After publish, users install with `cargo install flo-rs` and run the `flo` binary.
 
 ## Secrets handling
 
