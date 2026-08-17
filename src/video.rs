@@ -315,15 +315,15 @@ pub async fn start_video_with_source(
     source: crate::media::SourceSpec,
 ) -> anyhow::Result<()> {
     let peer = VideoPeer::offer(robot_id, peer_id, transport.clone()).await?;
-    // Start capture and hold the handle for the daemon session: it keeps the
-    // GStreamer pipeline producing and stops it cleanly when the session ends.
-    let _capture = match start_capture(peer.clone(), source, 1280, 720, 30).await {
-        Ok(h) => Some(h),
+    // Detach the capture pipeline so it keeps producing for the daemon lifetime:
+    // `run_signal_receiver` returns after subscribing, so a held handle would be
+    // dropped here and stop capture immediately.
+    match start_capture(peer.clone(), source, 1280, 720, 30).await {
+        Ok(h) => h.detach(),
         Err(e) => {
             warn!(error = %e, "media capture failed to start");
-            None
         }
-    };
+    }
     crate::signaling::run_signal_receiver(&transport, robot_id, peer)
         .await
         .map_err(|e| anyhow::anyhow!("signal receiver: {e}"))?;
@@ -408,12 +408,26 @@ pub async fn start_capture(
 
 /// Owns a running GStreamer capture pipeline. Dropping it stops the pipeline
 /// cleanly, which also stops the appsink callback from spawning further sample
-/// tasks — so no frame is ever dispatched once the owning runtime is gone. The
-/// daemon keeps this for its session lifetime; tests drop it before their tokio
-/// runtime ends.
+/// tasks — so no frame is ever dispatched once the owning runtime is gone.
+///
+/// A daemon (offerer/`start_video_with_source`) keeps the capture for the
+/// process lifetime and calls [`CaptureHandle::detach`] so the pipeline is not
+/// stopped when the startup path returns. Tests and the mesh answerer hold the
+/// handle for their session and drop it before their tokio runtime ends.
 #[cfg(feature = "media")]
 pub struct CaptureHandle {
     pipeline: crate::media::MediaPipeline,
+}
+
+#[cfg(feature = "media")]
+impl CaptureHandle {
+    /// Release the pipeline from the handle's ownership so it keeps producing
+    /// until the process exits. Intended for daemon mode, where the capture
+    /// must outlive the function that started it (e.g. `start_video_with_source`
+    /// returns right after subscribing to signals).
+    pub fn detach(self) {
+        std::mem::forget(self);
+    }
 }
 
 #[cfg(feature = "media")]
