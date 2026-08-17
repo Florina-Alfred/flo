@@ -50,8 +50,9 @@ for the native arm64 image build in `container.yml`); no larger/self-hosted runn
   (rust), and a tag-triggered `release` artifact build (30-day retention).
 - `.github/workflows/container.yml` — **container images**, runs on `main` pushes, `v*` tags,
   and every PR (PRs: build only, no push). A `changes` scope job skips the 8-image build
-  (4 images × 2 platforms) for PRs and main pushes that touch only workflow/docs files
-  (tag pushes always build). Matrix of 4 images (`server`, `client`, `server-media`,
+  (4 images × 2 platforms) for PRs and main pushes that touch only non-image files
+  (`Dockerfile|Cargo.toml|Cargo.lock|.dockerignore|src/` are the image inputs; tag pushes
+  always build). Matrix of 4 images (`server`, `client`, `server-media`,
   `client-media`) × 2 platforms. Each platform is built **natively** — `linux/amd64` on
   `ubuntu-latest`, `linux/arm64` on the free `ubuntu-24.04-arm` hosted runner — so no QEMU
   emulation (which previously blew the 60-min timeout on cold cache; see #152). The
