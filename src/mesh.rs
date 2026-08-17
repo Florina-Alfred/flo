@@ -24,12 +24,21 @@ pub struct MeshSignalHandler {
     inner: Arc<MeshSignalHandlerInner>,
 }
 
+/// A peer session: the answering `VideoPeer` plus the optional capture handle
+/// that keeps its outbound media pipeline alive. Holding the handle (and so the
+/// pipeline) for the peer's lifetime is what keeps an answerer streaming back;
+/// dropping it (peer removed / handler dropped) stops capture cleanly.
+struct PeerSession {
+    peer: Arc<flo_rs::video::VideoPeer>,
+    capture: Option<flo_rs::video::CaptureHandle>,
+}
+
 struct MeshSignalHandlerInner {
     robot_id: String,
     transport: Arc<Transport>,
     /// One answering PeerConnection per remote peer. Created on first inbound
     /// offer; reused for subsequent signaling with that peer.
-    peers: Mutex<HashMap<String, Arc<flo_rs::video::VideoPeer>>>,
+    peers: Mutex<HashMap<String, PeerSession>>,
     /// Capture source for answering peers; `None` means "receive-only / no
     /// outbound media".
     source: Option<flo_rs::media::SourceSpec>,
@@ -55,7 +64,7 @@ impl MeshSignalHandler {
     /// await points when called from spawned tasks.
     fn find_peer(&self, from: &str) -> Option<Arc<flo_rs::video::VideoPeer>> {
         match self.inner.peers.lock() {
-            Ok(g) => g.get(from).cloned(),
+            Ok(g) => g.get(from).map(|s| s.peer.clone()),
             Err(e) => {
                 warn!(error = %e, "peers lock poisoned in find_peer");
                 None
@@ -90,13 +99,31 @@ impl MeshSignalHandler {
             }
         };
         let was_new = !g.contains_key(&from.to_string());
-        let peer = g.entry(from.to_string()).or_insert(peer).clone();
+        let peer = g
+            .entry(from.to_string())
+            .or_insert_with(|| PeerSession {
+                peer: peer.clone(),
+                capture: None,
+            })
+            .peer
+            .clone();
         if was_new && let Some(source) = self.inner.source.clone() {
-            let p = peer.clone();
+            let handler = self.clone();
             let from = from.to_string();
+            let p = peer.clone();
             tokio::spawn(async move {
-                if let Err(e) = flo_rs::video::start_capture(p, source, 1280, 720, 30).await {
-                    warn!(error = %e, peer = from, "answerer capture failed to start");
+                // Start capture and hold the handle in the peer session so it
+                // lives (and keeps the pipeline running) for the peer's
+                // lifetime — dropping it here would stop capture immediately.
+                match flo_rs::video::start_capture(p, source, 1280, 720, 30).await {
+                    Ok(capture) => {
+                        if let Ok(mut g) = handler.inner.peers.lock()
+                            && let Some(session) = g.get_mut(&from)
+                        {
+                            session.capture = Some(capture);
+                        }
+                    }
+                    Err(e) => warn!(error = %e, peer = from, "answerer capture failed to start"),
                 }
             });
         }
@@ -127,7 +154,7 @@ impl SignalHandler for MeshSignalHandler {
                     return;
                 }
             };
-            let peer = match peers.get(&from).cloned() {
+            let peer = match peers.get(&from).map(|s| s.peer.clone()) {
                 Some(p) => p,
                 None => return,
             };
@@ -147,7 +174,7 @@ impl SignalHandler for MeshSignalHandler {
                     return;
                 }
             };
-            let peer = match peers.get(&from).cloned() {
+            let peer = match peers.get(&from).map(|s| s.peer.clone()) {
                 Some(p) => p,
                 None => return,
             };
