@@ -28,8 +28,9 @@ permissions:
 jobs:
   # Detect whether the change touches the image inputs (Dockerfile, Rust
   # source, Cargo manifest) or is limited to workflow/docs files. Deps-only
-  # PRs (e.g. action pin bumps) do NOT need 4x1h cross-arch builds; on `push`
-  # (main / tags) the build always runs so images are produced.
+  # PRs (e.g. action pin bumps) do NOT need 4x1h cross-arch builds. Main
+  # pushes use the same diff against the previous main HEAD so a docs-only
+  # push also skips; tag pushes always build (semver release images).
   changes:
     name: changes
     runs-on: ubuntu-latest
@@ -44,12 +45,26 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" != "pull_request" ]; then
-            echo "build=true" >> "$GITHUB_OUTPUT"
-            exit 0
+            # Tag pushes always build: semver release images are required.
+            if [ "${{ github.ref_type }}" = "tag" ]; then
+              echo "build=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # Main branch push: reuse the diff-based scope check against the
+            # previous main HEAD, so a docs-only push skips the 8-image build.
+            # Conservative: any uncertainty (missing previous SHA) defaults to
+            # true — a false negative would skip a needed image.
+            BEFORE="${{ github.event.before }}"
+            if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+              echo "build=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            FILES=$(git diff --name-only "$BEFORE"..HEAD)
+          else
+            git fetch origin "${{ github.base_ref }}" --depth=1
+            BASE="origin/${{ github.base_ref }}"
+            FILES=$(git diff --name-only "$BASE"..HEAD)
           fi
-          git fetch origin "${{ github.base_ref }}" --depth=1
-          BASE="origin/${{ github.base_ref }}"
-          FILES=$(git diff --name-only "$BASE"..HEAD)
           echo "Changed files:"
           echo "$FILES"
           if echo "$FILES" | grep -Eq '^(Dockerfile|Cargo\.toml|Cargo\.lock)$|^src/'; then
