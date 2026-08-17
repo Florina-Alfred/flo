@@ -315,11 +315,15 @@ pub async fn start_video_with_source(
     source: crate::media::SourceSpec,
 ) -> anyhow::Result<()> {
     let peer = VideoPeer::offer(robot_id, peer_id, transport.clone()).await?;
-    // Start capture; `start_capture` leaks the GStreamer pipeline so it stays
-    // alive for the daemon lifetime (appsink callbacks own the buffers).
-    if let Err(e) = start_capture(peer.clone(), source, 1280, 720, 30).await {
-        warn!(error = %e, "media capture failed to start");
-    }
+    // Start capture and hold the handle for the daemon session: it keeps the
+    // GStreamer pipeline producing and stops it cleanly when the session ends.
+    let _capture = match start_capture(peer.clone(), source, 1280, 720, 30).await {
+        Ok(h) => Some(h),
+        Err(e) => {
+            warn!(error = %e, "media capture failed to start");
+            None
+        }
+    };
     crate::signaling::run_signal_receiver(&transport, robot_id, peer)
         .await
         .map_err(|e| anyhow::anyhow!("signal receiver: {e}"))?;
@@ -327,9 +331,10 @@ pub async fn start_video_with_source(
 }
 
 /// Build a GStreamer encode pipeline and forward every encoded sample into the
-/// peer's `TrackLocalStaticSample`. The pipeline is leaked (not dropped) so the
-/// daemon keeps producing; this is the intended long-lived strategy for a robot
-/// client. `MediaPipeline` itself is feature-gated.
+/// peer's `TrackLocalStaticSample`. Returns a [`CaptureHandle`] that owns the
+/// pipeline: the daemon holds it for the session (keeping the source alive),
+/// and dropping it stops the pipeline cleanly (so tests can tear down before
+/// their tokio runtime ends). `MediaPipeline` itself is feature-gated.
 #[cfg(feature = "media")]
 pub async fn start_capture(
     peer: Arc<VideoPeer>,
@@ -337,9 +342,19 @@ pub async fn start_capture(
     width: u32,
     height: u32,
     fps: u32,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<CaptureHandle> {
     use crate::media::MediaPipeline;
     use rtc::media::Sample;
+
+    // The appsink callback fires on a GStreamer streaming thread that has no
+    // tokio context, so a bare `tokio::spawn` there would panic ("no reactor
+    // running") — and after the caller's runtime is torn down (e.g. a test),
+    // every in-flight sample would panic too. Capture the runtime handle here
+    // (`start_capture` always runs inside a runtime) and spawn onto it with
+    // `try_spawn`, which returns Err instead of panicking once the runtime is
+    // gone.
+    let rt = tokio::runtime::Handle::try_current()
+        .map_err(|_| anyhow::anyhow!("start_capture requires a tokio runtime"))?;
 
     let pipeline = MediaPipeline::build(&source, width, height, fps)?;
     let track = peer.track();
@@ -366,12 +381,18 @@ pub async fn start_capture(
     let duration = std::time::Duration::from_secs_f64(1.0 / fps.max(1) as f64);
     pipeline.start(Box::new(move |bytes: &[u8]| {
         let track = track.clone();
+        let rt = rt.clone();
         let sample = Sample {
             data: bytes::Bytes::copy_from_slice(bytes),
             duration,
             ..Sample::new(Instant::now())
         };
-        tokio::spawn(async move {
+        // Spawn onto the capture runtime via the captured handle rather than
+        // `tokio::spawn`: the appsink callback runs on a GStreamer streaming
+        // thread with no tokio context, so `tokio::spawn` panics. `Handle::spawn`
+        // never panics, even if the runtime has been shut down (test teardown) —
+        // the frame is simply dropped.
+        rt.spawn(async move {
             if let Err(e) = track
                 .sample_writer(ssrc, payload_type)
                 .write_sample(&sample)
@@ -382,12 +403,24 @@ pub async fn start_capture(
         });
     }))?;
 
-    // Keep the GStreamer pipeline alive for the process lifetime. The appsink
-    // callbacks hold the encoded buffers; dropping the pipeline here would stop
-    // the source immediately. A robot client is a long-lived daemon, so leaking
-    // is the pragmatic choice.
-    std::mem::forget(pipeline);
-    Ok(())
+    Ok(CaptureHandle { pipeline })
+}
+
+/// Owns a running GStreamer capture pipeline. Dropping it stops the pipeline
+/// cleanly, which also stops the appsink callback from spawning further sample
+/// tasks — so no frame is ever dispatched once the owning runtime is gone. The
+/// daemon keeps this for its session lifetime; tests drop it before their tokio
+/// runtime ends.
+#[cfg(feature = "media")]
+pub struct CaptureHandle {
+    pipeline: crate::media::MediaPipeline,
+}
+
+#[cfg(feature = "media")]
+impl Drop for CaptureHandle {
+    fn drop(&mut self) {
+        self.pipeline.stop();
+    }
 }
 
 #[cfg(test)]
@@ -425,8 +458,10 @@ mod tests {
         // The outbound track is usable before any remote description is set.
         assert_eq!(peer.track().track_id().await, format!("{}-cam0", "robot7"));
 
-        // Capture must start cleanly on the answerer (the Phase 2 wiring).
-        start_capture(peer, crate::media::SourceSpec::Videotest, 1280, 720, 30)
+        // Capture must start cleanly on the answerer (the Phase 2 wiring), and
+        // the handle must be held so the pipeline stops before this test's
+        // tokio runtime is torn down (dropping the handle stops capture).
+        let _capture = start_capture(peer, crate::media::SourceSpec::Videotest, 1280, 720, 30)
             .await
             .expect("answerer capture starts");
     }
