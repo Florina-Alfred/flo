@@ -122,6 +122,9 @@ act push -W .github/workflows/container.yml --container-architecture linux/amd64
 - Entrypoints are `src/bin/flo-server.rs` and `src/bin/flo-client.rs` (both `fn main`).
 - `/target` is gitignored; `Cargo.lock` is committed.
 - Toolchain: cargo/rustc 1.97.1 (MSRV).
+- **Low-disk dev machines**: a full `media` build + test can exhaust a small
+  volume (a target dir can reach ~60 GB). Build with `CARGO_INCREMENTAL=0` and
+  `-j 2` to cut disk pressure; `cargo clean -p flo-rs` frees the bulk of it.
 - Container images: `ghcr.io/<owner>/flo-server`, `flo-client`, `flo-server-media`, `flo-client-media`.
   Built by `container.yml` workflow with Cosign signing, SPDX SBOM, and SLSA provenance.
 

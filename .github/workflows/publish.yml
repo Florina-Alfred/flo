@@ -70,6 +70,13 @@ jobs:
           # publish --dry-run` verify step) on every release.
           toolchain: "1.97.1"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Cache only the cargo registry, not target/: `cargo publish --dry-run`
+          # creates and then partially cleans target/package/flo-rs-*/tests/{target,trybuild},
+          # so tarring target/ on the post-action save emits harmless ENOENT
+          # annotations. The publish job runs rarely (v* tags only), so the
+          # registry cache is the part that earns its keep.
+          cache-targets: false
       - name: Check lockfile is in sync with the index
         # cargo publish --dry-run rejects a dirty tree, and its own index
         # resolution can update Cargo.lock mid-run. The committed Cargo.lock
