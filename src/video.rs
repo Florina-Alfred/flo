@@ -351,8 +351,8 @@ pub async fn start_capture(
     // running") — and after the caller's runtime is torn down (e.g. a test),
     // every in-flight sample would panic too. Capture the runtime handle here
     // (`start_capture` always runs inside a runtime) and spawn onto it with
-    // `try_spawn`, which returns Err instead of panicking once the runtime is
-    // gone.
+    // `Handle::spawn`, which never panics: a frame racing a shut-down runtime
+    // is silently dropped.
     let rt = tokio::runtime::Handle::try_current()
         .map_err(|_| anyhow::anyhow!("start_capture requires a tokio runtime"))?;
 
