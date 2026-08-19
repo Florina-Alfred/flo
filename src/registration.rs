@@ -157,18 +157,16 @@ pub enum RegistrationError {
 }
 
 pub async fn run_registration_handler(
-    transport: &Transport,
+    transport: Arc<Transport>,
     reg_server: RegistrationServer,
 ) -> zenoh::Result<()> {
     let reg = reg_server.clone();
-    let session = transport.session.clone();
+    let transport_for_reg = transport.clone();
 
     let _reg_sub = transport
-        .session
-        .declare_subscriber(REGISTRATION_KEY)
-        .callback(move |sample| {
+        .subscribe_managed(REGISTRATION_KEY, move |sample| {
             let reg = reg.clone();
-            let session = session.clone();
+            let transport = transport_for_reg.clone();
             tokio::spawn(async move {
                 let bytes = sample.payload().to_bytes();
                 let payload: RegistrationPayload = match serde_json::from_slice(&bytes) {
@@ -181,15 +179,17 @@ pub async fn run_registration_handler(
                 let response_key = format!("{}/response/{}", REGISTRATION_KEY, payload.robot_id);
                 match reg.register(&payload.robot_id, payload.config).await {
                     Ok(()) => {
-                        let _ = session.put(&response_key, "ack").await;
+                        let _ = transport.put_bytes(&response_key, b"ack".to_vec()).await;
                     }
                     Err(RegistrationError::AlreadyRegistered) => {
-                        let _ = session
-                            .put(&response_key, "reject:already_registered")
+                        let _ = transport
+                            .put_bytes(&response_key, b"reject:already_registered".to_vec())
                             .await;
                     }
                     Err(RegistrationError::Poisoned) => {
-                        let _ = session.put(&response_key, "reject:poisoned").await;
+                        let _ = transport
+                            .put_bytes(&response_key, b"reject:poisoned".to_vec())
+                            .await;
                     }
                     _ => {}
                 }
@@ -200,18 +200,18 @@ pub async fn run_registration_handler(
     info!("registration subscriber active on {REGISTRATION_KEY}");
 
     let clients_dereg = reg_server.clients.clone();
-    let session_dereg = transport.session.clone();
+    let transport_for_dereg = transport.clone();
     let _dereg_sub = transport
-        .session
-        .declare_subscriber(DEREGISTRATION_KEY)
-        .callback(move |sample| {
+        .subscribe_managed(DEREGISTRATION_KEY, move |sample| {
             let clients = clients_dereg.clone();
-            let session = session_dereg.clone();
+            let transport = transport_for_dereg.clone();
             tokio::spawn(async move {
                 let robot_id = String::from_utf8_lossy(&sample.payload().to_bytes()).to_string();
                 let response_key = format!("{}/response/{}", DEREGISTRATION_KEY, robot_id);
                 if robot_id.is_empty() {
-                    let _ = session.put(&response_key, "missing robot_id").await;
+                    let _ = transport
+                        .put_bytes(&response_key, b"missing robot_id".to_vec())
+                        .await;
                     return;
                 }
                 let mut clients = clients.write().await;
@@ -220,10 +220,10 @@ pub async fn run_registration_handler(
                 {
                     clients.remove(&robot_id);
                     info!(robot_id, "client deregistered");
-                    let _ = session.put(&response_key, "ack").await;
+                    let _ = transport.put_bytes(&response_key, b"ack".to_vec()).await;
                     return;
                 }
-                let _ = session.put(&response_key, "ignore").await;
+                let _ = transport.put_bytes(&response_key, b"ignore".to_vec()).await;
             });
         })
         .await?;
@@ -233,18 +233,15 @@ pub async fn run_registration_handler(
 }
 
 pub async fn run_heartbeat_monitor(
-    transport: &Transport,
+    transport: Arc<Transport>,
     reg_server: RegistrationServer,
 ) -> zenoh::Result<()> {
     let clients = reg_server.clients;
-    let session = transport.session.clone();
+    let transport_for_alert = transport.clone();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, SampleKind)>();
 
     let _sub = transport
-        .session
-        .liveliness()
-        .declare_subscriber(LIVELINESS_PATTERN)
-        .callback(move |sample| {
+        .subscribe_liveliness_managed(LIVELINESS_PATTERN, move |sample| {
             let key = sample.key_expr().to_string();
             let kind = sample.kind();
             let _ = tx.send((key, kind));
@@ -276,7 +273,9 @@ pub async fn run_heartbeat_monitor(
                             },
                         );
                         let alert_topic = format!("{ALERT_HEARTBEAT_KEY}/{robot_id}");
-                        let _ = session.put(alert_topic, "poisoned").await;
+                        let _ = transport_for_alert
+                            .put_bytes(&alert_topic, b"poisoned".to_vec())
+                            .await;
                     }
                 }
             }
@@ -294,7 +293,7 @@ pub struct RegistrationPayload {
 }
 
 pub async fn register_with_client(
-    transport: &Transport,
+    transport: Arc<Transport>,
     robot_id: &str,
     config: &ClientConfig,
 ) -> Result<(), RegistrationError> {
@@ -310,15 +309,13 @@ pub async fn register_with_client(
     for attempt in 1..=REGISTRATION_RETRIES {
         // Subscribe to response topic before sending request.
         let response_sub = transport
-            .session
-            .declare_subscriber(&response_key)
+            .subscribe_stream(&response_key)
             .await
             .map_err(|e| RegistrationError::ServerError(e.to_string()))?;
 
         // Send registration request.
         transport
-            .session
-            .put(REGISTRATION_KEY, payload_json.clone())
+            .put_bytes(REGISTRATION_KEY, payload_json.clone())
             .await
             .map_err(|e| RegistrationError::ServerError(e.to_string()))?;
 
@@ -364,20 +361,18 @@ pub async fn register_with_client(
 }
 
 pub async fn deregister_with_server(
-    transport: &Transport,
+    transport: Arc<Transport>,
     robot_id: &str,
 ) -> Result<(), RegistrationError> {
     let response_key = format!("{}/response/{}", DEREGISTRATION_KEY, robot_id);
 
     let response_sub = transport
-        .session
-        .declare_subscriber(&response_key)
+        .subscribe_stream(&response_key)
         .await
         .map_err(|e| RegistrationError::ServerError(e.to_string()))?;
 
     transport
-        .session
-        .put(DEREGISTRATION_KEY, robot_id.as_bytes().to_vec())
+        .put_bytes(DEREGISTRATION_KEY, robot_id.as_bytes().to_vec())
         .await
         .map_err(|e| RegistrationError::ServerError(e.to_string()))?;
 

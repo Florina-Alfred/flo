@@ -26,15 +26,52 @@ pub const SIGNAL_ICE_KEY: &str = "robot/{self}/signal/{peer}/ice";
 /// Handle to the Zenoh session. A single `Session` multiplexes both QoS classes —
 /// QoS is per-put, per the locked decision. The class 1/2 publisher builders below
 /// encode the locked QoS knobs; `publish` applies them by QoS class.
+///
+/// `Transport` is the single low-level seam for the mesh (the one adapter):
+/// all publish/subscribe traffic flows through its verbs, so the QoS mapping,
+/// the managed-subscription lifecycle, and topic-key ownership stay in one
+/// place. `session` is private — callers cannot reach around the seam.
+/// `zenoh::Config` and `zenoh::Session` appear only at construction time
+/// (`open_with`, `from_session`, `connect_config`) as the documented residual;
+/// every other zenoh type is hidden behind the verbs.
 pub struct Transport {
-    pub session: Arc<Session>,
+    session: Arc<Session>,
     /// Liveliness tokens declared for this client. Held for the session's lifetime
     /// so the token stays declared; dropping it would undeclare the token.
     _tokens: Vec<zenoh::liveliness::LivelinessToken>,
 }
 
-/// A subscriber that can be dropped to unsubscribe.
-pub type ManagedSubscriber = zenoh::pubsub::Subscriber<()>;
+/// Handle to a managed callback subscription. Dropping it unsubscribes — the
+/// managed-subscription lifecycle used for engine sensor topics and the zone
+/// tracker. The underlying zenoh subscriber type is hidden behind the seam.
+pub struct Subscription {
+    // RAII handle: the field is only read by its Drop (unsubscribes on drop).
+    #[allow(dead_code)]
+    inner: zenoh::pubsub::Subscriber<()>,
+}
+
+/// Handle to a managed stream subscription. Dropping it unsubscribes;
+/// `recv_async` awaits individual samples (request/response style). The
+/// underlying zenoh subscriber type is hidden behind the seam.
+pub struct SubscriptionStream {
+    inner: zenoh::pubsub::Subscriber<zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>>,
+}
+
+impl SubscriptionStream {
+    /// Await the next sample delivered to this subscription.
+    pub async fn recv_async(&self) -> zenoh::Result<zenoh::sample::Sample> {
+        self.inner.recv_async().await
+    }
+}
+
+/// Handle to a managed liveliness subscription. Dropping it unsubscribes.
+/// Samples arrive as `Put` when a token is declared and `Delete` when it drops,
+/// which the heartbeat monitor uses to detect dead clients.
+pub struct LivelinessSubscription {
+    // RAII handle: the field is only read by its Drop (unsubscribes on drop).
+    #[allow(dead_code)]
+    inner: zenoh::pubsub::Subscriber<()>,
+}
 
 impl Transport {
     /// Wrap an already-open `zenoh::Session` in a `Transport`. Used by the server
@@ -49,7 +86,8 @@ impl Transport {
 
     /// Open a Zenoh session with an explicit config. Used by the local demo to pin
     /// loopback peer discovery (zero-config `cargo run`, no router needed), and by
-    /// production with an auth-derived config.
+    /// production with an auth-derived config. `zenoh::Config` is the documented
+    /// construction-time residual (see the type docs).
     pub async fn open_with(config: zenoh::Config) -> zenoh::Result<Self> {
         let session = zenoh::open(config).await?;
         Ok(Self::from_session(session))
@@ -64,6 +102,18 @@ impl Transport {
         let _ = c.insert_json5("mode", "\"router\"");
         let _ = c.insert_json5("scouting/multicast/enabled", "true");
         let _ = c.insert_json5("listen/endpoints", "[\"tcp/127.0.0.1:0\"]");
+        c
+    }
+
+    /// Build a client-mode config that connects only to the given explicit
+    /// endpoints (no multicast scouting, no listen). Used by `flo --connect`.
+    pub fn connect_config(endpoints: &[String]) -> zenoh::Config {
+        let mut c = zenoh::Config::default();
+        let _ = c.insert_json5("mode", "\"client\"");
+        if !endpoints.is_empty() {
+            let endpoints: Vec<String> = endpoints.iter().map(|e| format!("\"{e}\"")).collect();
+            let _ = c.insert_json5("connect/endpoints", &format!("[{}]", endpoints.join(",")));
+        }
         c
     }
 
@@ -112,6 +162,13 @@ impl Transport {
         self.session.put(key_expr, bytes).await.map(|_| ())
     }
 
+    /// Publish raw bytes to a key-expression (best-effort, no QoS class). Used by
+    /// the registration control plane for request/ack payloads that carry no
+    /// actuator class (registration requests, acks, heartbeat alerts).
+    pub async fn put_bytes(&self, key_expr: &str, payload: Vec<u8>) -> zenoh::Result<()> {
+        self.session.put(key_expr, payload).await.map(|_| ())
+    }
+
     /// Subscribe to a key-expression. The `on_sample` callback runs on Zenoh's
     /// runtime for each received `Sample`; the subscription is kept alive in the
     /// background until the session closes (zenoh owns it after `background()`).
@@ -127,20 +184,49 @@ impl Transport {
     }
 
     /// Subscribe to a key-expression and return a handle that, when dropped,
-    /// unsubscribes. Useful for subscribers whose lifecycle must be managed
-    /// (e.g. hot-swap subscriber teardown).
+    /// unsubscribes (the managed-subscription lifecycle). Useful for subscribers
+    /// whose lifecycle must be managed (engine sensor topics, zone tracking).
     pub async fn subscribe_managed<F>(
         &self,
         key_expr: &str,
         on_sample: F,
-    ) -> zenoh::Result<ManagedSubscriber>
+    ) -> zenoh::Result<Subscription>
     where
         F: Fn(zenoh::sample::Sample) + Send + Sync + 'static,
     {
-        self.session
+        let sub = self
+            .session
             .declare_subscriber(key_expr)
             .callback(on_sample)
-            .await
+            .await?;
+        Ok(Subscription { inner: sub })
+    }
+
+    /// Subscribe to a key-expression and return a handle that can be awaited for
+    /// individual samples (request/response style). Dropping it unsubscribes.
+    pub async fn subscribe_stream(&self, key_expr: &str) -> zenoh::Result<SubscriptionStream> {
+        let sub = self.session.declare_subscriber(key_expr).await?;
+        Ok(SubscriptionStream { inner: sub })
+    }
+
+    /// Subscribe to a liveliness pattern and return a handle that, when dropped,
+    /// unsubscribes (the managed-subscription lifecycle). Used by the heartbeat
+    /// monitor to observe client liveliness tokens.
+    pub async fn subscribe_liveliness_managed<F>(
+        &self,
+        pattern: &str,
+        on_sample: F,
+    ) -> zenoh::Result<LivelinessSubscription>
+    where
+        F: Fn(zenoh::sample::Sample) + Send + Sync + 'static,
+    {
+        let sub = self
+            .session
+            .liveliness()
+            .declare_subscriber(pattern)
+            .callback(on_sample)
+            .await?;
+        Ok(LivelinessSubscription { inner: sub })
     }
 }
 
@@ -225,6 +311,63 @@ mod tests {
         assert!(
             endpoints.contains("tcp/127.0.0.1:0"),
             "missing ephemeral localhost listener, got: {endpoints}"
+        );
+    }
+
+    #[test]
+    fn connect_config_is_client_mode_with_endpoints() {
+        let cfg = Transport::connect_config(&[
+            "tcp/10.0.0.1:7447".to_string(),
+            "tcp/10.0.0.2:7447".to_string(),
+        ]);
+        assert_eq!(cfg.get_json("mode").unwrap(), "\"client\"");
+        let endpoints = cfg.get_json("connect/endpoints").unwrap();
+        assert!(
+            endpoints.contains("tcp/10.0.0.1:7447"),
+            "missing first endpoint, got: {endpoints}"
+        );
+        assert!(
+            endpoints.contains("tcp/10.0.0.2:7447"),
+            "missing second endpoint, got: {endpoints}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dropping_managed_subscription_unsubscribes() {
+        // The managed-subscription lifecycle: a dropped `Subscription` handle
+        // unsubscribes, so later samples never reach the callback. This is the
+        // same lifecycle the zone path uses via `subscribe_managed`.
+        let transport = Transport::open_with(Transport::loopback_config())
+            .await
+            .expect("open loopback transport");
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let key = "robot/9/local/managed-lifecycle";
+        {
+            let _sub = transport
+                .subscribe_managed(key, move |s: zenoh::sample::Sample| {
+                    let _ = tx.send(s.payload().to_bytes().to_vec());
+                })
+                .await
+                .expect("declare subscriber");
+        }
+
+        // Zenoh undeclares asynchronously; give the drop time to propagate before
+        // publishing, so a received sample proves the handle was really dropped.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        transport
+            .publish(key, Qos::BestEffort, &serde_json::json!({"x": 1}))
+            .await
+            .expect("publish");
+
+        // Dropping the handle releases the callback (owning `tx`), closing the
+        // channel with no samples: `Ok(None)` or a timeout both prove nothing
+        // was delivered after the unsubscribe.
+        let got = tokio::time::timeout(Duration::from_millis(500), rx.recv()).await;
+        assert!(
+            !matches!(got, Ok(Some(_))),
+            "dropped subscription must not receive samples; got {got:?}"
         );
     }
 }
