@@ -1,6 +1,5 @@
-//! Shared runtime wiring used by both demo and production modes, plus the
-//! `rule` subcommand. Keeping these here lets `main.rs` stay a thin entry point
-//! and lets `demo`/`production` modules focus on mode-specific input + rules.
+//! Shared subsystem wiring for the client runtime, plus the `rule` subcommand.
+//! Keeping these here lets `runtime.rs` stay focused on client orchestration.
 
 use std::sync::Arc;
 
@@ -16,8 +15,21 @@ use crate::health::Health;
 #[cfg(feature = "media")]
 use crate::mesh::run_signaling;
 
-/// Start health server, hot-reload, rule engine, and WebRTC signaling. Shared by
-/// both demo and production modes (the only difference is input + rules source).
+/// Handles to the spawned subsystems, for supervision by the client runtime.
+#[derive(Debug)]
+pub struct SubsystemHandles {
+    /// HTTP health/liveness server.
+    pub health: tokio::task::JoinHandle<()>,
+    /// Ruleset hot-reload subscriber.
+    pub reload: tokio::task::JoinHandle<()>,
+    /// Rule engine.
+    pub engine: tokio::task::JoinHandle<()>,
+    /// WebRTC signaling (always-on answerer / peer discovery).
+    pub signaling: tokio::task::JoinHandle<()>,
+}
+
+/// Start the health server, hot-reload, rule engine, and WebRTC signaling and
+/// return their handles for supervision.
 ///
 /// `args` is used (under the `media` feature) to resolve the configured capture
 /// device so the always-on answerer can stream video back when a device is set.
@@ -26,7 +38,7 @@ pub async fn start_common_subsystems(
     store: &RuleStore,
     robot_id: &str,
     #[cfg_attr(not(feature = "media"), allow(unused_variables))] args: &Args,
-) {
+) -> SubsystemHandles {
     let health = Health::new();
 
     let health_task = {
@@ -94,21 +106,17 @@ pub async fn start_common_subsystems(
     health.set_ready();
     info!("flo ready");
 
-    // Store handles so they live for the process; tasks are joined by the caller.
-    let _ = (health_task, reload_task, engine_task, signal_task);
-}
-
-/// Run until any subsystem dies (k8s / process supervisor restarts).
-pub async fn block_indefinitely() {
-    // The spawned tasks own the long-lived work; this future just idles. A real
-    // deployment would `tokio::select!` on the JoinHandles. For the demo we block
-    // so `cargo run` stays alive and visible.
-    std::future::pending::<()>().await;
+    SubsystemHandles {
+        health: health_task,
+        reload: reload_task,
+        engine: engine_task,
+        signaling: signal_task,
+    }
 }
 
 /// Spawn the outbound WebRTC video call requested via `--video-peer`, validating
 /// the configured device up front so a bad path fails fast with a clear message
-/// instead of an opaque GStreamer error. Shared by demo and production modes.
+/// instead of an opaque GStreamer error.
 /// Only available with the `media` feature (requires system GStreamer + webrtc).
 #[cfg(feature = "media")]
 pub fn spawn_video_peer(args: &Args, transport: Arc<Transport>, robot_id: String) {
