@@ -122,8 +122,17 @@ fn resolve_operand(op: &Operand, payload: &Value) -> Option<Value> {
         Operand::Int(v) => Some(Value::Number((*v).into())),
         Operand::Float(v) => Some(serde_json::Number::from_f64(*v).map(Value::Number)?),
         Operand::Str(v) => Some(Value::String(v.clone())),
+        Operand::Field(name) => payload.get(name).cloned(),
         Operand::Prim(p) => {
             let field = prim_field(p);
+            // `Proximity` is entity-aware: only resolve the separation distance
+            // when the payload's `peer_id` matches the configured entity, so
+            // `near = { entity = "8" }` does not match a different peer.
+            if let PrimitiveRef::Proximity(entity) = p
+                && payload.get("peer_id").and_then(|v| v.as_str()) != Some(entity.as_str())
+            {
+                return None;
+            }
             payload.get(field).cloned()
         }
     }
@@ -197,6 +206,12 @@ fn when_satisfied_with_prev(
     rule_idx: usize,
     zones: &ZoneTracker,
 ) -> bool {
+    // An empty guard (no `all` and no `any`) must not be vacuous-true: a typo'd
+    // or stripped-down `when` would otherwise fire the rule's actions every tick.
+    // Fail closed instead — an empty guard can never fire.
+    if when.all.is_empty() && when.any.is_empty() {
+        return false;
+    }
     let all_ok = when
         .all
         .iter()
@@ -487,8 +502,22 @@ mod tests {
             lhs: Operand::Prim(PrimitiveRef::Proximity("human".to_string())),
             rhs: Operand::Float(1.2),
         };
-        assert!(eval_tree(&p, &json!({"separation_distance": 0.5}), &zones));
-        assert!(!eval_tree(&p, &json!({"separation_distance": 1.5}), &zones));
+        assert!(eval_tree(
+            &p,
+            &json!({"peer_id": "human", "separation_distance": 0.5}),
+            &zones
+        ));
+        assert!(!eval_tree(
+            &p,
+            &json!({"peer_id": "human", "separation_distance": 1.5}),
+            &zones
+        ));
+        assert!(!eval_tree(
+            &p,
+            &json!({"peer_id": "other", "separation_distance": 0.5}),
+            &zones
+        ));
+        assert!(!eval_tree(&p, &json!({"separation_distance": 0.5}), &zones));
     }
 
     #[test]
@@ -639,7 +668,7 @@ mod tests {
         let mut latest = HashMap::new();
         latest.insert(
             "robot/7/proximity".into(),
-            json!({"separation_distance": 0.5}),
+            json!({"peer_id": "7", "separation_distance": 0.5}),
         );
         let w = When {
             all: vec![trigger],
@@ -690,5 +719,122 @@ mod tests {
 
         // Tick 5: still absent — false→false, no fire
         assert!(!when_satisfied_with_prev(&w, &latest, &mut prev, 0, &zones));
+    }
+
+    #[test]
+    fn field_operand_reads_named_payload_field() {
+        let zones = no_zones();
+        let mut prev = HashMap::new();
+        // Eq: payload["pressed"] == true (fails closed when absent)
+        let eq = Trigger {
+            topic: "robot/7/bumper".into(),
+            pred: Some(Predicate::Comparison {
+                op: Op::Eq,
+                lhs: Operand::Field("pressed".into()),
+                rhs: Operand::Bool(true),
+            }),
+            mode: EvalMode::Edge,
+        };
+        let w = When {
+            all: vec![eq],
+            any: vec![],
+        };
+        let mut latest = HashMap::new();
+        latest.insert("robot/7/bumper".into(), json!({"pressed": false}));
+        // baseline: false (no fire on first observation)
+        assert!(!when_satisfied_with_prev(&w, &latest, &mut prev, 0, &zones));
+        // transition false→true → fire
+        latest.insert("robot/7/bumper".into(), json!({"pressed": true}));
+        assert!(when_satisfied_with_prev(&w, &latest, &mut prev, 0, &zones));
+        // holding true → no re-fire (edge)
+        assert!(!when_satisfied_with_prev(&w, &latest, &mut prev, 0, &zones));
+        // absent field fails closed (a raw-rule typo must not read `null` as false)
+        let mut prev2 = HashMap::new();
+        let mut latest2 = HashMap::new();
+        latest2.insert("robot/7/bumper".into(), json!({"prssed": true}));
+        // baseline absent → Eq(absent) fails closed, stays false
+        assert!(!when_satisfied_with_prev(
+            &w, &latest2, &mut prev2, 0, &zones
+        ));
+        assert!(!when_satisfied_with_prev(
+            &w, &latest2, &mut prev2, 0, &zones
+        ));
+    }
+
+    #[test]
+    fn empty_when_never_fires() {
+        let zones = no_zones();
+        let mut prev = HashMap::new();
+        let w = When {
+            all: vec![],
+            any: vec![],
+        };
+        let latest = HashMap::new();
+        assert!(!when_satisfied_with_prev(&w, &latest, &mut prev, 0, &zones));
+    }
+
+    #[test]
+    fn proximity_ignores_other_peer() {
+        let zones = no_zones();
+        let mut prev = HashMap::new();
+        let p = Trigger {
+            topic: "robot/7/proximity".into(),
+            pred: Some(Predicate::Comparison {
+                op: Op::Lt,
+                lhs: Operand::Prim(PrimitiveRef::Proximity("7".into())),
+                rhs: Operand::Float(1.2),
+            }),
+            mode: EvalMode::Level,
+        };
+        let w = When {
+            all: vec![p],
+            any: vec![],
+        };
+        let mut latest = HashMap::new();
+        latest.insert(
+            "robot/7/proximity".into(),
+            json!({"peer_id": "8", "separation_distance": 0.1}),
+        );
+        assert!(!when_satisfied_with_prev(&w, &latest, &mut prev, 0, &zones));
+    }
+
+    #[tokio::test]
+    async fn demo_rule_fires_on_bumper_pressed() {
+        let zones = no_zones();
+        let mut prev = HashMap::new();
+        let rules = crate::config::RuleStore::bootstrap_demo("7")
+            .current()
+            .await;
+        let e_stop = rules
+            .rules
+            .iter()
+            .find(|r| r.name == "e-stop-on-bumper")
+            .expect("demo e-stop rule present");
+        // Both `all` triggers are Level mode: they re-evaluate every tick, so
+        // the demo rule fires whenever the payloads are present and true.
+        let mut latest = HashMap::new();
+        latest.insert("robot/7/local/bumper".into(), json!({"pressed": true}));
+        latest.insert("robot/7/local/imu".into(), json!({"speed_mps": 0.5}));
+        let fires = when_satisfied_with_prev(&e_stop.when, &latest, &mut prev, 0, &zones);
+        assert!(fires);
+        // Level triggers keep firing every tick while true.
+        assert!(when_satisfied_with_prev(
+            &e_stop.when,
+            &latest,
+            &mut prev,
+            0,
+            &zones
+        ));
+        // A typo'd/absent field must fail closed, not read as false.
+        let mut latest2 = HashMap::new();
+        latest2.insert("robot/7/local/bumper".into(), json!({"pressd": true}));
+        latest2.insert("robot/7/local/imu".into(), json!({"speed_mps": 0.5}));
+        assert!(!when_satisfied_with_prev(
+            &e_stop.when,
+            &latest2,
+            &mut prev,
+            0,
+            &zones
+        ));
     }
 }

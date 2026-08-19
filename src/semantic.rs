@@ -34,6 +34,10 @@ pub enum ErrorCode {
     InvalidRulesetName,
     /// Topic does not match naming convention.
     InvalidTopic,
+    /// The `when` guard is empty (no condition key, all, or any).
+    EmptyWhen,
+    /// A nested `when` shape the runtime `When` model cannot express.
+    UnrepresentableNesting,
 }
 
 impl ErrorCode {
@@ -47,6 +51,8 @@ impl ErrorCode {
             ErrorCode::NonPrimitivePayload => "E006",
             ErrorCode::InvalidRulesetName => "E007",
             ErrorCode::InvalidTopic => "E008",
+            ErrorCode::EmptyWhen => "E009",
+            ErrorCode::UnrepresentableNesting => "E010",
         }
     }
 }
@@ -103,6 +109,7 @@ impl std::error::Error for SemanticError {}
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Site {
     #[serde(default)]
     pub id: String,
@@ -111,6 +118,7 @@ pub struct Site {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Zone {
     pub shape: String,
     pub x: f64,
@@ -122,12 +130,14 @@ pub struct Zone {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NearSpec {
     pub entity: String,
     pub dist: f64,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct SemanticWhen {
     #[serde(default)]
     pub in_zone: Option<String>,
@@ -148,6 +158,7 @@ pub struct SemanticWhen {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SemanticAction {
     #[serde(default)]
     pub estop: bool,
@@ -160,6 +171,7 @@ pub struct SemanticAction {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SemanticRule {
     pub name: String,
     #[serde(default)]
@@ -260,6 +272,20 @@ pub fn validate(doc: &SemanticDoc) -> Result<(), SemanticError> {
     Ok(())
 }
 
+/// A `SemanticWhen` is empty when it carries no flat condition key and no
+/// nested `all`/`any` blocks. An empty when would otherwise evaluate
+/// vacuously-true and fire every tick.
+fn when_is_empty(when: &SemanticWhen) -> bool {
+    when.in_zone.is_none()
+        && when.not_in_zone.is_none()
+        && when.near_human.is_none()
+        && when.not_near_human.is_none()
+        && when.near.is_none()
+        && when.role.is_none()
+        && when.all.is_empty()
+        && when.any.is_empty()
+}
+
 /// Recursively validate a `SemanticWhen` (flat fields plus nested `all`/`any`).
 fn validate_when(
     when: &SemanticWhen,
@@ -267,6 +293,13 @@ fn validate_when(
     doc: &SemanticDoc,
     path: &str,
 ) -> Result<(), SemanticError> {
+    if when_is_empty(when) {
+        return Err(SemanticError::new(
+            ErrorCode::EmptyWhen,
+            format!("rule '{rule_name}': when is empty (no condition key, no all, no any)"),
+        )
+        .with_path(path));
+    }
     for d in [
         when.near_human,
         when.not_near_human,
@@ -319,7 +352,7 @@ pub fn compile(doc: &SemanticDoc, robot_id: &str) -> Result<Rules, SemanticError
 
     let mut out = Vec::new();
     for rule in &doc.rules {
-        let (all, any) = expand_when(&rule.when, robot_id);
+        let (all, any) = expand_when(&rule.when, robot_id, &rule.name, "when")?;
 
         let actions: Vec<Action> = rule
             .actions
@@ -341,9 +374,38 @@ pub fn compile(doc: &SemanticDoc, robot_id: &str) -> Result<Rules, SemanticError
 // ---------------------------------------------------------------------------
 
 /// Recursively expand a `SemanticWhen` into runtime trigger lists.
-fn expand_when(when: &SemanticWhen, robot_id: &str) -> (Vec<Trigger>, Vec<Trigger>) {
+///
+/// The runtime `When` model is two-level: `(AND over all) AND (OR over any,
+/// if any is non-empty)`. Nested blocks are flattened into that shape:
+///
+/// - a nested block in `all` (AND context) contributes its `all` triggers to
+///   the parent's `all`, and its `any` group becomes the parent's single `any`
+///   group (only one such group is representable — a second would be two OR
+///   groups ANDed together, which the runtime cannot express);
+/// - a nested block in `any` (OR context) contributes a single trigger, or a
+///   pure OR group whose triggers merge into the parent's `any`. A block that
+///   is itself an AND of two or more triggers inside an OR element is not
+///   representable and is rejected rather than silently mis-flattened.
+///
+/// Fail-closed: anything the two-level model cannot express returns
+/// `ErrorCode::UnrepresentableNesting` instead of silently dropping
+/// conditions.
+fn expand_when(
+    when: &SemanticWhen,
+    robot_id: &str,
+    rule_name: &str,
+    path: &str,
+) -> Result<(Vec<Trigger>, Vec<Trigger>), SemanticError> {
     let mut all = Vec::new();
     let mut any = Vec::new();
+
+    if when_is_empty(when) {
+        return Err(SemanticError::new(
+            ErrorCode::EmptyWhen,
+            format!("rule '{rule_name}': when is empty (no condition key, no all, no any)"),
+        )
+        .with_path(path));
+    }
 
     if let Some(z) = &when.in_zone {
         all.push(Trigger {
@@ -412,16 +474,65 @@ fn expand_when(when: &SemanticWhen, robot_id: &str) -> (Vec<Trigger>, Vec<Trigge
         });
     }
 
-    for nested in &when.all {
-        let (nested_all, _) = expand_when(nested, robot_id);
+    for (nested_idx, nested) in when.all.iter().enumerate() {
+        let (nested_all, nested_any) = expand_when(
+            nested,
+            robot_id,
+            rule_name,
+            &format!("{path}.all[{nested_idx}]"),
+        )?;
+        if !nested_any.is_empty() {
+            if !any.is_empty() {
+                return Err(SemanticError::new(
+                    ErrorCode::UnrepresentableNesting,
+                    format!(
+                        "rule '{rule_name}': {path}.all[{nested_idx}] introduces a second OR \
+                         group; the runtime model can hold only one (an AND of two OR groups)"
+                    ),
+                )
+                .with_path(format!("{path}.all[{nested_idx}]")));
+            }
+            any.extend(nested_any);
+        }
         all.extend(nested_all);
     }
-    for nested in &when.any {
-        let (nested_all, _) = expand_when(nested, robot_id);
-        any.extend(nested_all);
+
+    for (nested_idx, nested) in when.any.iter().enumerate() {
+        let (nested_all, nested_any) = expand_when(
+            nested,
+            robot_id,
+            rule_name,
+            &format!("{path}.any[{nested_idx}]"),
+        )?;
+        if !nested_all.is_empty() && !nested_any.is_empty() {
+            return Err(SemanticError::new(
+                ErrorCode::UnrepresentableNesting,
+                format!(
+                    "rule '{rule_name}': {path}.any[{nested_idx}] is an AND of triggers ANDed \
+                     with an OR group, which cannot be expressed as a single OR element"
+                ),
+            )
+            .with_path(format!("{path}.any[{nested_idx}]")));
+        }
+        if nested_any.is_empty() {
+            if nested_all.len() != 1 {
+                return Err(SemanticError::new(
+                    ErrorCode::UnrepresentableNesting,
+                    format!(
+                        "rule '{rule_name}': {path}.any[{nested_idx}] is an AND of {} triggers; \
+                         an OR element must be a single trigger or an OR group",
+                        nested_all.len()
+                    ),
+                )
+                .with_path(format!("{path}.any[{nested_idx}]")));
+            }
+            any.push(nested_all.into_iter().next().unwrap());
+        } else {
+            any.extend(nested_any);
+        }
     }
 
-    (all, any)
+    Ok((all, any))
 }
 
 fn compile_action(a: &SemanticAction, robot_id: &str) -> Action {
@@ -452,6 +563,7 @@ fn compile_action(a: &SemanticAction, robot_id: &str) -> Action {
 
 /// Envelope-parse shape for a `Ruleset` authored as extended TOML.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SemanticRuleset {
     pub ruleset_name: String,
     #[serde(default)]
@@ -462,6 +574,7 @@ pub struct SemanticRuleset {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SemanticRulesetRule {
     pub rule_name: String,
     #[serde(default)]
@@ -470,6 +583,7 @@ pub struct SemanticRulesetRule {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SemanticRulesetAction {
     pub topic: String,
     #[serde(default = "default_qos")]
@@ -496,7 +610,7 @@ pub fn compile_ruleset(doc: &SemanticRuleset, robot_id: &str) -> Result<Ruleset,
 
     let mut rules = Vec::new();
     for (rule_idx, rule) in doc.rules.iter().enumerate() {
-        let (all, any) = expand_when(&rule.when, robot_id);
+        let (all, any) = expand_when(&rule.when, robot_id, &rule.rule_name, "when")?;
         let actions: Vec<Action> = rule.actions.iter().map(compile_ruleset_action).collect();
         validate_rule_payloads(&actions, &rule.rule_name, &format!("rules[{rule_idx}]"))?;
         rules.push(Rule {

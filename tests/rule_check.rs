@@ -263,3 +263,73 @@ fn rule_check_json_output_on_failure() {
     let json: serde_json::Value = serde_json::from_str(&stderr).expect("valid JSON error output");
     assert_eq!(json["status"], "error");
 }
+
+#[test]
+fn rule_check_rejects_typoed_when_key() {
+    let dir = std::env::temp_dir();
+    let p = dir.join("flo-typo-when.toml");
+    std::fs::write(
+        &p,
+        "[[rules]]\nname=\"x\"\nwhen.in_zne = \"safety\"\nactions = [ { slow_to = 0.1 } ]\n",
+    )
+    .unwrap();
+    let out = Command::new(flo_bin())
+        .args(["rule", "check", p.to_str().unwrap()])
+        .output()
+        .expect("run flo rule check on typo'd when key");
+    assert!(
+        !out.status.success(),
+        "typo'd when key must fail, not silently produce an empty guard"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("in_zne"),
+        "stderr should name the unknown key, got: {stderr}"
+    );
+}
+
+#[test]
+fn rule_check_rejects_empty_when() {
+    let dir = std::env::temp_dir();
+    let p = dir.join("flo-empty-when.toml");
+    std::fs::write(
+        &p,
+        "[[rules]]\nname=\"x\"\nwhen = {}\nactions = [ { slow_to = 0.1 } ]\n",
+    )
+    .unwrap();
+    let out = Command::new(flo_bin())
+        .args(["rule", "check", p.to_str().unwrap()])
+        .output()
+        .expect("run flo rule check on empty when");
+    assert!(
+        !out.status.success(),
+        "empty when must fail validation, not fire unconditionally"
+    );
+}
+
+#[tokio::test]
+async fn demo_rules_parse_with_field_operands() {
+    // The built-in demo rules must parse into evaluable Field references, not
+    // dead Str literals — the regression that made them impossible to fire.
+    let rules = flo_rs::config::RuleStore::bootstrap_demo("7")
+        .current()
+        .await;
+    let e_stop = rules
+        .rules
+        .iter()
+        .find(|r| r.name == "e-stop-on-bumper")
+        .expect("demo e-stop rule present");
+    assert_eq!(e_stop.when.all.len(), 2);
+    for t in &e_stop.when.all {
+        let pred = t.pred.as_ref().expect("demo triggers carry a predicate");
+        match pred {
+            flo_rs::rules::Predicate::Comparison { lhs, .. } => {
+                assert!(
+                    matches!(lhs, flo_rs::rules::Operand::Field(_)),
+                    "demo trigger must reference a payload Field, got {lhs:?}"
+                );
+            }
+            other => panic!("unexpected demo predicate shape: {other:?}"),
+        }
+    }
+}
