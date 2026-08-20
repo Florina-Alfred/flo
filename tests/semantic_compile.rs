@@ -155,6 +155,13 @@ ruleset_name = "acme-site-a"
 version = 3
 robot_owner = "robot/7"
 
+[site]
+id = "cell-7"
+frame = "cell-7/world"
+
+[zones]
+zone_1 = { shape = "rect", x = 0.0, y = 0.0, w = 2.0, h = 2.0 }
+
 [[rule]]
 rule_name = "slow_near_human"
 when.in_zone = "zone_1"
@@ -189,6 +196,10 @@ fn compiles_in_zone_to_typed_predicate() {
         r#"
 ruleset_name = "x"
 robot_owner = "robot/7"
+[site]
+id = "cell-7"
+[zones]
+zone_1 = { shape = "rect", x = 0.0, y = 0.0, w = 2.0, h = 2.0 }
 [[rule]]
 rule_name = "r"
 when.in_zone = "zone_1"
@@ -224,6 +235,8 @@ fn rejects_nonprimitive_payload() {
     let bad = r#"
 ruleset_name = "x"
 robot_owner = "robot/7"
+[site]
+id = "cell-7"
 [[rule]]
 rule_name = "bad"
 when.near_human = 1.0
@@ -386,4 +399,94 @@ actions = [ { slow_to = 0.1 } ]
     let w = &rules.rules[0].when;
     assert_eq!(w.all.len(), 2);
     assert!(w.any.is_empty());
+}
+
+// ── C4: ruleset-envelope rules must fail validation like the direct path ──
+
+#[test]
+fn envelope_rejects_unknown_zone() {
+    let doc = parse_semantic_ruleset(
+        r#"
+ruleset_name = "x"
+robot_owner = "robot/7"
+[site]
+id = "cell-7"
+[[rule]]
+rule_name = "r"
+when.in_zone = "nonexistent"
+[[rule.actions]]
+topic = "robot/7/local/drive"
+payload = { speed_mps = 0.3 }
+"#,
+    )
+    .unwrap();
+    let err = compile_ruleset(&doc, "7").unwrap_err();
+    assert_eq!(err.code, flo_rs::semantic::ErrorCode::UnknownZone);
+    assert!(err.to_string().contains("rule 'r'"), "got: {err}");
+    assert!(
+        err.field_path.as_deref().unwrap_or("").contains("when"),
+        "path should name the when guard, got: {err:?}"
+    );
+}
+
+#[test]
+fn envelope_rejects_nonpositive_distance() {
+    let doc = parse_semantic_ruleset(
+        r#"
+ruleset_name = "x"
+robot_owner = "robot/7"
+[[rule]]
+rule_name = "r"
+when.near_human = 0.0
+[[rule.actions]]
+topic = "robot/7/local/drive"
+payload = { speed_mps = 0.3 }
+"#,
+    )
+    .unwrap();
+    let err = compile_ruleset(&doc, "7").unwrap_err();
+    assert_eq!(err.code, flo_rs::semantic::ErrorCode::InvalidDistance);
+    assert!(err.to_string().contains("rule 'r'"), "got: {err}");
+    assert!(
+        err.field_path.as_deref().unwrap_or("").contains("when"),
+        "path should name the when guard, got: {err:?}"
+    );
+}
+
+#[test]
+fn envelope_rejects_unknown_action_verb() {
+    let bad = r#"
+ruleset_name = "x"
+robot_owner = "robot/7"
+[[rule]]
+rule_name = "r"
+when.near_human = 1.0
+[[rule.actions]]
+explode = true
+"#;
+    let err = parse_semantic_ruleset(bad).unwrap_err();
+    assert!(err.to_string().contains("explode"), "got: {err}");
+}
+
+#[test]
+fn envelope_rejects_action_without_verb() {
+    let doc = parse_semantic_ruleset(
+        r#"
+ruleset_name = "x"
+robot_owner = "robot/7"
+[[rule]]
+rule_name = "r"
+when.near_human = 1.0
+[[rule.actions]]
+payload = { speed_mps = 0.3 }
+"#,
+    )
+    .unwrap();
+    let err = compile_ruleset(&doc, "7").unwrap_err();
+    assert_eq!(err.code, flo_rs::semantic::ErrorCode::NoActionVerb);
+    assert!(err.to_string().contains("rule 'r'"), "got: {err}");
+    assert!(
+        err.field_path.as_deref().unwrap_or("").contains("actions"),
+        "path should name the action, got: {err:?}"
+    );
 }

@@ -63,8 +63,6 @@ pub struct SemanticError {
     pub message: String,
     pub code: ErrorCode,
     pub field_path: Option<String>,
-    pub line: Option<usize>,
-    pub col: Option<usize>,
 }
 
 impl SemanticError {
@@ -73,19 +71,11 @@ impl SemanticError {
             message: message.into(),
             code,
             field_path: None,
-            line: None,
-            col: None,
         }
     }
 
     pub fn with_path(mut self, path: impl Into<String>) -> Self {
         self.field_path = Some(path.into());
-        self
-    }
-
-    pub fn with_span(mut self, line: usize, col: usize) -> Self {
-        self.line = Some(line);
-        self.col = Some(col);
         self
     }
 }
@@ -95,9 +85,6 @@ impl std::fmt::Display for SemanticError {
         write!(f, "error[{}]: {}", self.code.as_str(), self.message)?;
         if let Some(ref path) = self.field_path {
             write!(f, "\n  --> {path}")?;
-        }
-        if let (Some(line), Some(col)) = (self.line, self.col) {
-            write!(f, " at line {line}:{col}")?;
         }
         Ok(())
     }
@@ -166,6 +153,12 @@ pub struct SemanticAction {
     pub slow_to: Option<f64>,
     #[serde(default)]
     pub resume: bool,
+    /// Raw action form: an explicit topic (and optional payload) instead of the
+    /// verb sugar. Shared with the ruleset-envelope path.
+    #[serde(default)]
+    pub topic: Option<String>,
+    #[serde(default)]
+    pub payload: Option<serde_json::Value>,
     #[serde(default = "default_qos")]
     pub qos: Qos,
 }
@@ -212,14 +205,6 @@ pub fn parse_semantic_auto(text: &str) -> Result<SemanticDoc, SemanticError> {
     }
 }
 
-/// Attempt JSON parse, fall back to TOML for the Ruleset envelope.
-pub fn parse_semantic_ruleset_auto(text: &str) -> Result<SemanticRuleset, SemanticError> {
-    match guess_format(text) {
-        Format::Json => parse_semantic_ruleset_json(text),
-        Format::Toml => parse_semantic_ruleset(text),
-    }
-}
-
 fn guess_format(text: &str) -> Format {
     if text.trim().starts_with('{') {
         Format::Json
@@ -233,13 +218,12 @@ enum Format {
     Toml,
 }
 
-/// Parse a semantic doc from JSON.
-pub fn parse_semantic_json(text: &str) -> Result<SemanticDoc, SemanticError> {
+fn parse_semantic_json(text: &str) -> Result<SemanticDoc, SemanticError> {
     serde_json::from_str(text).map_err(|e| SemanticError::new(ErrorCode::Parse, e.to_string()))
 }
 
-/// Parse a Ruleset envelope from JSON.
-pub fn parse_semantic_ruleset_json(text: &str) -> Result<SemanticRuleset, SemanticError> {
+#[cfg(test)]
+fn parse_semantic_ruleset_json(text: &str) -> Result<SemanticRuleset, SemanticError> {
     serde_json::from_str(text).map_err(|e| SemanticError::new(ErrorCode::Parse, e.to_string()))
 }
 
@@ -247,11 +231,15 @@ pub fn parse_semantic_ruleset_json(text: &str) -> Result<SemanticRuleset, Semant
 // Validate (semantic doc)
 // ---------------------------------------------------------------------------
 
-/// Validate semantic invariants before compile.
+/// Validate semantic invariants before compile. The single shared validator:
+/// both the direct semantic doc and the ruleset-envelope path (via desugaring)
+/// check action verbs, payload primitiveness, `when` shape, distances, and
+/// zone references here.
 pub fn validate(doc: &SemanticDoc) -> Result<(), SemanticError> {
     for (rule_idx, rule) in doc.rules.iter().enumerate() {
         for (action_idx, a) in rule.actions.iter().enumerate() {
-            if !a.estop && a.slow_to.is_none() && !a.resume {
+            let path = format!("rules[{rule_idx}].actions[{action_idx}]");
+            if !a.estop && a.slow_to.is_none() && !a.resume && a.topic.is_none() {
                 return Err(SemanticError::new(
                     ErrorCode::NoActionVerb,
                     format!(
@@ -259,7 +247,19 @@ pub fn validate(doc: &SemanticDoc) -> Result<(), SemanticError> {
                         rule.name
                     ),
                 )
-                .with_path(format!("rules[{rule_idx}].actions[{action_idx}]")));
+                .with_path(&path));
+            }
+            if let Some(payload) = &a.payload
+                && !is_primitive(payload)
+            {
+                return Err(SemanticError::new(
+                    ErrorCode::NonPrimitivePayload,
+                    format!(
+                        "rule '{}': action payload must be primitive (bool/int/float/string), got {payload}",
+                        rule.name
+                    ),
+                )
+                .with_path(format!("{path}.payload")));
             }
         }
         validate_when(
@@ -548,6 +548,12 @@ fn compile_action(a: &SemanticAction, robot_id: &str) -> Action {
             qos: Qos::Reliable,
             payload: serde_json::json!({ "resume": true }),
         }
+    } else if let Some(topic) = &a.topic {
+        Action {
+            topic: topic.clone(),
+            qos: a.qos,
+            payload: a.payload.clone().unwrap_or(serde_json::Value::Null),
+        }
     } else {
         Action {
             topic: format!("robot/{robot_id}/local/drive"),
@@ -561,7 +567,10 @@ fn compile_action(a: &SemanticAction, robot_id: &str) -> Action {
 // Ruleset envelope path
 // ---------------------------------------------------------------------------
 
-/// Envelope-parse shape for a `Ruleset` authored as extended TOML.
+/// Envelope-parse shape for a `Ruleset` authored as extended TOML. Carries the
+/// same `site`/`zones`/`when` vocabulary as [`SemanticDoc`] plus ownership
+/// metadata; validation and compilation are delegated to the shared
+/// [`validate`]/[`compile`] through a thin desugaring.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SemanticRuleset {
@@ -569,6 +578,10 @@ pub struct SemanticRuleset {
     #[serde(default)]
     pub version: u64,
     pub robot_owner: String,
+    #[serde(default)]
+    pub site: Site,
+    #[serde(default)]
+    pub zones: HashMap<String, Zone>,
     #[serde(default, rename = "rule")]
     pub rules: Vec<SemanticRulesetRule>,
 }
@@ -579,22 +592,39 @@ pub struct SemanticRulesetRule {
     pub rule_name: String,
     #[serde(default)]
     pub when: SemanticWhen,
-    pub actions: Vec<SemanticRulesetAction>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SemanticRulesetAction {
-    pub topic: String,
-    #[serde(default = "default_qos")]
-    pub qos: Qos,
     #[serde(default)]
-    pub payload: serde_json::Value,
+    pub actions: Vec<SemanticAction>,
 }
 
 /// Compile a `Ruleset` envelope into the runtime `Ruleset` wire/storage unit.
+/// A thin wrapper: it validates the envelope's `ruleset_name`, desugars into a
+/// [`SemanticDoc`], and reuses the single shared validator + compiler.
 pub fn compile_ruleset(doc: &SemanticRuleset, robot_id: &str) -> Result<Ruleset, SemanticError> {
-    let ruleset_name = doc.ruleset_name.to_lowercase();
+    let ruleset_name = normalize_ruleset_name(&doc.ruleset_name)?;
+    let semantic = SemanticDoc {
+        site: doc.site.clone(),
+        zones: doc.zones.clone(),
+        rules: doc
+            .rules
+            .iter()
+            .map(|r| SemanticRule {
+                name: r.rule_name.clone(),
+                when: r.when.clone(),
+                actions: r.actions.clone(),
+            })
+            .collect(),
+    };
+    let rules = compile(&semantic, robot_id)?;
+    Ok(Ruleset {
+        ruleset_name,
+        version: doc.version,
+        robot_owner: doc.robot_owner.clone(),
+        rules: rules.rules,
+    })
+}
+
+fn normalize_ruleset_name(name: &str) -> Result<String, SemanticError> {
+    let ruleset_name = name.to_lowercase();
     if !ruleset_name
         .chars()
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
@@ -607,49 +637,7 @@ pub fn compile_ruleset(doc: &SemanticRuleset, robot_id: &str) -> Result<Ruleset,
         )
         .with_path("ruleset_name"));
     }
-
-    let mut rules = Vec::new();
-    for (rule_idx, rule) in doc.rules.iter().enumerate() {
-        let (all, any) = expand_when(&rule.when, robot_id, &rule.rule_name, "when")?;
-        let actions: Vec<Action> = rule.actions.iter().map(compile_ruleset_action).collect();
-        validate_rule_payloads(&actions, &rule.rule_name, &format!("rules[{rule_idx}]"))?;
-        rules.push(Rule {
-            name: rule.rule_name.clone(),
-            when: When { all, any },
-            actions,
-        });
-    }
-
-    Ok(Ruleset {
-        ruleset_name,
-        version: doc.version,
-        robot_owner: doc.robot_owner.clone(),
-        rules,
-    })
-}
-
-fn compile_ruleset_action(a: &SemanticRulesetAction) -> Action {
-    Action {
-        topic: a.topic.clone(),
-        qos: a.qos,
-        payload: a.payload.clone(),
-    }
-}
-
-fn validate_rule_payloads(
-    actions: &[Action],
-    rule_name: &str,
-    path: &str,
-) -> Result<(), SemanticError> {
-    for (action_idx, a) in actions.iter().enumerate() {
-        if !is_primitive(&a.payload) {
-            return Err(SemanticError::new(
-                ErrorCode::NonPrimitivePayload,
-                format!("rule '{rule_name}': action payload must be primitive (bool/int/float/string), got {a:?}"),
-            ).with_path(format!("{path}.actions[{action_idx}].payload")));
-        }
-    }
-    Ok(())
+    Ok(ruleset_name)
 }
 
 fn is_primitive(v: &serde_json::Value) -> bool {
@@ -749,6 +737,8 @@ id = "x""#;
             "ruleset_name": "test-site",
             "version": 1,
             "robot_owner": "robot/7",
+            "site": { "id": "cell-7" },
+            "zones": { "safety": { "shape": "rect", "x": 0.0, "y": 0.0, "w": 2.0, "h": 2.0 } },
             "rule": [
                 {
                     "rule_name": "r1",
