@@ -102,7 +102,7 @@ impl RegistrationServer {
         }
     }
 
-    pub async fn deregister(&self, robot_id: &str) -> Result<(), String> {
+    pub async fn deregister(&self, robot_id: &str) -> Result<(), RegistrationError> {
         let mut clients = self.clients.write().await;
         match clients.get(robot_id) {
             Some(ClientEntry {
@@ -118,11 +118,11 @@ impl RegistrationServer {
                 ..
             }) => {
                 warn!(robot_id, "deregistration ignored: client is poisoned");
-                Ok(())
+                Err(RegistrationError::Poisoned)
             }
             _ => {
-                warn!(robot_id, "deregistration ignored: unknown client");
-                Ok(())
+                warn!(robot_id, "deregistration ignored: client not registered");
+                Err(RegistrationError::NotRegistered)
             }
         }
     }
@@ -148,12 +148,62 @@ impl RegistrationServer {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegistrationError {
     AlreadyRegistered,
     Poisoned,
+    NotRegistered,
     Timeout,
     ServerError(String),
+}
+
+/// Client → server registration envelope, discriminated by `op`. Replaces the
+/// old raw string bodies so a typo or future drift in the wire format surfaces
+/// as a deserialize error instead of silently breaking the protocol.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum RegistrationRequest {
+    Register {
+        robot_id: String,
+        config: Box<ClientConfig>,
+    },
+    Deregister {
+        robot_id: String,
+    },
+}
+
+/// Server → client response envelope carrying a discriminated status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistrationResponse {
+    pub status: RegistrationStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegistrationStatus {
+    Ack,
+    RejectAlreadyRegistered,
+    RejectPoisoned,
+    RejectServerError(String),
+    Ignore,
+    MissingRobotId,
+    Poisoned,
+}
+
+/// Serialize a typed response and publish it to `topic` (the registration,
+/// deregistration, and heartbeat-alert topics all carry the same envelope).
+async fn publish_response(
+    transport: &Transport,
+    topic: &str,
+    status: RegistrationStatus,
+) -> Result<(), RegistrationError> {
+    let payload = serde_json::to_vec(&RegistrationResponse { status }).map_err(|e| {
+        RegistrationError::ServerError(format!("failed to serialize response: {e}"))
+    })?;
+    transport
+        .put_bytes(topic, payload)
+        .await
+        .map_err(|e| RegistrationError::ServerError(e.to_string()))
 }
 
 pub async fn run_registration_handler(
@@ -169,61 +219,66 @@ pub async fn run_registration_handler(
             let transport = transport_for_reg.clone();
             tokio::spawn(async move {
                 let bytes = sample.payload().to_bytes();
-                let payload: RegistrationPayload = match serde_json::from_slice(&bytes) {
-                    Ok(p) => p,
+                let request: RegistrationRequest = match serde_json::from_slice(&bytes) {
+                    Ok(req) => req,
                     Err(e) => {
-                        warn!("registration: bad payload: {e}");
+                        warn!("registration: bad request: {e}");
                         return;
                     }
                 };
-                let response_key = format!("{}/response/{}", REGISTRATION_KEY, payload.robot_id);
-                match reg.register(&payload.robot_id, payload.config).await {
-                    Ok(()) => {
-                        let _ = transport.put_bytes(&response_key, b"ack".to_vec()).await;
+                let RegistrationRequest::Register { robot_id, config } = request else {
+                    warn!("registration: non-register request on {REGISTRATION_KEY}");
+                    return;
+                };
+                let status = if robot_id.is_empty() {
+                    RegistrationStatus::MissingRobotId
+                } else {
+                    match reg.register(&robot_id, *config).await {
+                        Ok(()) => RegistrationStatus::Ack,
+                        Err(RegistrationError::AlreadyRegistered) => {
+                            RegistrationStatus::RejectAlreadyRegistered
+                        }
+                        Err(RegistrationError::Poisoned) => RegistrationStatus::RejectPoisoned,
+                        Err(e) => RegistrationStatus::RejectServerError(format!("{e:?}")),
                     }
-                    Err(RegistrationError::AlreadyRegistered) => {
-                        let _ = transport
-                            .put_bytes(&response_key, b"reject:already_registered".to_vec())
-                            .await;
-                    }
-                    Err(RegistrationError::Poisoned) => {
-                        let _ = transport
-                            .put_bytes(&response_key, b"reject:poisoned".to_vec())
-                            .await;
-                    }
-                    _ => {}
-                }
+                };
+                let response_key = format!("{}/response/{}", REGISTRATION_KEY, robot_id);
+                let _ = publish_response(&transport, &response_key, status).await;
             });
         })
         .await?;
 
     info!("registration subscriber active on {REGISTRATION_KEY}");
 
-    let clients_dereg = reg_server.clients.clone();
+    let dereg_reg = reg_server.clone();
     let transport_for_dereg = transport.clone();
     let _dereg_sub = transport
         .subscribe_managed(DEREGISTRATION_KEY, move |sample| {
-            let clients = clients_dereg.clone();
+            let reg = dereg_reg.clone();
             let transport = transport_for_dereg.clone();
             tokio::spawn(async move {
-                let robot_id = String::from_utf8_lossy(&sample.payload().to_bytes()).to_string();
+                let bytes = sample.payload().to_bytes();
+                let request: RegistrationRequest = match serde_json::from_slice(&bytes) {
+                    Ok(req) => req,
+                    Err(e) => {
+                        warn!("deregistration: bad request: {e}");
+                        return;
+                    }
+                };
+                let RegistrationRequest::Deregister { robot_id } = request else {
+                    warn!("deregistration: non-deregister request on {DEREGISTRATION_KEY}");
+                    return;
+                };
                 let response_key = format!("{}/response/{}", DEREGISTRATION_KEY, robot_id);
-                if robot_id.is_empty() {
-                    let _ = transport
-                        .put_bytes(&response_key, b"missing robot_id".to_vec())
-                        .await;
-                    return;
-                }
-                let mut clients = clients.write().await;
-                if let Some(entry) = clients.get(&robot_id)
-                    && entry.state == ClientState::Registered
-                {
-                    clients.remove(&robot_id);
-                    info!(robot_id, "client deregistered");
-                    let _ = transport.put_bytes(&response_key, b"ack".to_vec()).await;
-                    return;
-                }
-                let _ = transport.put_bytes(&response_key, b"ignore".to_vec()).await;
+                let status = if robot_id.is_empty() {
+                    RegistrationStatus::MissingRobotId
+                } else {
+                    match reg.deregister(&robot_id).await {
+                        Ok(()) => RegistrationStatus::Ack,
+                        Err(_) => RegistrationStatus::Ignore,
+                    }
+                };
+                let _ = publish_response(&transport, &response_key, status).await;
             });
         })
         .await?;
@@ -236,7 +291,6 @@ pub async fn run_heartbeat_monitor(
     transport: Arc<Transport>,
     reg_server: RegistrationServer,
 ) -> zenoh::Result<()> {
-    let clients = reg_server.clients;
     let transport_for_alert = transport.clone();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, SampleKind)>();
 
@@ -260,22 +314,18 @@ pub async fn run_heartbeat_monitor(
                     info!(%robot_id, "heartbeat: client alive");
                 }
                 SampleKind::Delete => {
-                    let mut w = clients.write().await;
-                    if let Some(entry) = w.get(&robot_id)
-                        && entry.state == ClientState::Registered
-                    {
-                        warn!(%robot_id, "heartbeat: client disconnected unexpectedly — poisoning");
-                        w.insert(
-                            robot_id.clone(),
-                            ClientEntry {
-                                state: ClientState::Poisoned,
-                                config: None,
-                            },
-                        );
+                    // Only poison clients that were actually registered; a token
+                    // dropping before registration completes must not reject the
+                    // client it is about to register.
+                    if reg_server.state(&robot_id).await == ClientState::Registered {
+                        reg_server.poison(&robot_id).await;
                         let alert_topic = format!("{ALERT_HEARTBEAT_KEY}/{robot_id}");
-                        let _ = transport_for_alert
-                            .put_bytes(&alert_topic, b"poisoned".to_vec())
-                            .await;
+                        let _ = publish_response(
+                            &transport_for_alert,
+                            &alert_topic,
+                            RegistrationStatus::Poisoned,
+                        )
+                        .await;
                     }
                 }
             }
@@ -286,23 +336,17 @@ pub async fn run_heartbeat_monitor(
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RegistrationPayload {
-    pub robot_id: String,
-    pub config: ClientConfig,
-}
-
 pub async fn register_with_client(
     transport: Arc<Transport>,
     robot_id: &str,
     config: &ClientConfig,
 ) -> Result<(), RegistrationError> {
-    let payload = RegistrationPayload {
+    let request = RegistrationRequest::Register {
         robot_id: robot_id.to_string(),
-        config: config.clone(),
+        config: Box::new(config.clone()),
     };
-    let payload_json = serde_json::to_vec(&payload)
-        .map_err(|e| RegistrationError::ServerError(format!("failed to serialize payload: {e}")))?;
+    let request_json = serde_json::to_vec(&request)
+        .map_err(|e| RegistrationError::ServerError(format!("failed to serialize request: {e}")))?;
 
     let response_key = format!("{}/response/{}", REGISTRATION_KEY, robot_id);
 
@@ -315,7 +359,7 @@ pub async fn register_with_client(
 
         // Send registration request.
         transport
-            .put_bytes(REGISTRATION_KEY, payload_json.clone())
+            .put_bytes(REGISTRATION_KEY, request_json.clone())
             .await
             .map_err(|e| RegistrationError::ServerError(e.to_string()))?;
 
@@ -325,27 +369,37 @@ pub async fn register_with_client(
                 .recv_async()
                 .await
                 .ok()
-                .map(|sample| String::from_utf8_lossy(&sample.payload().to_bytes()).to_string())
+                .map(|sample| sample.payload().to_bytes().to_vec())
         })
         .await;
 
         drop(response_sub);
 
-        match response {
-            Ok(Some(text)) if text == "ack" => {
-                info!(robot_id, "registration successful");
-                return Ok(());
-            }
-            Ok(Some(text)) if text.starts_with("reject:already_registered") => {
-                return Err(RegistrationError::AlreadyRegistered);
-            }
-            Ok(Some(text)) if text.starts_with("reject:poisoned") => {
-                return Err(RegistrationError::Poisoned);
-            }
-            Ok(Some(text)) => {
-                return Err(RegistrationError::ServerError(text));
-            }
-            Ok(None) | Err(_) => {}
+        if let Ok(Some(bytes)) = response {
+            let resp: RegistrationResponse = match serde_json::from_slice(&bytes) {
+                Ok(resp) => resp,
+                Err(e) => {
+                    return Err(RegistrationError::ServerError(format!(
+                        "bad registration response: {e}"
+                    )));
+                }
+            };
+            return match resp.status {
+                RegistrationStatus::Ack => {
+                    info!(robot_id, "registration successful");
+                    Ok(())
+                }
+                RegistrationStatus::RejectAlreadyRegistered => {
+                    Err(RegistrationError::AlreadyRegistered)
+                }
+                RegistrationStatus::RejectPoisoned => Err(RegistrationError::Poisoned),
+                RegistrationStatus::RejectServerError(msg) => {
+                    Err(RegistrationError::ServerError(msg))
+                }
+                status => Err(RegistrationError::ServerError(format!(
+                    "unexpected registration status: {status:?}"
+                ))),
+            };
         }
 
         if attempt < REGISTRATION_RETRIES {
@@ -364,6 +418,12 @@ pub async fn deregister_with_server(
     transport: Arc<Transport>,
     robot_id: &str,
 ) -> Result<(), RegistrationError> {
+    let request = RegistrationRequest::Deregister {
+        robot_id: robot_id.to_string(),
+    };
+    let request_json = serde_json::to_vec(&request)
+        .map_err(|e| RegistrationError::ServerError(format!("failed to serialize request: {e}")))?;
+
     let response_key = format!("{}/response/{}", DEREGISTRATION_KEY, robot_id);
 
     let response_sub = transport
@@ -372,7 +432,7 @@ pub async fn deregister_with_server(
         .map_err(|e| RegistrationError::ServerError(e.to_string()))?;
 
     transport
-        .put_bytes(DEREGISTRATION_KEY, robot_id.as_bytes().to_vec())
+        .put_bytes(DEREGISTRATION_KEY, request_json)
         .await
         .map_err(|e| RegistrationError::ServerError(e.to_string()))?;
 
@@ -381,12 +441,151 @@ pub async fn deregister_with_server(
             .recv_async()
             .await
             .ok()
-            .map(|sample| String::from_utf8_lossy(&sample.payload().to_bytes()).to_string())
+            .map(|sample| sample.payload().to_bytes().to_vec())
     })
     .await;
 
-    match response {
-        Ok(Some(text)) if text == "ack" => Ok(()),
-        _ => Ok(()),
+    let bytes = match response {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) | Err(_) => return Err(RegistrationError::Timeout),
+    };
+
+    let resp: RegistrationResponse = serde_json::from_slice(&bytes)
+        .map_err(|e| RegistrationError::ServerError(format!("bad deregistration response: {e}")))?;
+
+    match resp.status {
+        RegistrationStatus::Ack | RegistrationStatus::Ignore => Ok(()),
+        status => Err(RegistrationError::ServerError(format!(
+            "unexpected deregistration status: {status:?}"
+        ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_client_config() -> ClientConfig {
+        ClientConfig::from_toml(
+            r#"
+[client]
+heartbeat_interval_ms = 1000
+
+[default_subscriptions.location]
+x = "robot-7/location/x"
+y = "robot-7/location/y"
+z = "robot-7/location/z"
+
+[default_subscriptions.zone]
+site_id = "robot-7/site"
+zone_enter = "zone/cell-3/7/enter"
+zone_exit = "zone/cell-3/7/exit"
+
+[default_publishers.location]
+topic = "robot-7/location"
+period_ms = 100
+
+[default_publishers.zone]
+topic = "robot-7/zone"
+period_ms = 1000
+"#,
+        )
+        .expect("test client config must parse")
+    }
+
+    fn test_server() -> RegistrationServer {
+        RegistrationServer::new(ServerConfig::default())
+    }
+
+    #[tokio::test]
+    async fn register_acks_and_state_becomes_registered() {
+        let server = test_server();
+        server
+            .register("robot-7", test_client_config())
+            .await
+            .unwrap();
+        assert_eq!(server.state("robot-7").await, ClientState::Registered);
+    }
+
+    #[tokio::test]
+    async fn duplicate_register_rejects_already_registered() {
+        let server = test_server();
+        server
+            .register("robot-7", test_client_config())
+            .await
+            .unwrap();
+        let err = server
+            .register("robot-7", test_client_config())
+            .await
+            .unwrap_err();
+        assert_eq!(err, RegistrationError::AlreadyRegistered);
+    }
+
+    #[tokio::test]
+    async fn deregister_after_poison_is_ignored() {
+        let server = test_server();
+        server
+            .register("robot-7", test_client_config())
+            .await
+            .unwrap();
+        server.poison("robot-7").await;
+        let err = server.deregister("robot-7").await.unwrap_err();
+        assert_eq!(err, RegistrationError::Poisoned);
+        assert_eq!(server.state("robot-7").await, ClientState::Poisoned);
+    }
+
+    #[tokio::test]
+    async fn poison_transition_rejects_future_registration() {
+        let server = test_server();
+        server
+            .register("robot-7", test_client_config())
+            .await
+            .unwrap();
+        server.poison("robot-7").await;
+        assert_eq!(server.state("robot-7").await, ClientState::Poisoned);
+        let err = server
+            .register("robot-7", test_client_config())
+            .await
+            .unwrap_err();
+        assert_eq!(err, RegistrationError::Poisoned);
+    }
+
+    #[tokio::test]
+    async fn deregister_removes_registered_client() {
+        let server = test_server();
+        server
+            .register("robot-7", test_client_config())
+            .await
+            .unwrap();
+        server.deregister("robot-7").await.unwrap();
+        assert_eq!(server.state("robot-7").await, ClientState::Unknown);
+    }
+
+    #[tokio::test]
+    async fn deregister_unknown_client_is_ignored() {
+        let server = test_server();
+        let err = server.deregister("ghost").await.unwrap_err();
+        assert_eq!(err, RegistrationError::NotRegistered);
+    }
+
+    #[test]
+    fn registration_envelopes_round_trip_through_json() {
+        let req = RegistrationRequest::Register {
+            robot_id: "robot-7".to_string(),
+            config: Box::new(test_client_config()),
+        };
+        let bytes = serde_json::to_vec(&req).unwrap();
+        let back: RegistrationRequest = serde_json::from_slice(&bytes).unwrap();
+        match back {
+            RegistrationRequest::Register { robot_id, .. } => assert_eq!(robot_id, "robot-7"),
+            _ => panic!("expected a Register request"),
+        }
+
+        let resp = RegistrationResponse {
+            status: RegistrationStatus::RejectPoisoned,
+        };
+        let bytes = serde_json::to_vec(&resp).unwrap();
+        let back: RegistrationResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(back.status, RegistrationStatus::RejectPoisoned);
     }
 }

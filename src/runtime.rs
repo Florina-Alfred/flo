@@ -67,6 +67,9 @@ impl ClientRuntime {
                 Err(RegistrationError::Poisoned) => {
                     return Err("client is poisoned on server — cannot join".into());
                 }
+                Err(RegistrationError::NotRegistered) => {
+                    return Err("client not registered with server".into());
+                }
                 Err(RegistrationError::Timeout) => {
                     return Err("registration timed out after 3 retries".into());
                 }
