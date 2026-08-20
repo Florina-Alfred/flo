@@ -66,7 +66,7 @@ pub async fn run_server(
     health.set_ready();
 
     tokio::try_join!(
-        engine::run_engine(transport.clone(), store.clone(), counter),
+        engine::run_engine(transport.clone(), store.clone(), counter, None),
         run_hot_reload_with_registry(&transport, &robot_id, store.clone(), registry),
         run_registration_handler(transport.clone(), reg_server.clone()),
         run_heartbeat_monitor(transport.clone(), reg_server),

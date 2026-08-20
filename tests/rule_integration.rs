@@ -45,7 +45,7 @@ async fn semantic_compile_to_engine_e2e() {
     let engine_counter = eval_counter.clone();
     let engine_transport = transport.clone();
     let engine_handle = tokio::spawn(async move {
-        engine::run_engine(engine_transport, store, engine_counter)
+        engine::run_engine(engine_transport, store, engine_counter, None)
             .await
             .expect("engine run");
     });
@@ -109,7 +109,7 @@ async fn compile_with_custom_robot_id_routes_topics() {
     let engine_counter = eval_counter.clone();
     let engine_transport = transport.clone();
     let engine_handle = tokio::spawn(async move {
-        engine::run_engine(engine_transport, store, engine_counter)
+        engine::run_engine(engine_transport, store, engine_counter, None)
             .await
             .expect("engine run");
     });

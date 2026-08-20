@@ -36,7 +36,7 @@ async fn sensor_sample_triggers_action() {
     let eval_counter_for_engine = eval_counter.clone();
     let engine_transport = transport.clone();
     let engine = tokio::spawn(async move {
-        engine::run_engine(engine_transport, store, eval_counter_for_engine)
+        engine::run_engine(engine_transport, store, eval_counter_for_engine, None)
             .await
             .expect("engine run");
     });
@@ -106,7 +106,7 @@ async fn no_data_no_action() {
     let eval_counter_for_engine = eval_counter.clone();
     let engine_transport = transport.clone();
     let engine = tokio::spawn(async move {
-        engine::run_engine(engine_transport, store, eval_counter_for_engine)
+        engine::run_engine(engine_transport, store, eval_counter_for_engine, None)
             .await
             .expect("engine run");
     });
@@ -156,7 +156,7 @@ async fn zone_path_uses_managed_subscription_lifecycle() {
     let engine_counter = eval_counter.clone();
     let engine_transport = transport.clone();
     let engine = tokio::spawn(async move {
-        engine::run_engine(engine_transport, store, engine_counter)
+        engine::run_engine(engine_transport, store, engine_counter, None)
             .await
             .expect("engine run");
     });

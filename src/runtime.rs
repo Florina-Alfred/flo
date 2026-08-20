@@ -10,7 +10,7 @@ use tracing::{error, info};
 
 use crate::auth::{AuthConfig, AuthMode};
 use crate::cli::Args;
-use crate::common::{spawn_video_peer, start_common_subsystems};
+use crate::common::{SubsystemHandles, spawn_video_peer, start_common_subsystems};
 use crate::config::{ClientConfig, RuleStore};
 use crate::mutation::compute_sha;
 use crate::registration::{RegistrationError, register_with_client};
@@ -81,13 +81,47 @@ impl ClientRuntime {
         let handles = start_common_subsystems(&transport, &inputs.store, &robot_id, &args).await;
         spawn_video_peer(&args, transport, robot_id);
 
-        tokio::select! {
-            res = handles.health => Err(format!("health subsystem exited: {res:?}").into()),
-            res = handles.reload => Err(format!("hot-reload subsystem exited: {res:?}").into()),
-            res = handles.engine => Err(format!("rule engine subsystem exited: {res:?}").into()),
-            res = handles.signaling => Err(format!("signaling subsystem exited: {res:?}").into()),
+        Self::supervise(handles).await
+    }
+
+    /// Supervise the client's subsystems until one dies. Mirrors the server's
+    /// `tokio::try_join!` discipline: the first dead subsystem is logged as
+    /// fatal and the process exits non-zero so a supervisor can restart it.
+    pub async fn supervise(
+        handles: SubsystemHandles,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        #[cfg(feature = "media")]
+        {
+            tokio::select! {
+                res = handles.health => fatal_exit("health", res),
+                res = handles.reload => fatal_exit("hot-reload", res),
+                res = handles.engine => fatal_exit("rule engine", res),
+                res = handles.signaling => fatal_exit("signaling", res),
+            }
+        }
+        #[cfg(not(feature = "media"))]
+        {
+            tokio::select! {
+                res = handles.health => fatal_exit("health", res),
+                res = handles.reload => fatal_exit("hot-reload", res),
+                res = handles.engine => fatal_exit("rule engine", res),
+            }
         }
     }
+}
+
+/// Log a dead subsystem at fatal severity and return the process error. Any
+/// completion is fatal: a subsystem that stops running — clean or with an error —
+/// must take the whole client down, never leave it alive but unsupervised.
+fn fatal_exit(
+    subsystem: &str,
+    res: Result<(), tokio::task::JoinError>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    error!(
+        subsystem = subsystem,
+        "fatal: {subsystem} subsystem exited: {res:?}"
+    );
+    Err(format!("{subsystem} subsystem exited: {res:?}").into())
 }
 
 /// Build and validate the auth config from CLI flags. Production validation
