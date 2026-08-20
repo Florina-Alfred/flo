@@ -355,7 +355,7 @@ async fn zone_subscriptions(
     zone_tracker: &Arc<std::sync::Mutex<ZoneTracker>>,
 ) -> zenoh::Result<(Subscription, Subscription)> {
     let entered_sub = transport
-        .subscribe_managed("zone/*/entered", {
+        .subscribe_managed(crate::topic::ZONE_ENTERED_PATTERN, {
             let zt = zone_tracker.clone();
             move |sample: zenoh::sample::Sample| {
                 let key = sample.key_expr().to_string();
@@ -373,7 +373,7 @@ async fn zone_subscriptions(
         .await?;
 
     let cleared_sub = transport
-        .subscribe_managed("zone/*/cleared", {
+        .subscribe_managed(crate::topic::ZONE_CLEARED_PATTERN, {
             let zt = zone_tracker.clone();
             move |sample: zenoh::sample::Sample| {
                 let key = sample.key_expr().to_string();

@@ -10,10 +10,6 @@ use zenoh::sample::SampleKind;
 use crate::config::{ClientConfig, ServerConfig};
 use crate::transport::Transport;
 
-const REGISTRATION_KEY: &str = "fleet/registration";
-const DEREGISTRATION_KEY: &str = "fleet/deregistration";
-const LIVELINESS_PATTERN: &str = "robot/*/client/liveliness";
-const ALERT_HEARTBEAT_KEY: &str = "fleet/alerts/heartbeat";
 const REGISTRATION_RETRIES: u32 = 3;
 const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(5);
 const RETRY_BACKOFF_MS: u64 = 1000;
@@ -214,7 +210,7 @@ pub async fn run_registration_handler(
     let transport_for_reg = transport.clone();
 
     let _reg_sub = transport
-        .subscribe_managed(REGISTRATION_KEY, move |sample| {
+        .subscribe_managed(crate::topic::REGISTRATION_KEY, move |sample| {
             let reg = reg.clone();
             let transport = transport_for_reg.clone();
             tokio::spawn(async move {
@@ -227,7 +223,10 @@ pub async fn run_registration_handler(
                     }
                 };
                 let RegistrationRequest::Register { robot_id, config } = request else {
-                    warn!("registration: non-register request on {REGISTRATION_KEY}");
+                    warn!(
+                        "registration: non-register request on {}",
+                        crate::topic::REGISTRATION_KEY
+                    );
                     return;
                 };
                 let status = if robot_id.is_empty() {
@@ -242,18 +241,21 @@ pub async fn run_registration_handler(
                         Err(e) => RegistrationStatus::RejectServerError(format!("{e:?}")),
                     }
                 };
-                let response_key = format!("{}/response/{}", REGISTRATION_KEY, robot_id);
+                let response_key = crate::topic::registration_response(&robot_id);
                 let _ = publish_response(&transport, &response_key, status).await;
             });
         })
         .await?;
 
-    info!("registration subscriber active on {REGISTRATION_KEY}");
+    info!(
+        "registration subscriber active on {}",
+        crate::topic::REGISTRATION_KEY
+    );
 
     let dereg_reg = reg_server.clone();
     let transport_for_dereg = transport.clone();
     let _dereg_sub = transport
-        .subscribe_managed(DEREGISTRATION_KEY, move |sample| {
+        .subscribe_managed(crate::topic::DEREGISTRATION_KEY, move |sample| {
             let reg = dereg_reg.clone();
             let transport = transport_for_dereg.clone();
             tokio::spawn(async move {
@@ -266,10 +268,13 @@ pub async fn run_registration_handler(
                     }
                 };
                 let RegistrationRequest::Deregister { robot_id } = request else {
-                    warn!("deregistration: non-deregister request on {DEREGISTRATION_KEY}");
+                    warn!(
+                        "deregistration: non-deregister request on {}",
+                        crate::topic::DEREGISTRATION_KEY
+                    );
                     return;
                 };
-                let response_key = format!("{}/response/{}", DEREGISTRATION_KEY, robot_id);
+                let response_key = crate::topic::deregistration_response(&robot_id);
                 let status = if robot_id.is_empty() {
                     RegistrationStatus::MissingRobotId
                 } else {
@@ -295,7 +300,7 @@ pub async fn run_heartbeat_monitor(
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, SampleKind)>();
 
     let _sub = transport
-        .subscribe_liveliness_managed(LIVELINESS_PATTERN, move |sample| {
+        .subscribe_liveliness_managed(crate::topic::LIVELINESS_PATTERN, move |sample| {
             let key = sample.key_expr().to_string();
             let kind = sample.kind();
             let _ = tx.send((key, kind));
@@ -319,7 +324,7 @@ pub async fn run_heartbeat_monitor(
                     // client it is about to register.
                     if reg_server.state(&robot_id).await == ClientState::Registered {
                         reg_server.poison(&robot_id).await;
-                        let alert_topic = format!("{ALERT_HEARTBEAT_KEY}/{robot_id}");
+                        let alert_topic = crate::topic::heartbeat_alert(&robot_id);
                         let _ = publish_response(
                             &transport_for_alert,
                             &alert_topic,
@@ -348,7 +353,7 @@ pub async fn register_with_client(
     let request_json = serde_json::to_vec(&request)
         .map_err(|e| RegistrationError::ServerError(format!("failed to serialize request: {e}")))?;
 
-    let response_key = format!("{}/response/{}", REGISTRATION_KEY, robot_id);
+    let response_key = crate::topic::registration_response(robot_id);
 
     for attempt in 1..=REGISTRATION_RETRIES {
         // Subscribe to response topic before sending request.
@@ -359,7 +364,7 @@ pub async fn register_with_client(
 
         // Send registration request.
         transport
-            .put_bytes(REGISTRATION_KEY, request_json.clone())
+            .put_bytes(crate::topic::REGISTRATION_KEY, request_json.clone())
             .await
             .map_err(|e| RegistrationError::ServerError(e.to_string()))?;
 
@@ -424,7 +429,7 @@ pub async fn deregister_with_server(
     let request_json = serde_json::to_vec(&request)
         .map_err(|e| RegistrationError::ServerError(format!("failed to serialize request: {e}")))?;
 
-    let response_key = format!("{}/response/{}", DEREGISTRATION_KEY, robot_id);
+    let response_key = crate::topic::deregistration_response(robot_id);
 
     let response_sub = transport
         .subscribe_stream(&response_key)
@@ -432,7 +437,7 @@ pub async fn deregister_with_server(
         .map_err(|e| RegistrationError::ServerError(e.to_string()))?;
 
     transport
-        .put_bytes(DEREGISTRATION_KEY, request_json)
+        .put_bytes(crate::topic::DEREGISTRATION_KEY, request_json)
         .await
         .map_err(|e| RegistrationError::ServerError(e.to_string()))?;
 
@@ -478,8 +483,8 @@ z = "robot-7/location/z"
 
 [default_subscriptions.zone]
 site_id = "robot-7/site"
-zone_enter = "zone/cell-3/7/enter"
-zone_exit = "zone/cell-3/7/exit"
+zone_enter = "zone/cell-3/entered"
+zone_exit = "zone/cell-3/cleared"
 
 [default_publishers.location]
 topic = "robot-7/location"

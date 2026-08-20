@@ -47,8 +47,8 @@ z = "robot-7/location/z"
 
 [default_subscriptions.zone]
 site_id = "robot-7/site"
-zone_enter = "zone/cell-3/7/enter"
-zone_exit = "zone/cell-3/7/exit"
+zone_enter = "zone/cell-3/entered"
+zone_exit = "zone/cell-3/cleared"
 
 [default_publishers.location]
 topic = "robot-7/location"
@@ -82,8 +82,8 @@ z = "robot-8/location/z"
 
 [default_subscriptions.zone]
 site_id = "robot-8/site"
-zone_enter = "zone/cell-3/8/enter"
-zone_exit = "zone/cell-3/8/exit"
+zone_enter = "zone/cell-3/entered"
+zone_exit = "zone/cell-3/cleared"
 
 [default_publishers.location]
 topic = "robot-8/location"
