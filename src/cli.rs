@@ -10,8 +10,8 @@ use clap::{Args as ClapArgs, Parser, Subcommand};
 
 /// flo - robot orchestration client.
 ///
-/// With no arguments, runs the local demo (rule engine on a loopback zenoh mesh).
-/// Provide `--robot-id` / `--config` for production mode.
+/// Connects to a flo-server over Zenoh, registers, and runs the rule engine.
+/// Missing or invalid config starts flo in a fail-safe state (see README).
 #[derive(Parser, Debug)]
 #[command(name = "flo", version, about, long_about = None)]
 pub struct Args {
@@ -55,10 +55,6 @@ pub struct Args {
     #[arg(long, value_name = "ENDPOINT")]
     pub connect: Vec<String>,
 
-    /// Run mode: client (default) or server (co-located router + rule engine).
-    #[arg(long, value_name = "MODE", default_value_t = Mode::Client)]
-    pub mode: Mode,
-
     /// One-shot liveness probe for container HEALTHCHECKs. Connects to the
     /// address from `FLO_HEALTH_ADDR` (default `127.0.0.1:8080`), exits 0 on a
     /// 200 from `/healthz`, 1 otherwise.
@@ -70,23 +66,6 @@ pub struct Args {
 
     #[command(subcommand)]
     pub command: Option<Command>,
-}
-
-/// Server vs client mode.
-#[derive(clap::ValueEnum, Clone, Debug, Default, PartialEq)]
-pub enum Mode {
-    #[default]
-    Client,
-    Server,
-}
-
-impl std::fmt::Display for Mode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Mode::Client => write!(f, "client"),
-            Mode::Server => write!(f, "server"),
-        }
-    }
 }
 
 /// Subcommands. Only `rule` exists today.
