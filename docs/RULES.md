@@ -98,6 +98,11 @@ actions = [ { resume = true } ]
 > block can be mixed in the same rule — the flat key is treated as an extra AND. For clarity,
 > prefer one style per rule.
 
+> **Nesting limit:** the runtime model is two-level — one AND group (`all`) optionally ANDed
+> with one OR group (`any`). Nested blocks are flattened into that shape, and a shape the
+> model cannot express (two OR groups ANDed together, or an AND-of-triggers as an OR
+> element) is **rejected** at `flo rule check`/compile rather than silently mis-flattened.
+
 ---
 
 ## 4. Commands (`actions`)
@@ -127,13 +132,15 @@ wire up sensors or read engine logs. For a robot with id `7` at site `cell-7`:
 |--------------------|--------------------|----------------------|
 | `in_zone` / `not_in_zone` / `role` | `fleet/cell-7/7/state` | `zone_id == "..."` / `role == "..."` |
 | `near_human` / `not_near_human` | `fleet/cell-7/proximity/7/human` | `separation_distance < 1.2` |
-| `near = { entity = "8", ... }` | `fleet/cell-7/7/nearest_peer` | `separation_distance < 2.0` |
+| `near = { entity = "8", ... }` | `fleet/cell-7/7/nearest_peer` | `peer_id == "8"` **and** `separation_distance < 2.0` |
 
 Someone (the robot's own fusion, or a sensor service) must **publish** those topics:
 
 - `fleet/{site}/{id}/state` — the robot's own pose/zone/role/speed.
 - `fleet/{site}/proximity/{id}/human` — nearest-human distance.
-- `fleet/{site}/{id}/nearest_peer` — nearest-peer id + distance.
+- `fleet/{site}/{id}/nearest_peer` — nearest-peer id + distance. The payload must carry the peer
+  robot id in a `peer_id` field; a `near = { entity = "8" }` condition matches only samples whose
+  `peer_id` is `"8"`.
 
 This is why `flo` needs **no central server**: each robot publishes its own state and
 liveliness; peers discover each other by topic.
@@ -180,15 +187,19 @@ software layer in front of it.
 
 ## 8. Raw rules (no semantic layer)
 
-If you prefer full control, `flo` also accepts plain runtime rules — topic names and predicates
-directly. This is what the engine evaluates under the hood:
+If you prefer full control, `flo` also accepts plain runtime rules — topic names and typed predicates
+directly. This is what the engine evaluates under the hood. Predicates are typed trees, not free-text
+strings: payload fields are referenced with `Field("name")`, literals with `Bool`/`Int`/`Float`/`Str`,
+and the five primitives with `Prim`:
 
 ```toml
 [[rules]]
 name = "e-stop-on-bumper"
 when.all = [
-  { topic = "robot/7/local/bumper", pred = "pressed == true" },
-  { topic = "robot/7/local/imu",    pred = "speed_mps > 0.2" },
+  { topic = "robot/7/local/bumper",
+    pred = { Comparison = { op = "Eq", lhs = { Field = "pressed" },   rhs = { Bool = true } } } },
+  { topic = "robot/7/local/imu",
+    pred = { Comparison = { op = "Gt", lhs = { Field = "speed_mps" }, rhs = { Float = 0.2 } } } },
 ]
 actions = [ { topic = "stop/fleet/cmd", qos = "reliable", payload = { stop = true } } ]
 ```

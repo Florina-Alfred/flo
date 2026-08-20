@@ -21,13 +21,17 @@ pub enum Op {
     SameZoneAs,
 }
 
-/// A comparison operand: a literal or a typed primitive reference (PRD §4).
+/// A comparison operand: a literal, a typed primitive reference (PRD §4), or a
+/// payload field looked up by name.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Operand {
     Bool(bool),
     Int(i64),
     Float(f64),
+    /// A literal string. To read a payload field by name, use `Field` instead.
     Str(String),
+    /// Read the named payload field (e.g. `speed_mps`), failing closed when absent.
+    Field(String),
     Prim(PrimitiveRef),
 }
 

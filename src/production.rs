@@ -117,7 +117,7 @@ mod tests {
 [[rules]]
 name = "e-stop-on-bumper"
 when.all = [
-  { topic = "robot/7/local/bumper", pred = { Comparison = { op = "Eq", lhs = { Str = "pressed" }, rhs = { Bool = true } } } },
+  { topic = "robot/7/local/bumper", pred = { Comparison = { op = "Eq", lhs = { Field = "pressed" }, rhs = { Bool = true } } } },
 ]
 actions = [
   { topic = "stop/fleet/cmd", qos = "reliable", payload = { stop = true } },

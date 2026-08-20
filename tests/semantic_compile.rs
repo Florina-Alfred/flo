@@ -45,16 +45,15 @@ actions = [ { slow_to = 0.1 } ]
 
 #[test]
 fn rejects_unknown_action_verb() {
-    // `explode` is not a known verb; an action with no known verb must fail validation.
+    // `explode` is not a known verb; deny_unknown_fields rejects it at parse time.
     let bad = r#"
 [[rules]]
 name = "x"
 when.in_zone = "safety"
 actions = [ { explode = true } ]
 "#;
-    let doc = parse_semantic(bad).unwrap();
-    let err = validate(&doc).unwrap_err();
-    assert!(err.to_string().contains("action"));
+    let err = parse_semantic(bad).unwrap_err();
+    assert!(err.to_string().contains("explode"));
 }
 
 #[test]
@@ -160,7 +159,6 @@ robot_owner = "robot/7"
 rule_name = "slow_near_human"
 when.in_zone = "zone_1"
 when.near_human = 1.2
-when.human_presence = true
 [[rule.actions]]
 topic = "robot/7/local/drive"
 qos = "reliable"
@@ -235,4 +233,157 @@ payload = { nested = { a = 1 } }
 "#;
     let doc = parse_semantic_ruleset(bad).unwrap();
     assert!(compile_ruleset(&doc, "7").is_err());
+}
+
+#[test]
+fn rejects_empty_when() {
+    let bad = r#"
+[site]
+id = "cell-7"
+[[rules]]
+name = "empty-guard"
+when = {}
+actions = [ { slow_to = 0.1 } ]
+"#;
+    let doc = parse_semantic(bad).unwrap();
+    let err = validate(&doc).unwrap_err();
+    assert!(err.to_string().contains("empty"), "got: {err}");
+    assert!(compile(&doc, "7").is_err());
+}
+
+#[test]
+fn rejects_nested_empty_when() {
+    let bad = r#"
+[site]
+id = "cell-7"
+[[rules]]
+name = "nested-empty"
+when.all = [ {} ]
+actions = [ { slow_to = 0.1 } ]
+"#;
+    let doc = parse_semantic(bad).unwrap();
+    assert!(validate(&doc).is_err());
+    assert!(compile(&doc, "7").is_err());
+}
+
+#[test]
+fn rejects_unknown_when_field() {
+    let bad = r#"
+[[rules]]
+name = "typo"
+when.in_zone = "safety"
+when.inn_zone = "safety"
+actions = [ { slow_to = 0.1 } ]
+"#;
+    let err = parse_semantic(bad).unwrap_err();
+    assert!(err.to_string().contains("inn_zone"), "got: {err}");
+}
+
+#[test]
+fn nested_all_with_any_compiles() {
+    // `all = [{ any = [...] }]` must not silently drop the nested OR group
+    // (regression: nested `any` used to vanish, leaving an empty guard that
+    // fired every tick).
+    let text = r#"
+[site]
+id = "cell-7"
+[zones]
+safety = { shape = "rect", x = 0.0, y = 0.0, w = 2.0, h = 2.0 }
+[[rules]]
+name = "x"
+when.all = [
+  { any = [ { in_zone = "safety" }, { near_human = 0.3 } ] },
+]
+actions = [ { slow_to = 0.1 } ]
+"#;
+    let doc = parse_semantic(text).unwrap();
+    let rules: Rules = compile(&doc, "7").unwrap();
+    let w = &rules.rules[0].when;
+    assert_eq!(w.all.len(), 0);
+    assert_eq!(w.any.len(), 2);
+}
+
+#[test]
+fn nested_any_with_any_compiles() {
+    // `any = [{ any = [...] }]` flattens OR-of-OR into a single OR group.
+    let text = r#"
+[site]
+id = "cell-7"
+[zones]
+safety = { shape = "rect", x = 0.0, y = 0.0, w = 2.0, h = 2.0 }
+[[rules]]
+name = "x"
+when.any = [
+  { any = [ { in_zone = "safety" }, { near_human = 0.3 } ] },
+]
+actions = [ { slow_to = 0.1 } ]
+"#;
+    let doc = parse_semantic(text).unwrap();
+    let rules: Rules = compile(&doc, "7").unwrap();
+    let w = &rules.rules[0].when;
+    assert_eq!(w.all.len(), 0);
+    assert_eq!(w.any.len(), 2);
+}
+
+#[test]
+fn rejects_two_or_groups_anded() {
+    // `all = [{ any = [...] }, { any = [...] }]` is (A||B) && (C||D), which the
+    // two-level runtime `When` cannot express — fail closed rather than drop one.
+    let text = r#"
+[site]
+id = "cell-7"
+[zones]
+safety = { shape = "rect", x = 0.0, y = 0.0, w = 2.0, h = 2.0 }
+[[rules]]
+name = "x"
+when.all = [
+  { any = [ { in_zone = "safety" } ] },
+  { any = [ { near_human = 0.3 } ] },
+]
+actions = [ { slow_to = 0.1 } ]
+"#;
+    let doc = parse_semantic(text).unwrap();
+    let err = compile(&doc, "7").unwrap_err();
+    assert!(err.to_string().contains("OR group"), "got: {err}");
+}
+
+#[test]
+fn rejects_conjunction_inside_or_element() {
+    // An `any` element that is an AND of two triggers cannot be a single OR term.
+    let text = r#"
+[site]
+id = "cell-7"
+[zones]
+safety = { shape = "rect", x = 0.0, y = 0.0, w = 2.0, h = 2.0 }
+[[rules]]
+name = "x"
+when.any = [
+  { in_zone = "safety", near_human = 0.3 },
+]
+actions = [ { slow_to = 0.1 } ]
+"#;
+    let doc = parse_semantic(text).unwrap();
+    let err = compile(&doc, "7").unwrap_err();
+    assert!(err.to_string().contains("OR"), "got: {err}");
+}
+
+#[test]
+fn flat_when_still_compiles() {
+    // A flat condition must remain untouched by the nesting rules.
+    let text = r#"
+[site]
+id = "cell-7"
+[zones]
+safety = { shape = "rect", x = 0.0, y = 0.0, w = 2.0, h = 2.0 }
+[[rules]]
+name = "x"
+when.in_zone = "safety"
+when.near_human = 0.3
+actions = [ { slow_to = 0.1 } ]
+"#;
+    let doc = parse_semantic(text).unwrap();
+    let rules: Rules = compile(&doc, "7").unwrap();
+    let w = &rules.rules[0].when;
+    assert_eq!(w.all.len(), 2);
+    assert!(w.any.is_empty());
 }
