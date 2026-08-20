@@ -5,24 +5,6 @@ use zenoh::qos::{CongestionControl, Priority, Reliability};
 
 use crate::rules::Qos;
 
-/// Stable key-expression namespaces locked in the transport map.
-/// Local node traffic stays under `robot/<id>/local/**`; fleet-wide traffic under
-/// `fleet/**`; QoS class is marked by `stop/**` (class 1) and `lidar/**` (class 2).
-pub const LIVELINESS_KEY: &str = "robot/{id}/client/liveliness";
-pub const RULES_KEY: &str = "robot/{id}/local/rules";
-
-/// Fleet-scoped ruleset publish key (PRD §5). Server subscribes here to
-/// ingest owner pushes; `{site}` = site id, `{name}` = ruleset_name.
-pub const RULESET_PUB_KEY: &str = "fleet/{site}/ruleset/{name}";
-
-/// WebRTC signaling key-expression templates (class-3 video), locked in the
-/// webrtc-signaling map. Signaling rides the same zenoh mesh as everything else.
-/// `<self>` = this robot's id, `<peer>` = the other robot's id.
-pub const SIGNAL_PRESENCE_KEY: &str = "robot/{id}/signal/presence";
-pub const SIGNAL_OFFER_KEY: &str = "robot/{self}/signal/{peer}/offer";
-pub const SIGNAL_ANSWER_KEY: &str = "robot/{self}/signal/{peer}/answer";
-pub const SIGNAL_ICE_KEY: &str = "robot/{self}/signal/{peer}/ice";
-
 /// Handle to the Zenoh session. A single `Session` multiplexes both QoS classes —
 /// QoS is per-put, per the locked decision. The class 1/2 publisher builders below
 /// encode the locked QoS knobs; `publish` applies them by QoS class.
@@ -120,7 +102,7 @@ impl Transport {
     /// Declare the per-pod liveliness token so the mesh can detect dead clients.
     /// The token is held inside `Transport` for the session's lifetime.
     pub async fn declare_liveliness(&mut self, robot_id: &str) -> zenoh::Result<()> {
-        let key = LIVELINESS_KEY.replace("{id}", robot_id);
+        let key = crate::topic::liveliness_key(robot_id);
         let token = self.session.liveliness().declare_token(&key).await?;
         self._tokens.push(token);
         Ok(())
@@ -238,16 +220,16 @@ mod tests {
 
     #[test]
     fn ruleset_pub_key_has_site_and_name() {
-        let k = RULESET_PUB_KEY
-            .replace("{site}", "cell-7")
-            .replace("{name}", "acme");
-        assert_eq!(k, "fleet/cell-7/ruleset/acme");
+        assert_eq!(
+            crate::topic::ruleset_pub_key("cell-7", "acme"),
+            "fleet/cell-7/ruleset/acme"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn loopback_transport_round_trips_best_effort() {
         assert_round_trip(
-            "robot/7/local/probe",
+            &crate::topic::robot_local("7", "probe"),
             Qos::BestEffort,
             serde_json::json!({"probe": 42}),
         )
@@ -257,7 +239,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn loopback_transport_round_trips_reliable() {
         assert_round_trip(
-            "robot/7/local/stop",
+            &crate::topic::robot_local("7", "stop"),
             Qos::Reliable,
             serde_json::json!({"stop": true}),
         )
@@ -342,10 +324,10 @@ mod tests {
             .expect("open loopback transport");
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-        let key = "robot/9/local/managed-lifecycle";
+        let key = crate::topic::robot_local("9", "managed-lifecycle");
         {
             let _sub = transport
-                .subscribe_managed(key, move |s: zenoh::sample::Sample| {
+                .subscribe_managed(&key, move |s: zenoh::sample::Sample| {
                     let _ = tx.send(s.payload().to_bytes().to_vec());
                 })
                 .await
@@ -357,7 +339,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         transport
-            .publish(key, Qos::BestEffort, &serde_json::json!({"x": 1}))
+            .publish(&key, Qos::BestEffort, &serde_json::json!({"x": 1}))
             .await
             .expect("publish");
 

@@ -409,7 +409,7 @@ fn expand_when(
 
     if let Some(z) = &when.in_zone {
         all.push(Trigger {
-            topic: format!("robot/{robot_id}/local/zone"),
+            topic: crate::topic::robot_local(robot_id, "zone"),
             pred: Some(Predicate::Comparison {
                 op: Op::Eq,
                 lhs: Operand::Prim(PrimitiveRef::Zone),
@@ -420,7 +420,7 @@ fn expand_when(
     }
     if let Some(z) = &when.not_in_zone {
         all.push(Trigger {
-            topic: format!("robot/{robot_id}/local/zone"),
+            topic: crate::topic::robot_local(robot_id, "zone"),
             pred: Some(Predicate::Not(Box::new(Predicate::Comparison {
                 op: Op::Eq,
                 lhs: Operand::Prim(PrimitiveRef::Zone),
@@ -431,7 +431,7 @@ fn expand_when(
     }
     if let Some(d) = when.near_human {
         all.push(Trigger {
-            topic: format!("robot/{robot_id}/local/human_present"),
+            topic: crate::topic::robot_local(robot_id, "human_present"),
             pred: Some(Predicate::Comparison {
                 op: Op::Lt,
                 lhs: Operand::Prim(PrimitiveRef::HumanPresence),
@@ -442,7 +442,7 @@ fn expand_when(
     }
     if let Some(d) = when.not_near_human {
         all.push(Trigger {
-            topic: format!("robot/{robot_id}/local/human_present"),
+            topic: crate::topic::robot_local(robot_id, "human_present"),
             pred: Some(Predicate::Comparison {
                 op: Op::Ge,
                 lhs: Operand::Prim(PrimitiveRef::HumanPresence),
@@ -453,7 +453,7 @@ fn expand_when(
     }
     if let Some(n) = &when.near {
         all.push(Trigger {
-            topic: format!("robot/{robot_id}/local/proximity"),
+            topic: crate::topic::robot_local(robot_id, "proximity"),
             pred: Some(Predicate::Comparison {
                 op: Op::Lt,
                 lhs: Operand::Prim(PrimitiveRef::Proximity(n.entity.clone())),
@@ -464,7 +464,7 @@ fn expand_when(
     }
     if let Some(r) = &when.role {
         all.push(Trigger {
-            topic: format!("robot/{robot_id}/local/role"),
+            topic: crate::topic::robot_local(robot_id, "role"),
             pred: Some(Predicate::Comparison {
                 op: Op::Eq,
                 lhs: Operand::Prim(PrimitiveRef::Robot),
@@ -538,13 +538,13 @@ fn expand_when(
 fn compile_action(a: &SemanticAction, robot_id: &str) -> Action {
     if a.estop {
         Action {
-            topic: "stop/fleet/cmd".to_string(),
+            topic: crate::topic::stop_cmd("fleet"),
             qos: Qos::Reliable,
             payload: serde_json::json!({ "stop": true }),
         }
     } else if a.resume {
         Action {
-            topic: format!("robot/{robot_id}/local/drive"),
+            topic: crate::topic::robot_local(robot_id, "drive"),
             qos: Qos::Reliable,
             payload: serde_json::json!({ "resume": true }),
         }
@@ -556,7 +556,7 @@ fn compile_action(a: &SemanticAction, robot_id: &str) -> Action {
         }
     } else {
         Action {
-            topic: format!("robot/{robot_id}/local/drive"),
+            topic: crate::topic::robot_local(robot_id, "drive"),
             qos: a.qos,
             payload: serde_json::json!({ "speed_mps": a.slow_to.unwrap_or(0.0) }),
         }

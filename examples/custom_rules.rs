@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use flo_rs::config::{RuleStore, run_hot_reload};
 use flo_rs::engine;
-use flo_rs::transport::{RULES_KEY, Transport};
+use flo_rs::transport::Transport;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -50,7 +50,10 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    println!("custom_rules: publishing on {RULES_KEY} hot-reloads the ruleset");
+    println!(
+        "custom_rules: publishing on {} hot-reloads the ruleset",
+        flo_rs::topic::rules_key(&robot_id)
+    );
     tokio::signal::ctrl_c().await?;
     Ok(())
 }

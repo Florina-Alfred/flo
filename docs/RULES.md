@@ -126,24 +126,36 @@ An action with **no** known verb (`estop` / `slow_to` / `resume`) is rejected by
 ## 5. What `flo` actually subscribes to (the topic contract)
 
 You write meanings; `flo` generates exact Zenoh topic names. Knowing them helps when you
-wire up sensors or read engine logs. For a robot with id `7` at site `cell-7`:
+wire up sensors or read engine logs. For a robot with id `7`:
 
 | Semantic condition | Topic `flo` watches | Predicate it checks |
 |--------------------|--------------------|----------------------|
-| `in_zone` / `not_in_zone` / `role` | `fleet/cell-7/7/state` | `zone_id == "..."` / `role == "..."` |
-| `near_human` / `not_near_human` | `fleet/cell-7/proximity/7/human` | `separation_distance < 1.2` |
-| `near = { entity = "8", ... }` | `fleet/cell-7/7/nearest_peer` | `peer_id == "8"` **and** `separation_distance < 2.0` |
+| `in_zone` / `not_in_zone` | `robot/{id}/local/zone` | `zone_id == "..."` |
+| `near_human` / `not_near_human` | `robot/{id}/local/human_present` | `separation_distance < 1.2` |
+| `near = { entity = "8", ... }` | `robot/{id}/local/proximity` | `peer_id == "8"` **and** `separation_distance < 2.0` |
+| `role = "operator"` | `robot/{id}/local/role` | `role == "operator"` |
 
 Someone (the robot's own fusion, or a sensor service) must **publish** those topics:
 
-- `fleet/{site}/{id}/state` — the robot's own pose/zone/role/speed.
-- `fleet/{site}/proximity/{id}/human` — nearest-human distance.
-- `fleet/{site}/{id}/nearest_peer` — nearest-peer id + distance. The payload must carry the peer
+- `robot/{id}/local/zone` — the robot's current zone id (payload field `zone_id`).
+- `robot/{id}/local/human_present` — nearest-human distance (payload field `separation_distance`).
+- `robot/{id}/local/proximity` — nearest-peer id + distance. The payload must carry the peer
   robot id in a `peer_id` field; a `near = { entity = "8" }` condition matches only samples whose
   `peer_id` is `"8"`.
+- `robot/{id}/local/role` — the entity's role (payload field `role`).
+
+**Zone events** (for the `SameZoneAs` primitive): the engine also subscribes to
+`zone/{zone_id}/entered` and `zone/{zone_id}/cleared` to learn which robots share a zone.
+The event payload carries the robot id in a `robot_id` field. Zone-event verbs are
+`entered`/`cleared` everywhere; the `enter`/`exit` spellings are rejected by the topic
+validator.
 
 This is why `flo` needs **no central server**: each robot publishes its own state and
 liveliness; peers discover each other by topic.
+
+The full topic contract — every topic the system publishes or subscribes to — lives in
+`src/topic.rs` as constants and builder functions, all verified against the naming
+validator.
 
 ---
 

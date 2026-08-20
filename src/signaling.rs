@@ -61,19 +61,13 @@ pub struct Presence {
     pub streams: Vec<String>,
 }
 
-fn replace(template: &str, self_id: &str, peer_id: &str) -> String {
-    template
-        .replace("{self}", self_id)
-        .replace("{peer}", peer_id)
-}
-
 /// Publish this robot's presence so peers can discover it and learn its streams.
 pub async fn publish_presence(
     transport: &Transport,
     robot_id: &str,
     streams: Vec<String>,
 ) -> zenoh::Result<()> {
-    let key = crate::transport::SIGNAL_PRESENCE_KEY.replace("{id}", robot_id);
+    let key = crate::topic::signal_presence_key(robot_id);
     let presence = Presence {
         id: robot_id.to_string(),
         streams,
@@ -92,7 +86,7 @@ pub async fn publish_offer(
     sdp: String,
     ice: Vec<IceCandidate>,
 ) -> zenoh::Result<()> {
-    let key = replace(crate::transport::SIGNAL_OFFER_KEY, robot_id, peer_id);
+    let key = crate::topic::signal_offer_key(robot_id, peer_id);
     put_signal(
         transport,
         &key,
@@ -113,7 +107,7 @@ pub async fn publish_answer(
     sdp: String,
     ice: Vec<IceCandidate>,
 ) -> zenoh::Result<()> {
-    let key = replace(crate::transport::SIGNAL_ANSWER_KEY, robot_id, peer_id);
+    let key = crate::topic::signal_answer_key(robot_id, peer_id);
     put_signal(
         transport,
         &key,
@@ -133,7 +127,7 @@ pub async fn publish_ice(
     peer_id: &str,
     ice: IceCandidate,
 ) -> zenoh::Result<()> {
-    let key = replace(crate::transport::SIGNAL_ICE_KEY, robot_id, peer_id);
+    let key = crate::topic::signal_ice_key(robot_id, peer_id);
     put_signal(
         transport,
         &key,
@@ -193,7 +187,7 @@ where
     let self_id = robot_id.to_string();
 
     // Offers addressed to us: robot/*/signal/<us>/offer
-    let offers = format!("robot/*/signal/{}/offer", self_id);
+    let offers = crate::topic::signal_offer_pattern(&self_id);
     let h = handler.clone();
     transport
         .subscribe(&offers, move |sample: zenoh::sample::Sample| {
@@ -204,7 +198,7 @@ where
         .await?;
 
     // Answers addressed to us.
-    let answers = format!("robot/*/signal/{}/answer", self_id);
+    let answers = crate::topic::signal_answer_pattern(&self_id);
     let h = handler.clone();
     transport
         .subscribe(&answers, move |sample: zenoh::sample::Sample| {
@@ -215,7 +209,7 @@ where
         .await?;
 
     // ICE addressed to us.
-    let ice = format!("robot/*/signal/{}/ice", self_id);
+    let ice = crate::topic::signal_ice_pattern(&self_id);
     let h = handler.clone();
     transport
         .subscribe(&ice, move |sample: zenoh::sample::Sample| {
@@ -236,9 +230,9 @@ pub async fn subscribe_presence<H>(transport: &Transport, handler: H) -> zenoh::
 where
     H: Fn(Presence) + Send + Sync + 'static,
 {
-    let key = crate::transport::SIGNAL_PRESENCE_KEY.replace("{id}", "*");
+    let key = crate::topic::SIGNAL_PRESENCE_PATTERN;
     transport
-        .subscribe(&key, move |sample: zenoh::sample::Sample| {
+        .subscribe(key, move |sample: zenoh::sample::Sample| {
             let bytes = sample.payload().to_bytes();
             match serde_json::from_slice::<Presence>(&bytes) {
                 Ok(p) => handler(p),
@@ -339,13 +333,13 @@ mod tests {
     }
 
     #[test]
-    fn replace_substitutes_self_and_peer() {
+    fn topic_builders_substitute_self_and_peer() {
         assert_eq!(
-            replace("robot/{self}/signal/{peer}/offer", "robot-7", "robot-9"),
+            crate::topic::signal_offer_key("robot-7", "robot-9"),
             "robot/robot-7/signal/robot-9/offer"
         );
         assert_eq!(
-            replace(crate::transport::SIGNAL_OFFER_KEY, "a", "b"),
+            crate::topic::signal_offer_key("a", "b"),
             "robot/a/signal/b/offer"
         );
     }

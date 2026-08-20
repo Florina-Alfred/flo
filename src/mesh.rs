@@ -195,7 +195,7 @@ pub async fn run_signaling(
     signaling::publish_presence(
         &transport,
         robot_id,
-        vec![format!("robot/{robot_id}/local/cam0")],
+        vec![crate::topic::robot_local(robot_id, "cam0")],
     )
     .await?;
     signaling::subscribe_presence(&transport, |p: signaling::Presence| {
@@ -237,7 +237,7 @@ mod tests {
 
         // Subscribe to the answer the answerer should publish back.
         // Key layout: robot/{answerer}/signal/{offerer}/answer.
-        let answer_key = format!("robot/{answerer}/signal/{offerer}/answer");
+        let answer_key = crate::topic::signal_answer_key(answerer, offerer);
         let (tx, rx) = tokio::sync::oneshot::channel::<Vec<u8>>();
         let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
         transport

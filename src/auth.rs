@@ -203,8 +203,8 @@ impl AuthConfig {
     /// the cert CN/SAN should equal `robot_id` (the transport enforces the
     /// cert chain via `trust_anchors`; this ACL adds the namespace scoping).
     pub fn acl_config(robot_id: &str) -> String {
-        let own = format!("/robot/{robot_id}/**");
-        let rules_key = crate::transport::RULES_KEY.replace("{id}", robot_id);
+        let own = crate::topic::robot_namespace(robot_id);
+        let rules_key = crate::topic::rules_key(robot_id);
         format!(
             r#"{{
                 "enabled": true,

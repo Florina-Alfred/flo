@@ -81,7 +81,7 @@ pub async fn run_hot_reload(
     robot_id: &str,
     store: RuleStore,
 ) -> zenoh::Result<()> {
-    let key = crate::transport::RULES_KEY.replace("{id}", robot_id);
+    let key = crate::topic::rules_key(robot_id);
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<zenoh::sample::Sample>();
     transport
         .subscribe(&key, move |sample: zenoh::sample::Sample| {
@@ -116,14 +116,10 @@ pub async fn run_hot_reload_with_registry(
     store: RuleStore,
     registry: Arc<Registry>,
 ) -> zenoh::Result<()> {
-    use crate::transport::RULESET_PUB_KEY;
-
-    let wildcard_key = RULESET_PUB_KEY
-        .replace("{site}", "*")
-        .replace("{name}", "**");
+    let wildcard_key = crate::topic::RULESET_PUB_PATTERN;
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<zenoh::sample::Sample>();
     transport
-        .subscribe(&wildcard_key, move |sample: zenoh::sample::Sample| {
+        .subscribe(wildcard_key, move |sample: zenoh::sample::Sample| {
             let _ = tx.send(sample);
         })
         .await?;
@@ -325,8 +321,8 @@ z = "robot-7/location/z"
 
 [default_subscriptions.zone]
 site_id = "robot-7/site"
-zone_enter = "zone/cell-3/7/enter"
-zone_exit = "zone/cell-3/7/exit"
+zone_enter = "zone/cell-3/entered"
+zone_exit = "zone/cell-3/cleared"
 
 [default_publishers.location]
 topic = "robot-7/location"
