@@ -39,8 +39,7 @@ pub async fn run_server(
         None => ServerConfig::default(),
     };
 
-    let session = zenoh::open(config).await?;
-    let transport = Arc::new(Transport::from_session(session));
+    let transport = Arc::new(Transport::open_with(config).await?);
     let store = RuleStore::bootstrap_demo(&robot_id);
     let counter = Arc::new(AtomicU64::new(0));
 
@@ -69,8 +68,8 @@ pub async fn run_server(
     tokio::try_join!(
         engine::run_engine(transport.clone(), store.clone(), counter),
         run_hot_reload_with_registry(&transport, &robot_id, store.clone(), registry),
-        run_registration_handler(&transport, reg_server.clone()),
-        run_heartbeat_monitor(&transport, reg_server),
+        run_registration_handler(transport.clone(), reg_server.clone()),
+        run_heartbeat_monitor(transport.clone(), reg_server),
         async {
             health_task.await.ok();
             Ok(())

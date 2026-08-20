@@ -66,26 +66,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
 
     // Open Zenoh session.
-    let mut config = if args.connect.is_empty() {
+    let config = if args.connect.is_empty() {
         Transport::loopback_config()
     } else {
-        // When connecting to explicit peers, build a minimal config:
-        // no multicast scouting, no listen — just connect.
-        let mut c = zenoh::Config::default();
-        let _ = c.insert_json5("mode", "\"client\"");
-        c
+        // When connecting to explicit peers, build a minimal client-mode config:
+        // no multicast scouting, no listen — just connect to the given endpoints.
+        Transport::connect_config(&args.connect)
     };
-    if !args.connect.is_empty() {
-        let endpoints: Vec<String> = args.connect.iter().map(|e| format!("\"{e}\"")).collect();
-        let _ = config.insert_json5("connect/endpoints", &format!("[{}]", endpoints.join(",")));
-    }
     let mut transport = Transport::open_with(config).await?;
     transport.declare_liveliness(&robot_id).await?;
     let transport = Arc::new(transport);
 
     // Register with the server.
     info!(%robot_id, "registering with server...");
-    match register_with_client(&transport, &robot_id, &client_config).await {
+    match register_with_client(transport.clone(), &robot_id, &client_config).await {
         Ok(()) => info!("registration confirmed"),
         Err(RegistrationError::AlreadyRegistered) => {
             return Err("client already registered with server".into());

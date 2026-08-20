@@ -7,7 +7,7 @@ use tracing::{debug, info, warn};
 
 use crate::config::RuleStore;
 use crate::rules::{Action, EvalMode, Op, Operand, Predicate, PrimitiveRef, Rules, Trigger, When};
-use crate::transport::{ManagedSubscriber, Transport};
+use crate::transport::{Subscription, Transport};
 
 /// Epsilon for float equality so `==`/`!=` do not fail on IEEE rounding dust.
 const EPSILON: f64 = 1e-9;
@@ -238,12 +238,15 @@ pub async fn run_engine(
 ) -> zenoh::Result<()> {
     let (sample_tx, mut sample_rx) = tokio::sync::mpsc::channel::<(String, Value)>(256);
 
-    // Zone-tracking: observe zone entered/cleared to support SameZoneAs.
+    // Zone-tracking: observe zone entered/cleared to support SameZoneAs. The
+    // managed subscription handles are held for the engine's lifetime so the
+    // zone subscriptions stay live (drop-to-unsubscribe lifecycle).
     let zone_tracker = Arc::new(std::sync::Mutex::new(ZoneTracker::new()));
-    zone_background(transport.as_ref(), &zone_tracker);
+    let (_zone_entered, _zone_cleared) =
+        zone_subscriptions(transport.as_ref(), &zone_tracker).await?;
 
     // Collect initial topics and create subscribers.
-    let mut subscribers: Vec<ManagedSubscriber> = Vec::new();
+    let mut subscribers: Vec<Subscription> = Vec::new();
     let mut current_topics: Vec<String> = Vec::new();
     let initial_rules = store.current().await;
     subscribe_to_topics(
@@ -337,59 +340,50 @@ pub async fn run_engine(
     Ok(())
 }
 
-fn zone_background(transport: &Transport, zone_tracker: &Arc<std::sync::Mutex<ZoneTracker>>) {
-    let zt = zone_tracker.clone();
-    tokio::spawn({
-        let entered = "zone/*/entered";
-        let tr = transport.session.clone();
-        async move {
-            if let Err(e) = tr
-                .declare_subscriber(entered)
-                .callback(move |sample: zenoh::sample::Sample| {
-                    let key = sample.key_expr().to_string();
-                    let parts: Vec<&str> = key.split('/').collect();
-                    if parts.len() >= 3 {
-                        let zone_id = parts[1];
-                        let payload: Value = serde_json::from_slice(&sample.payload().to_bytes())
-                            .unwrap_or(Value::Null);
-                        if let Some(robot_id) = payload.get("robot_id").and_then(|v| v.as_str()) {
-                            zt.lock().unwrap().enter_zone(robot_id, zone_id);
-                        }
+/// Subscribe to `zone/*/entered` and `zone/*/cleared` with the managed
+/// subscription lifecycle and return the handles so the caller keeps them
+/// alive. The callbacks feed the `ZoneTracker` used by `SameZoneAs`.
+async fn zone_subscriptions(
+    transport: &Transport,
+    zone_tracker: &Arc<std::sync::Mutex<ZoneTracker>>,
+) -> zenoh::Result<(Subscription, Subscription)> {
+    let entered_sub = transport
+        .subscribe_managed("zone/*/entered", {
+            let zt = zone_tracker.clone();
+            move |sample: zenoh::sample::Sample| {
+                let key = sample.key_expr().to_string();
+                let parts: Vec<&str> = key.split('/').collect();
+                if parts.len() >= 3 {
+                    let zone_id = parts[1];
+                    let payload: Value =
+                        serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
+                    if let Some(robot_id) = payload.get("robot_id").and_then(|v| v.as_str()) {
+                        zt.lock().unwrap().enter_zone(robot_id, zone_id);
                     }
-                })
-                .background()
-                .await
-            {
-                warn!(error = %e, topic = entered, "zone entered subscribe failed");
+                }
             }
-        }
-    });
-    let zt = zone_tracker.clone();
-    tokio::spawn({
-        let cleared = "zone/*/cleared";
-        let tr = transport.session.clone();
-        async move {
-            if let Err(e) = tr
-                .declare_subscriber(cleared)
-                .callback(move |sample: zenoh::sample::Sample| {
-                    let key = sample.key_expr().to_string();
-                    let parts: Vec<&str> = key.split('/').collect();
-                    if parts.len() >= 3 {
-                        let zone_id = parts[1];
-                        let payload: Value = serde_json::from_slice(&sample.payload().to_bytes())
-                            .unwrap_or(Value::Null);
-                        if let Some(robot_id) = payload.get("robot_id").and_then(|v| v.as_str()) {
-                            zt.lock().unwrap().clear_zone(robot_id, zone_id);
-                        }
+        })
+        .await?;
+
+    let cleared_sub = transport
+        .subscribe_managed("zone/*/cleared", {
+            let zt = zone_tracker.clone();
+            move |sample: zenoh::sample::Sample| {
+                let key = sample.key_expr().to_string();
+                let parts: Vec<&str> = key.split('/').collect();
+                if parts.len() >= 3 {
+                    let zone_id = parts[1];
+                    let payload: Value =
+                        serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
+                    if let Some(robot_id) = payload.get("robot_id").and_then(|v| v.as_str()) {
+                        zt.lock().unwrap().clear_zone(robot_id, zone_id);
                     }
-                })
-                .background()
-                .await
-            {
-                warn!(error = %e, topic = cleared, "zone cleared subscribe failed");
+                }
             }
-        }
-    });
+        })
+        .await?;
+
+    Ok((entered_sub, cleared_sub))
 }
 
 /// Subscribe to all distinct topics from the ruleset using managed subscribers.
@@ -397,7 +391,7 @@ async fn subscribe_to_topics(
     transport: &Transport,
     rules: &Rules,
     tx: &tokio::sync::mpsc::Sender<(String, Value)>,
-    subscribers: &mut Vec<ManagedSubscriber>,
+    subscribers: &mut Vec<Subscription>,
     topics: &mut Vec<String>,
 ) -> zenoh::Result<()> {
     let mut new_topics: Vec<String> = Vec::new();
