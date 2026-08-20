@@ -24,12 +24,17 @@ pub struct SubsystemHandles {
     pub reload: tokio::task::JoinHandle<()>,
     /// Rule engine.
     pub engine: tokio::task::JoinHandle<()>,
-    /// WebRTC signaling (always-on answerer / peer discovery).
+    /// WebRTC signaling (always-on answerer / peer discovery), media feature only.
+    #[cfg(feature = "media")]
     pub signaling: tokio::task::JoinHandle<()>,
 }
 
 /// Start the health server, hot-reload, rule engine, and WebRTC signaling and
 /// return their handles for supervision.
+///
+/// Readiness is gated on the rule engine confirming its subscriptions: `/readyz`
+/// flips 200 only after the engine's initial sensor topics are live, so the probe
+/// never reports ready while the engine is still subscribing (or dead).
 ///
 /// `args` is used (under the `media` feature) to resolve the configured capture
 /// device so the always-on answerer can stream video back when a device is set.
@@ -62,55 +67,68 @@ pub async fn start_common_subsystems(
         })
     };
 
+    // The engine signals on this channel once its initial subscriptions are live;
+    // dropping it without a send (engine died first) keeps readiness un-set.
+    let (subscribed_tx, subscribed_rx) = tokio::sync::oneshot::channel::<()>();
+
     let engine_task = {
         let transport = transport.clone();
         let store = store.clone();
         let eval_counter = health.eval_counter();
         tokio::spawn(async move {
-            if let Err(e) = engine::run_engine(transport, store, eval_counter).await {
+            if let Err(e) =
+                engine::run_engine(transport, store, eval_counter, Some(subscribed_tx)).await
+            {
                 error!(error = %e, "rule engine exited");
             }
         })
     };
 
+    #[cfg(feature = "media")]
     let signal_task = {
-        #[cfg(feature = "media")]
         let transport = transport.clone();
-        #[cfg(feature = "media")]
         let robot_id = robot_id.to_string();
-        #[cfg(feature = "media")]
         let source = match &args.video.device {
             Some(d) => crate::device::VideoDevice::from_path(d)
                 .ok()
                 .map(|dev| dev.to_source_spec()),
             None => None,
         };
-        #[cfg(feature = "media")]
-        {
-            tokio::spawn(async move {
-                if let Err(e) = run_signaling(transport.clone(), &robot_id, source).await {
-                    error!(error = %e, "signaling exited");
-                }
-            })
-        }
-        #[cfg(not(feature = "media"))]
-        {
-            tokio::spawn(async move {
-                // Signaling requires the `media` feature (WebRTC/mesh listener).
-                // Without it, no peer-discovery or inbound video-answer is started.
-                std::future::pending::<()>().await
-            })
-        }
+        tokio::spawn(async move {
+            if let Err(e) = run_signaling(transport.clone(), &robot_id, source).await {
+                error!(error = %e, "signaling exited");
+            }
+        })
     };
 
-    health.set_ready();
-    info!("flo ready");
+    await_engine_ready(subscribed_rx, &health).await;
 
     SubsystemHandles {
         health: health_task,
         reload: reload_task,
         engine: engine_task,
+        #[cfg(feature = "media")]
         signaling: signal_task,
+    }
+}
+
+/// Gate readiness on the engine confirming its subscriptions. When the engine
+/// dies before confirming (its sender is dropped), readiness stays un-set and
+/// the client's supervision observes the dead engine and exits non-zero.
+async fn await_engine_ready(
+    subscribed: tokio::sync::oneshot::Receiver<()>,
+    health: &Health,
+) -> bool {
+    match subscribed.await {
+        Ok(()) => {
+            health.set_ready();
+            info!("flo ready");
+            true
+        }
+        Err(_) => {
+            error!("rule engine died before confirming subscriptions; /readyz stays not-ready");
+            false
+        }
     }
 }
 
@@ -234,5 +252,38 @@ pub fn run_rule_command(cmd: &[String]) -> Result<(), Box<dyn std::error::Error 
             );
             std::process::exit(2);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn readiness_waits_for_engine_subscription() {
+        let health = Health::new();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut gate = std::pin::pin!(await_engine_ready(rx, &health));
+        // The gate must not complete while the engine has not confirmed.
+        tokio::select! {
+            _ = &mut gate => panic!("readiness gate completed before engine confirmation"),
+            _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+        }
+        assert!(!health.is_ready());
+        tx.send(()).unwrap();
+        assert!(gate.await);
+        assert!(health.is_ready());
+    }
+
+    #[tokio::test]
+    async fn readiness_stays_unset_when_engine_dies_before_subscribing() {
+        let health = Health::new();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        // Engine dies before confirming: its sender drops without a send.
+        drop(tx);
+        assert!(!await_engine_ready(rx, &health).await);
+        assert!(!health.is_ready());
     }
 }

@@ -231,10 +231,14 @@ fn when_satisfied_with_prev(
 
 /// Run the rule engine: subscribe to sensor topics, maintain latest samples, and
 /// fire actions for satisfied rules. One subscription per distinct trigger topic.
+///
+/// `subscribed`, when provided, is signalled once the initial sensor subscriptions
+/// are live so the caller can gate readiness on actual subscription, not spawn.
 pub async fn run_engine(
     transport: Arc<Transport>,
     store: RuleStore,
     eval_counter: Arc<AtomicU64>,
+    subscribed: Option<tokio::sync::oneshot::Sender<()>>,
 ) -> zenoh::Result<()> {
     let (sample_tx, mut sample_rx) = tokio::sync::mpsc::channel::<(String, Value)>(256);
 
@@ -257,6 +261,9 @@ pub async fn run_engine(
         &mut current_topics,
     )
     .await?;
+    if let Some(tx) = subscribed {
+        let _ = tx.send(());
+    }
     info!(sensor_topics = ?current_topics, "rule engine subscribed");
 
     // Latest sample per topic, plus a re-evaluation tick so `when` holds compose.

@@ -48,6 +48,10 @@ impl Health {
     pub fn set_ready(&self) {
         self.ready.store(true, std::sync::atomic::Ordering::SeqCst);
     }
+    /// Whether readiness has been confirmed (what `/readyz` reports).
+    pub fn is_ready(&self) -> bool {
+        self.ready.load(std::sync::atomic::Ordering::SeqCst)
+    }
     /// Shared handle to the eval counter, for the engine to increment.
     pub fn eval_counter(&self) -> Arc<AtomicU64> {
         self.eval_total.clone()
