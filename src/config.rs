@@ -40,8 +40,8 @@ impl RuleStore {
 [[rules]]
 name = "e-stop-on-bumper"
 when.all = [
-  { topic = "robot/{id}/local/bumper", pred = { Comparison = { op = "Eq", lhs = { Str = "pressed" }, rhs = { Bool = true } } } },
-  { topic = "robot/{id}/local/imu",    pred = { Comparison = { op = "Gt", lhs = { Str = "speed_mps" }, rhs = { Float = 0.2 } } } },
+  { topic = "robot/{id}/local/bumper", mode = "Level", pred = { Comparison = { op = "Eq", lhs = { Field = "pressed" }, rhs = { Bool = true } } } },
+  { topic = "robot/{id}/local/imu",    mode = "Level", pred = { Comparison = { op = "Gt", lhs = { Field = "speed_mps" }, rhs = { Float = 0.2 } } } },
 ]
 actions = [
   { topic = "stop/fleet/cmd", qos = "reliable", payload = { stop = true } },
@@ -50,7 +50,7 @@ actions = [
 [[rules]]
 name = "lidar-block-slowdown"
 when.any = [
-  { topic = "lidar/fleet/scan", pred = { Comparison = { op = "Lt", lhs = { Str = "min_range_m" }, rhs = { Float = 0.5 } } } },
+  { topic = "lidar/fleet/scan", mode = "Level", pred = { Comparison = { op = "Lt", lhs = { Field = "min_range_m" }, rhs = { Float = 0.5 } } } },
 ]
 actions = [
   { topic = "robot/{id}/local/drive", qos = "best_effort", payload = { speed_mps = 0.1 } },

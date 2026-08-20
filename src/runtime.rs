@@ -59,7 +59,7 @@ impl ClientRuntime {
         // safe-state there is no config payload to register with.
         if let Some(cfg) = &inputs.client_config {
             info!(%robot_id, "registering with server...");
-            match register_with_client(&transport, &robot_id, cfg).await {
+            match register_with_client(transport.clone(), &robot_id, cfg).await {
                 Ok(()) => info!("registration confirmed"),
                 Err(RegistrationError::AlreadyRegistered) => {
                     return Err("client already registered with server".into());
