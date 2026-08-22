@@ -1,7 +1,8 @@
 //! Load an extended-TOML semantic ruleset, compile it, and run the rule engine.
 //! Run:  cargo run --example semantic_rules -- examples/rules/hrc-cell.toml
-//! Then publish synthetic state on `fleet/<site>/<id>/state` and
-//! `fleet/<site>/proximity/<id>/human` to watch rules fire.
+//! Then publish synthetic state on `robot/{id}/local/zone`,
+//! `robot/{id}/local/human_present`, and `robot/{id}/local/proximity` to watch
+//! rules fire (see `docs/RULES.md` §5 for the full topic contract).
 
 use std::sync::Arc;
 
