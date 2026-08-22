@@ -159,3 +159,39 @@ jobs:
         run: cargo build --features media --example video_peer
       - name: Test (media)
         run: cargo test --features media --bin flo
+
+  coverage:
+    name: coverage
+    needs: [changes]
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # pinned
+        with:
+          toolchain: "1.97.1"
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518 # v2.86.5
+        with:
+          tool: cargo-llvm-cov@0.6.18
+      - name: Collect coverage (lcov)
+        run: cargo llvm-cov --workspace --all-targets --lcov --output-path lcov.info
+      - name: Enforce 50% threshold (advisory, non-blocking ratchet)
+        continue-on-error: true
+        run: cargo llvm-cov report --fail-under-lines 50
+      - name: Upload lcov artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: lcov-coverage
+          path: lcov.info
+          retention-days: 30
+      - name: Upload to Codecov
+        if: ${{ secrets.CODECOV_TOKEN != '' }}
+        uses: codecov/codecov-action@5a1091511ad55cbe89839c7260b706298ca349f7 # v5.5.1
+        with:
+          files: ./lcov.info
+          fail_ci_if_error: false
+          verbose: true
+          token: ${{ secrets.CODECOV_TOKEN }}
