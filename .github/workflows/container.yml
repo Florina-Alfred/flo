@@ -262,32 +262,40 @@ jobs:
         run: |
           set -euo pipefail
           IMG="${{ env.REGISTRY }}/${{ steps.owner.outputs.owner }}/${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}"
-          syft \
-            "$IMG" \
-            --platform linux/amd64 \
-            -o spdx-json=sbom.spdx.json
-          # Same Rekor resilience as `sign` above: the SBOM for a given image is
-          # deterministic, so re-running an already-attested image yields a 409
-          # conflict — which is fine, the attestation is already in the log.
-          for attempt in 1 2 3 4 5; do
-            if out="$(cosign attest \
-              --predicate sbom.spdx.json \
-              --type spdxjson \
-              --yes \
-              "$IMG" 2>&1)"; then
-              echo "attestation OK"
-              exit 0
-            fi
-            if echo "$out" | grep -q "equivalent entry already exists"; then
-              echo "attestation already recorded in Rekor; treating as success"
-              exit 0
-            fi
-            echo "attest attempt $attempt/5 failed; retrying in $((attempt * 10))s"
-            echo "$out"
-            sleep "$((attempt * 10))"
+          # Generate and attest SBOM for both platforms. Previously only amd64
+          # was attested, leaving arm64 (Graviton/RPi) silently unattested.
+          # Syft resolves the platform-specific manifest inside the multi-arch
+          # index via --platform; each SBOM is then attested to the same index
+          # digest (one attestation per platform).
+          for platform in linux/amd64 linux/arm64; do
+            plat="${platform##*/}"
+            echo "Generating SBOM for $platform"
+            syft "$IMG" --platform "$platform" -o spdx-json="sbom-${plat}.spdx.json"
+            # Same Rekor resilience as `sign` above: the SBOM for a given image is
+            # deterministic, so re-running an already-attested image yields a 409
+            # conflict — which is fine, the attestation is already in the log.
+            for attempt in 1 2 3 4 5; do
+              if out="$(cosign attest \
+                --predicate "sbom-${plat}.spdx.json" \
+                --type spdxjson \
+                --yes \
+                "$IMG" 2>&1)"; then
+                echo "attestation OK for $platform"
+                break
+              fi
+              if echo "$out" | grep -q "equivalent entry already exists"; then
+                echo "attestation already recorded in Rekor for $platform; treating as success"
+                break
+              fi
+              echo "attest attempt $attempt/5 for $platform failed; retrying in $((attempt * 10))s"
+              echo "$out"
+              if [ "$attempt" -eq 5 ]; then
+                echo "cosign attest failed after 5 attempts for $platform"
+                exit 1
+              fi
+              sleep "$((attempt * 10))"
+            done
           done
-          echo "cosign attest failed after 5 attempts"
-          exit 1
 
       - name: Attach SLSA build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
