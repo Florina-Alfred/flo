@@ -14,7 +14,7 @@ use crate::transport::Transport;
 use crate::cli;
 
 pub async fn run_server(
-    args: cli::Args,
+    args: cli::ServerArgs,
     robot_id: String,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let auth_mode = AuthMode::parse(&args.auth_mode)

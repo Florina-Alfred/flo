@@ -166,13 +166,22 @@ validator.
 ```bash
 flo rule check examples/rules/hrc-cell.toml
 # → OK: examples/rules/hrc-cell.toml is a valid semantic ruleset
+flo rule check examples/rules/sample.toml
+# → OK: examples/rules/sample.toml is a valid raw ruleset
 ```
 
-It catches:
-- negative or zero distances,
-- an action with no known verb,
-- a reference to a zone that isn't defined in `[zones]`,
-- malformed TOML.
+It tries the semantic parser (`parse_semantic_auto` + `validate`) first; if that
+fails it falls back to the raw engine parser (`Rules::from_toml` in
+`src/common.rs:198`, the same fallback `src/runtime.rs:233-253` uses at
+startup). This lets one command validate both authoring layers:
+
+- **Semantic files** (`hrc-cell.toml`, `warehouse-fleet.toml`): checked for
+  negative/zero distances, unknown zones, missing verbs, empty `when`, malformed
+  TOML.
+- **Raw engine files** (`examples/rules/sample.toml`): checked that TOML parses
+  as `[[rules]]` with `topic` + typed `pred` (`Field`/`Prim`/`Bool`/…),
+  non-empty `when`, and topic names matching `src/topic.rs` (both
+  `robot/{id}/local/...` and `robot-{id}/local/...` forms are accepted).
 
 Exit code is `0` when valid, non-zero when not — wire it into your CI / GitOps step.
 
@@ -180,20 +189,29 @@ Exit code is `0` when valid, non-zero when not — wire it into your CI / GitOps
 
 ## 7. Safety behavior (fail-safe, by design)
 
-`flo` is the **software** pre-estop / coordination layer. It is honest about its limits:
+`flo` is the **software** pre-estop / coordination layer — it is **not**
+safety-rated. Hardware STO / a certified Safety-PLC remains the **primary**
+stop authority; `flo` is the fast, non-safety-rated coordination layer in front
+of it.
 
 - **Missing or unreadable config** → `flo` starts in a fail-safe state (an empty ruleset, so it
   issues **no** motion commands) and logs `safe-state`. It does **not** crash and does **not**
   actuate unrestricted motion.
 - **Invalid config** (fails `rule check`) → same fail-safe fallback; the last-good rules are
   kept.
-- **Stale pose / lost human reading** → a proximity rule fails *safe* (assumes the hazard is
-  near) rather than failing open.
+- **Stale pose / lost human reading / missing field** → the engine **fails
+  closed**: a missing payload field, a `peer_id` mismatch, or an absent topic
+  sample evaluates to `false` and triggers **no action**
+  (`src/engine.rs:72-74` fails closed on absent fields, `src/engine.rs:131-135`
+  fails closed on peer mismatch). There is **no staleness timeout** —
+  `run_engine:279-288` ticks over `latest` forever — and no assumed-hazard
+  default (e.g. distance ≠ 0). A proximity rule with no fresh human distance
+  does **not** assume the hazard is near; it simply does not fire.
 - **Network / control-plane partition** → local rules keep running from the last-good compiled
   set. No cloud round-trip needed to keep acting.
 
-Hardware STO / a certified Safety-PLC remains the **primary** stop authority. `flo` is the fast
-software layer in front of it.
+Because stale/missing input yields no action, `flo` must not be the sole safety
+stop.
 
 ---
 
@@ -202,21 +220,37 @@ software layer in front of it.
 If you prefer full control, `flo` also accepts plain runtime rules — topic names and typed predicates
 directly. This is what the engine evaluates under the hood. Predicates are typed trees, not free-text
 strings: payload fields are referenced with `Field("name")`, literals with `Bool`/`Int`/`Float`/`Str`,
-and the five primitives with `Prim`:
+and the five primitives with `Prim`. Both `robot/{id}/local/...` and
+`robot-{id}/local/...` topic forms are accepted (`src/topic.rs`).
+
+A trigger without `pred` is a pure topic match — it fires whenever that topic
+arrives (see README quickstart). With `pred`, the engine evaluates the typed
+predicate against the payload; missing fields fail closed (`false`, no action).
 
 ```toml
+# Pure topic match (fires when both topics publish):
 [[rules]]
 name = "e-stop-on-bumper"
 when.all = [
-  { topic = "robot/7/local/bumper",
-    pred = { Comparison = { op = "Eq", lhs = { Field = "pressed" },   rhs = { Bool = true } } } },
-  { topic = "robot/7/local/imu",
-    pred = { Comparison = { op = "Gt", lhs = { Field = "speed_mps" }, rhs = { Float = 0.2 } } } },
+  { topic = "robot-7/local/bumper" },
+  { topic = "robot-7/local/imu" },
 ]
 actions = [ { topic = "stop/fleet/cmd", qos = "reliable", payload = { stop = true } } ]
+
+# With typed predicates (payload-aware):
+# [[rules]]
+# name = "e-stop-on-bumper"
+# when.all = [
+#   { topic = "robot-7/local/bumper",
+#     pred = { Comparison = { op = "Eq", lhs = { Field = "pressed" },   rhs = { Bool = true } } } },
+#   { topic = "robot-7/local/imu",
+#     pred = { Comparison = { op = "Gt", lhs = { Field = "speed_mps" }, rhs = { Float = 0.2 } } } },
+# ]
+# actions = [ { topic = "stop/fleet/cmd", qos = "reliable", payload = { stop = true } } ]
 ```
 
-The semantic layer is sugar on top of this. Mixed raw + semantic rules coexist in one ruleset.
+The semantic layer is sugar on top of this. Mixed raw + semantic rules coexist in one ruleset —
+and `flo rule check` validates either form (semantic first, then raw fallback).
 
 ---
 
