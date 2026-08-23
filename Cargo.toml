@@ -2,6 +2,11 @@
 name = "flo-rs"
 version = "0.1.5"
 edition = "2024"
+# MSRV 1.97.1 — pinned to match CI matrix (ci.yml tests stable, beta, 1.97.1).
+# Stable as of 2026-08 is 1.93; 1.97.1 is the MSRV flo actually builds on
+# (edition 2024 + async-trait improvements). Use `cargo install --locked` /
+# `cargo --locked` for reproducible builds if toolchain is newer. Lower MSRV
+# only after verifying `cargo check` on stable (INFRA-10).
 rust-version = "1.97.1"
 authors = ["Florina-Alfred"]
 
@@ -24,8 +29,12 @@ tokio = { version = "1.53.0", features = ["macros", "rt-multi-thread", "signal"]
 toml = "1.1.3"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["json"] }
+# webrtc 0.21.0-alpha.1 — yank risk: alpha may be yanked before stable 0.21
+# (track https://github.com/webrtc-rs/webrtc/issues). Pinned until stable;
+# Cargo.lock + `cargo --locked` mitigate yank breakage (audited via cargo-deny/audit) (INFRA-10).
 webrtc = { version = "0.21.0-alpha.1", optional = true }
 async-trait = { version = "0.1", optional = true }
+# rtc 0.21.0-alpha.1 — paired with webrtc alpha, same yank risk (INFRA-10).
 rtc = { version = "0.21.0-alpha.1", optional = true }
 zenoh = { version = "1.9.0", features = ["unstable"] }
 
