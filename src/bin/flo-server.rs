@@ -1,13 +1,19 @@
 #![forbid(unsafe_code)]
 
 use flo_rs::cli;
+use flo_rs::cli::Command;
+use flo_rs::common::run_rule_command;
 use flo_rs::health::init_tracing;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     init_tracing();
 
-    let args = cli::parse_args();
+    let args = cli::parse_server_args();
+
+    if let Some(Command::Rule { command }) = args.command.as_ref() {
+        return run_rule_command(command);
+    }
 
     if args.healthcheck {
         let addr =
