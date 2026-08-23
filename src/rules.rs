@@ -159,8 +159,69 @@ mod tests {
             lhs: Operand::Prim(PrimitiveRef::Proximity("7".into())),
             rhs: Operand::Float(1.2),
         };
-        assert_eq!(p, p.clone());
+        // typed serde round-trip must preserve the comparison tree
+        let json = serde_json::to_string(&p).expect("serialize predicate");
+        let back: Predicate = serde_json::from_str(&json).expect("deserialize predicate");
+        assert_eq!(p, back);
+        match back {
+            Predicate::Comparison { op, lhs, rhs } => {
+                assert_eq!(op, Op::Lt);
+                assert_eq!(lhs, Operand::Prim(PrimitiveRef::Proximity("7".into())));
+                assert_eq!(rhs, Operand::Float(1.2));
+            }
+            _ => panic!("expected Comparison"),
+        }
+        // complex tree round-trips through JSON
+        let complex = Predicate::And(vec![
+            p.clone(),
+            Predicate::Or(vec![Predicate::Not(Box::new(Predicate::Comparison {
+                op: Op::Eq,
+                lhs: Operand::Field("pressed".into()),
+                rhs: Operand::Bool(true),
+            }))]),
+        ]);
+        let json2 = serde_json::to_string(&complex).unwrap();
+        let back2: Predicate = serde_json::from_str(&json2).unwrap();
+        assert_eq!(complex, back2);
+        // TOML round-trip via serde_json value (predicate trees are stored as JSON values)
+        let val = serde_json::to_value(&p).unwrap();
+        let from_val: Predicate = serde_json::from_value(val).unwrap();
+        assert_eq!(p, from_val);
         // default eval mode is Edge
         assert_eq!(Trigger::default().mode, EvalMode::Edge);
+        // Trigger serde round-trip
+        let trigger = Trigger {
+            topic: "robot/7/local/bumper".into(),
+            pred: Some(p.clone()),
+            mode: EvalMode::Level,
+        };
+        let jt = serde_json::to_string(&trigger).unwrap();
+        let bt: Trigger = serde_json::from_str(&jt).unwrap();
+        assert_eq!(bt.topic, trigger.topic);
+        assert_eq!(bt.mode, trigger.mode);
+        assert_eq!(bt.pred, trigger.pred);
+        // Action and Rule round-trip
+        let action = Action {
+            topic: "stop/fleet/cmd".into(),
+            qos: Qos::Reliable,
+            payload: serde_json::json!({"stop": true}),
+        };
+        let rule = Rule {
+            name: "t-typed".into(),
+            when: When {
+                all: vec![trigger.clone()],
+                any: vec![],
+            },
+            actions: vec![action.clone()],
+        };
+        let rules = Rules {
+            rules: vec![rule.clone()],
+        };
+        let toml = rules.to_toml();
+        let back_rules = Rules::from_toml(&toml).expect("Rules TOML round-trip");
+        assert_eq!(back_rules.rules.len(), 1);
+        assert_eq!(back_rules.rules[0].name, "t-typed");
+        assert_eq!(back_rules.rules[0].actions[0].topic, "stop/fleet/cmd");
+        assert_eq!(back_rules.rules[0].actions[0].qos, Qos::Reliable);
     }
 }

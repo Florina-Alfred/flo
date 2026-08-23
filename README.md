@@ -34,7 +34,32 @@ cargo run --bin flo-server -- \
 The server opens a Zenoh router, starts the registration handler on
 `fleet/registration`, and monitors client liveliness on
 `robot/*/client/liveliness`. It logs reachable endpoints — clients on the same
-machine will auto-discover it via multicast.
+machine will auto-discover it via multicast scouting.
+
+> **When multicast is blocked (Docker, WSL2, CI, VPN).** Multicast scouting
+> (`224.0.0.224:7446`) is often filtered there and the client will hang at
+> `registering with server...`. Use an explicit unicast endpoint:
+>
+> ```bash
+> # Terminal 1: start server and note its Zenoh listen port (NOT the health port).
+> # The Zenoh router listens on `tcp/127.0.0.1:0` → random port by default
+> # (`src/auth.rs:152`, `src/transport.rs:86`). Find it via:
+> #   ss -tlnp            # Linux: look for `127.0.0.1:<port>` owned by `flo-server` that is NOT the health port
+> #   lsof -i -P -n | grep LISTEN   # macOS fallback
+> # Or grep the log and use the port from the `health server listening` line to
+> # exclude it, then pick the remaining `127.0.0.1` listener.
+> # Once you have <zenoh-port>:
+> FLO_HEALTH_ADDR=0.0.0.0:8080 cargo run --bin flo -- \
+>   --robot-id robot-7 --config robot-7-config.toml --ruleset robot-7-rules.toml \
+>   --auth-mode none --auth-allow-insecure \
+>   --connect tcp/127.0.0.1:<zenoh-port>
+> ```
+>
+> `--connect` is `src/cli.rs:54-56`; it sets `connect/endpoints` and forces
+> Zenoh client mode (`tcp/127.0.0.1:<port>`). The value is the **Zenoh** port,
+> not the health port (`FLO_HEALTH_ADDR`). `scripts/verify-readme-demo.sh`
+> auto-discovers the Zenoh port this way and passes `--connect`; the README
+> documents the same step explicitly.
 
 ### Terminal 2: Start the first robot
 
@@ -64,10 +89,11 @@ period_ms = 1000
 ```
 
 And a ruleset — a TOML file of `[[rules]]` that declare sensor triggers and
-actions:
+actions (a trigger without `pred` is a pure topic match — it fires whenever that
+topic arrives; add `pred` for payload predicates, see `docs/RULES.md` §8):
 
 ```toml
-# robot-7-rules.toml
+# robot-7-rules.toml — pure topic match (no pred); fires when both topics publish
 [[rules]]
 name = "e-stop-on-bumper"
 when.all = [
@@ -77,6 +103,14 @@ when.all = [
 actions = [
   { topic = "stop/fleet/cmd", qos = "reliable", payload = { stop = true } },
 ]
+# With predicate (typed, not string) — e.g. bumper pressed AND speed > 0.2:
+# [[rules]]
+# name = "e-stop-on-bumper"
+# when.all = [
+#   { topic = "robot-7/local/bumper", pred = { Comparison = { op = "Eq", lhs = { Field = "pressed" }, rhs = { Bool = true } } } },
+#   { topic = "robot-7/local/imu",    pred = { Comparison = { op = "Gt", lhs = { Field = "speed_mps" }, rhs = { Float = 0.2 } } } },
+# ]
+# actions = [ { topic = "stop/fleet/cmd", qos = "reliable", payload = { stop = true } } ]
 ```
 
 Launch the client:
@@ -114,11 +148,12 @@ an alert on `fleet/alerts/heartbeat/{robot_id}`.
 ## Architecture
 
 ```
-┌──────────────┐    Zenoh mesh (pub/sub + queryable + liveliness)
+┌──────────────┐    Zenoh mesh (pub/sub + liveliness)
 │  flo-server  │◄──────────────────────────────────────────┐
 │  (fleet      │                                           │
-│  coordinator)│  fleet/registration ──────► register      │
-│              │  fleet/deregistration ───► deregister     │
+│  coordinator)│  fleet/registration (put) ──────► register│
+│              │  fleet/registration/response/* ◄── ack    │
+│              │  fleet/deregistration (put) ───► deregister│
 │              │  robot/*/client/liveliness ──► heartbeat  │
 │              │  fleet/alerts/heartbeat/* ──► poison      │
 └──────────────┘                                           │
@@ -171,8 +206,12 @@ subscriptions are dropped, new ones created).
 
 ### Registration & state machine
 
-Clients register with the server via a Zenoh Queryable on `fleet/registration`.
-The server tracks each client through:
+Clients register with the server via Zenoh pub/sub: a `put` to
+`fleet/registration` and a subscribed response on
+`fleet/registration/response/{robot_id}` (deregistration uses
+`fleet/deregistration` / `fleet/deregistration/response/{robot_id}`).
+See `src/registration.rs` and `src/topic.rs`. The server tracks each client
+through:
 
 ```
 Unknown  ──►  Expected  ──►  Registered  ──►  Poisoned
@@ -258,10 +297,14 @@ If omitted, the server accepts all clients with a warning.
 
 ## Health & observability
 
-Every `flo` process exposes an HTTP health server on the address from
-`FLO_HEALTH_ADDR` (default: an OS-assigned port on `0.0.0.0`). The container
-images set `FLO_HEALTH_ADDR=0.0.0.0:8080`, so inside a container the health
-server is always reachable on `8080`:
+Every `flo` process (`flo` and `flo-server`) exposes an HTTP health server on
+the address from `FLO_HEALTH_ADDR`:
+
+- **Host default (no env):** `0.0.0.0:0` — OS-assigned random port on all
+  interfaces (`src/common.rs:52`, `src/server.rs:60`). Each run logs
+  `health server listening addr=0.0.0.0:<port>`.
+- **Container default:** `0.0.0.0:8080` (`ENV FLO_HEALTH_ADDR=0.0.0.0:8080` in
+  `Dockerfile`), so inside a container the health server is always on `8080`.
 
 | Endpoint | Method | Meaning |
 | --- | --- | --- |
@@ -269,17 +312,45 @@ server is always reachable on `8080`:
 | `/readyz`  | GET | Readiness — `200` once subsystems are started. |
 | `/metrics` | GET | Prometheus exposition: `flo_uptime_seconds`, `flo_process_ready`, `flo_rule_eval_total`. |
 
+### Probing on the host
+
+On a bare host the port is random — grep the log for the bound address, then
+curl it:
+
 ```bash
-curl -f http://localhost:8080/healthz
-curl -f http://localhost:8080/readyz
-curl -f http://localhost:8080/metrics
+cargo run --bin flo -- --robot-id robot-7 --config robot-7-config.toml --auth-mode none --auth-allow-insecure 2>&1 | grep "health server listening"
+# health server listening addr=0.0.0.0:54321
+curl -f http://localhost:54321/healthz
+curl -f http://localhost:54321/readyz
+curl -f http://localhost:54321/metrics
 ```
 
-The server logs the bound address as `health server listening addr=...`. For a
-one-shot liveness probe from a shell script or container `HEALTHCHECK`, use
-`flo --healthcheck` (or `flo-server --healthcheck`) — it connects to
-`FLO_HEALTH_ADDR` (default `127.0.0.1:8080`) and exits `0` on a `200` from
-`/healthz`.
+To use a fixed port locally, set `FLO_HEALTH_ADDR` before starting:
+
+```bash
+FLO_HEALTH_ADDR=0.0.0.0:8080 cargo run --bin flo -- --robot-id robot-7 --config robot-7-config.toml --auth-mode none --auth-allow-insecure &
+curl -f http://localhost:8080/healthz
+```
+
+In containers `8080` is already set, so `curl -f http://localhost:8080/healthz`
+works inside the container (and with `-p 8080:8080` on the host).
+
+### `flo --healthcheck` probe vs serve default mismatch
+
+The one-shot probe `flo --healthcheck` (and `flo-server --healthcheck`, used as
+Docker `HEALTHCHECK`) connects to `FLO_HEALTH_ADDR` with a **fallback default of
+`127.0.0.1:8080`** (`src/bin/flo-client.rs:21`, `src/bin/flo-server.rs:14`).
+This is intentionally different from the serve default:
+
+- **Serve** (`src/common.rs:52`): `0.0.0.0:0` → random port if you don't set `FLO_HEALTH_ADDR`.
+- **Probe**: `127.0.0.1:8080` → assumes you set `FLO_HEALTH_ADDR=0.0.0.0:8080`.
+
+If you run on a host without setting `FLO_HEALTH_ADDR`, the probe hits
+`127.0.0.1:8080` and gets `Connection refused` while the server is actually on a
+random port. Fix: `export FLO_HEALTH_ADDR=0.0.0.0:8080` (same value for both
+serve and probe) before starting, or grep the log and curl the random health
+port as above. The server/client log `health server listening addr=...` is the
+authoritative source for the host-mode address.
 
 Structured JSON logging: `FLO_JSON_LOGS=1`. Verbosity: `RUST_LOG` (default
 `info`).
@@ -287,24 +358,40 @@ Structured JSON logging: `FLO_JSON_LOGS=1`. Verbosity: `RUST_LOG` (default
 ## Building from source
 
 ```bash
-cargo build          # default features (no system deps)
-cargo test           # full test suite (count: cargo test -- --list | grep -c ': test')
-cargo clippy         # lint (deny warnings)
-cargo fmt            # format
+cargo build                              # default features (no system deps)
+cargo test --lib --tests                 # full test suite (count: cargo test --lib --tests -- --list | grep -c ': test')
+cargo test --features media --lib --tests # media tests (requires GStreamer, see scripts/setup-dev.sh)
+cargo clippy --all-targets -- -D warnings # lint (deny warnings)
+cargo fmt --all -- --check               # format
 ```
 
 The `media` feature (WebRTC video with GStreamer) is feature-gated — see
 `scripts/setup-dev.sh` for system package install, then build with
-`--features media`. It builds on the `webrtc 0.21` line (Sans-I/O API), pinned
+`--features media` and test with `cargo test --features media --lib --tests`
+(CI `media` job runs this plus `cargo test -- --ignored --list` to ensure the
+ignored suite compiles). It builds on the `webrtc 0.21` line (Sans-I/O API), pinned
 to `0.21.0-alpha.1` until a stable 0.21 publishes; the alpha status is tracked
 upstream.
 
+**Test validity (INFRA-09):** flaky sleeps are replaced by ready-gate
+`oneshot`/`notify` where feasible (like `engine::subscribed`); where polling
+remains, tests use deadline-based retry with bounded timeouts (e.g. 10s for
+`core_loop` eval_counter, 2s for transport drop propagation, 20s for media
+pipeline Playing) so CI load doesn't flap without slowing the suite.
+
 ## Safety posture
 
-flo is the software pre-estop / coordination layer. Missing or invalid config
-starts flo in a fail-safe state. Hardware STO / certified Safety-PLC remains
-the primary stop authority. `#[forbid(unsafe_code)]` enforced on every source
-file.
+flo is the software pre-estop / coordination layer and is **not** safety-rated.
+Missing or invalid config starts flo in a fail-safe state (empty ruleset, no
+motion). Hardware STO / certified Safety-PLC remains the **primary** stop
+authority. `#[forbid(unsafe_code)]` enforced on every source file.
+
+Stale or missing sensor input **fails closed**: a missing payload field, a
+`peer_id` mismatch, or an absent topic sample evaluates to `false` and triggers
+no action (`src/engine.rs:72-74`, `src/engine.rs:131-135`). There is no
+staleness timeout — `run_engine:279-288` ticks over `latest` forever — and no
+assumed-hazard default. See `docs/RULES.md` §7 and `CONTEXT.md` for the full
+posture.
 
 ## License
 

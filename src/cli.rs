@@ -1,9 +1,11 @@
 //! Command-line interface, defined with `clap` (derive).
 //!
 //! Replaces the previous hand-rolled argument scanner. `Args` is the top-level
-//! parser; `VideoArgs` is flattened in so callers keep addressing `args.video.*`.
-//! The `rule` subcommand (`flo rule check <path>`) is captured as
-//! `Command::Rule { args }` and handed to the existing `run_rule_command`.
+//! parser for the `flo` client; `ServerArgs` is the top-level parser for
+//! `flo-server` and omits client-only flags (`--ruleset`, `--video-*`).
+//! `VideoArgs` is flattened into `Args` so callers keep addressing
+//! `args.video.*`. The `rule` subcommand is a proper clap enum so
+//! `flo rule --help` and `flo rule check --help` work.
 
 use crate::codec::Codec;
 use clap::{Args as ClapArgs, Parser, Subcommand};
@@ -19,7 +21,7 @@ pub struct Args {
     #[arg(long, value_name = "ID")]
     pub robot_id: Option<String>,
 
-    /// TOML config file path (required for client mode).
+    /// Optional. Missing/unreadable → fail-safe empty ruleset (no motion commands); valid config with no --ruleset → built-in demo rules
     #[arg(long, value_name = "PATH")]
     pub config: Option<String>,
 
@@ -27,8 +29,7 @@ pub struct Args {
     #[arg(long, value_name = "PATH")]
     pub ruleset: Option<String>,
 
-    /// Authentication mode: `mtls` (default), `ed25519`, or `none` (dev/air-gapped
-    /// only; production blocks it unless --auth-allow-insecure is set).
+    /// Authentication mode: `mtls` (default), `ed25519` (not yet implemented — fails closed), or `none` (dev/air-gapped only; production blocks it unless --auth-allow-insecure is set).
     #[arg(long, value_name = "MODE", default_value = "mtls")]
     pub auth_mode: String,
 
@@ -68,14 +69,90 @@ pub struct Args {
     pub command: Option<Command>,
 }
 
+/// flo-server - fleet coordinator.
+///
+/// Opens a Zenoh router, handles registration and heartbeats.
+#[derive(Parser, Debug)]
+#[command(name = "flo-server", version, about, long_about = None)]
+pub struct ServerArgs {
+    /// Robot/node id (also via FLO_ROBOT_ID env).
+    #[arg(long, value_name = "ID")]
+    pub robot_id: Option<String>,
+
+    /// Optional. Missing/unreadable → fail-safe empty ruleset (no motion commands); valid config with no --ruleset → built-in demo rules
+    #[arg(long, value_name = "PATH")]
+    pub config: Option<String>,
+
+    /// Authentication mode: `mtls` (default), `ed25519` (not yet implemented — fails closed), or `none` (dev/air-gapped only; production blocks it unless --auth-allow-insecure is set).
+    #[arg(long, value_name = "MODE", default_value = "mtls")]
+    pub auth_mode: String,
+
+    /// Allow `auth: none` in production (dev/air-gapped only; disables
+    /// impersonation protection). Off by default.
+    #[arg(long)]
+    pub auth_allow_insecure: bool,
+
+    /// Path to this node's TLS certificate (PEM) for mTLS.
+    #[arg(long, value_name = "PATH")]
+    pub auth_cert: Option<String>,
+
+    /// Path to this node's TLS private key (PEM) for mTLS.
+    #[arg(long, value_name = "PATH")]
+    pub auth_key: Option<String>,
+
+    /// Path to the trust anchor: CA cert (mTLS) or authorized-key allowlist
+    /// (ed25519).
+    #[arg(long, value_name = "PATH")]
+    pub auth_trust: Option<String>,
+
+    /// Zenoh peer endpoints to connect to (e.g. "tcp/127.0.0.1:7600").
+    /// Overrides multicast scouting. May be specified multiple times.
+    #[arg(long, value_name = "ENDPOINT")]
+    pub connect: Vec<String>,
+
+    /// One-shot liveness probe for container HEALTHCHECKs. Connects to the
+    /// address from `FLO_HEALTH_ADDR` (default `127.0.0.1:8080`), exits 0 on a
+    /// 200 from `/healthz`, 1 otherwise.
+    #[arg(long)]
+    pub healthcheck: bool,
+
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
 /// Subcommands. Only `rule` exists today.
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Validate / inspect a semantic ruleset (extended TOML) before deploy.
     Rule {
-        /// `check <path>` — validate the ruleset at `path`.
-        #[arg(trailing_var_arg = true, num_args = 1..)]
-        args: Vec<String>,
+        #[command(subcommand)]
+        command: RuleSubcommand,
+    },
+}
+
+/// Rule subcommands.
+#[derive(Subcommand, Debug)]
+pub enum RuleSubcommand {
+    /// Validate the ruleset at PATH (TOML or JSON).
+    Check {
+        /// Path to the ruleset file (TOML or JSON).
+        #[arg(value_name = "PATH")]
+        path: String,
+        /// Output result as JSON (machine-readable).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Compile the ruleset at PATH to runtime JSON.
+    Compile {
+        /// Path to the ruleset file (TOML or JSON).
+        #[arg(value_name = "PATH")]
+        path: String,
+        /// Robot id to scope topics (default: 7).
+        #[arg(value_name = "ROBOT_ID")]
+        robot_id: Option<String>,
+        /// Output result as JSON (machine-readable).
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -103,6 +180,12 @@ pub struct VideoArgs {
 /// on invalid input.
 pub fn parse_args() -> Args {
     Args::parse()
+}
+
+/// Parse the server process arguments. Exits with a clap usage error (including `--help`)
+/// on invalid input.
+pub fn parse_server_args() -> ServerArgs {
+    ServerArgs::parse()
 }
 
 #[cfg(test)]

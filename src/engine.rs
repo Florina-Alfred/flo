@@ -314,12 +314,16 @@ pub async fn run_engine(
         }
     });
 
-    // Process samples and detect topic changes.
+    // Process samples and detect topic changes. Use a sample counter rather than
+    // channel occupancy (len) — len is the number of pending items, not the total
+    // processed, so `len % 256 == 0` would fire spuriously or not at all.
+    let mut sample_count: u64 = 0;
     while let Some((topic, payload)) = sample_rx.recv().await {
         latest.lock().await.insert(topic, payload);
-        // Periodically (every 1024 samples) check for topic changes due to hot-swap.
-        // This is cheaper than a per-event lock on the store.
-        if sample_rx.len() % 256 == 0 {
+        sample_count = sample_count.wrapping_add(1);
+        // Periodically (every 16 samples) check for topic changes due to hot-swap.
+        // This is cheaper than a per-event lock on the store but now counts samples.
+        if sample_count.is_multiple_of(16) {
             let rules = store.current().await;
             let mut new_topics = Vec::new();
             for rule in &rules.rules {

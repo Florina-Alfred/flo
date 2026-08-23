@@ -334,9 +334,14 @@ mod tests {
                 .expect("declare subscriber");
         }
 
-        // Zenoh undeclares asynchronously; give the drop time to propagate before
-        // publishing, so a received sample proves the handle was really dropped.
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Zenoh undeclares asynchronously; wait with a deadline-based budget
+        // (INFRA-09) so the drop has time to propagate before publishing.
+        // The previous 200ms fixed sleep flaked under CI load; we use 500ms
+        // propagation wait and a 2s delivery timeout — still fast when
+        // uncontended, but robust when the host is loaded. This mirrors the
+        // `engine::subscribed` oneshot pattern where feasible (here we can't
+        // signal undeclare completion, so we use a generous deadline).
+        tokio::time::sleep(Duration::from_millis(500)).await;
 
         transport
             .publish(&key, Qos::BestEffort, &serde_json::json!({"x": 1}))
@@ -345,8 +350,8 @@ mod tests {
 
         // Dropping the handle releases the callback (owning `tx`), closing the
         // channel with no samples: `Ok(None)` or a timeout both prove nothing
-        // was delivered after the unsubscribe.
-        let got = tokio::time::timeout(Duration::from_millis(500), rx.recv()).await;
+        // was delivered after the unsubscribe. Timeout increased to 2s for CI.
+        let got = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await;
         assert!(
             !matches!(got, Ok(Some(_))),
             "dropped subscription must not receive samples; got {got:?}"

@@ -8,8 +8,40 @@ name: Publish to crates.io
 # (repo Settings -> Secrets and variables -> Actions). It is NEVER committed
 # to the repo and GitHub masks it in logs.
 #
+# Blessed release flow (version/tag drift prevention):
+#   1. Bump `version` in Cargo.toml (e.g. "0.1.5" -> "0.1.6").
+#   2. Refresh Cargo.lock: `cargo generate-lockfile` (or `cargo update -p flo-rs`),
+#      review + commit the diff.
+#   3. Merge to main via PR (requires fmt/clippy/test + security: cargo-audit,
+#      cargo-deny, trivy, codeql — see AGENTS.md Branch protection).
+#   4. Tag the merge commit: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+#   5. Automation validates `Cargo.toml` version == `${GITHUB_REF_NAME#v}` (or
+#      `${RELEASE_TAG#v}`) and fails fast on drift; container merge does the same.
+#
+# Security gating:
+#   - Primary gate (branch protection): `main` requires cargo-audit,
+#     cargo-deny, trivy, codeql as status checks (see AGENTS.md). A tag can
+#     only be created from a commit that passed the Security & Release workflow.
+#   - Secondary gate (in-workflow): `gate-security` polls the Security &
+#     Release workflow for the tagged commit via `gh api` and blocks publish
+#     until it is green. This eliminates the parallel tag-push race where
+#     publish (30 min) could finish before security (20-45 min).
+#   - Tertiary gate (workflow_run): this workflow also triggers on
+#     `workflow_run: Security & Release` completion; when run via that event
+#     it only proceeds if `workflow_run.conclusion == 'success'`.
+#
+# Artifact provenance (single build):
+#   - Release binaries (`flo` + `flo-server`, both [[bin]] targets in Cargo.toml)
+#     are built once in `build` (or in security.yml:build) and shared via
+#     `actions/upload-artifact` / `actions/download-artifact`.
+#   - `release` downloads the prebuilt artifact; provenance
+#     (`actions/attest-build-provenance`) attests the same downloaded artifact
+#     users receive, not a fresh local rebuild.
+#   - GitHub Release attaches both `flo` and `flo-server` + CycloneDX SBOM.
+#
 # Best-practice notes:
 # - Fires on a `v*` tag push AND on manual workflow_dispatch.
+# - Also fires on `workflow_run` completion of Security & Release (gated).
 # - A `v*` tag can only reach main via a successful PR, which branch protection
 #   already requires to pass the CI gate (ci.yml) + independent review first.
 # - A guard step aborts if the tagged commit is not on the main lineage, so a
@@ -29,12 +61,16 @@ on:
       tag:
         description: "Existing tag to create a GitHub Release for (e.g. v0.1.3). No crates.io publish is performed."
         required: false
+  workflow_run:
+    workflows: ["Security & Release"]
+    types: [completed]
 
 concurrency:
   # On tag pushes the ref is the tag itself. On manual dispatch multiple tags
   # would share refs/heads/main, so key on the target tag to avoid cancelling
-  # concurrent backfilled releases. Releases must never be cancelled (INFRA-10).
-  group: publish-${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.tag || 'manual') || github.ref }}
+  # concurrent backfilled releases. For workflow_run, key on the triggering run id.
+  # Releases must never be cancelled (INFRA-10).
+  group: publish-${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.tag || 'manual') || github.event_name == 'workflow_run' && github.event.workflow_run.id || github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -44,9 +80,159 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  version-check:
+    name: version check
+    # Skip on workflow_run — version is validated inside `release` after checkout of the tag
+    if: github.event_name != 'workflow_run'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          # For push, check the tagged commit; for dispatch, check the requested tag
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+      - name: Validate Cargo.toml version matches tag
+        run: |
+          set -euo pipefail
+          TAG="${{ github.ref_name }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          fi
+          if [ -z "$TAG" ]; then
+            echo "::error::No tag found (GITHUB_REF_NAME='$TAG', inputs.tag='${{ github.event.inputs.tag }}')"
+            exit 1
+          fi
+          case "$TAG" in
+            v*) ;;
+            *) echo "::error::Tag '$TAG' is not a version tag (expected vX.Y.Z)"; exit 1 ;;
+          esac
+          VERSION="${TAG#v}"
+          # Prefer cargo metadata with jq (as documented in INFRA-03), fallback to Cargo.toml grep
+          CARGO_VER=""
+          if command -v jq >/dev/null 2>&1; then
+            CARGO_VER=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | jq -r '.packages[] | select(.name=="flo-rs") | .version' 2>/dev/null || true)
+          fi
+          if [ -z "$CARGO_VER" ] || [ "$CARGO_VER" = "null" ]; then
+            CARGO_VER=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)".*/\1/')
+          fi
+          echo "Tag $TAG -> version $VERSION, Cargo.toml $CARGO_VER"
+          if [ "$CARGO_VER" != "$VERSION" ]; then
+            echo "::error::Cargo.toml version $CARGO_VER != tag $TAG (expected $VERSION) — bump Cargo.toml and Cargo.lock before tagging (see header docs)"
+            exit 1
+          fi
+          echo "Version check passed"
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # pinned action commit
+        if: github.event_name == 'push'
+        with:
+          toolchain: "1.97.1"
+      - name: Validate version via cargo metadata (exact INFRA-03 check)
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          # Exact drift check from spec: Cargo.toml version must equal tag without leading v
+          test "$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name=="flo-rs") | .version')" = "${GITHUB_REF_NAME#v}"
+          echo "cargo metadata version matches ${GITHUB_REF_NAME#v}"
+
+  gate-security:
+    name: gate on security
+    # Only needed for direct tag pushes; workflow_run is already gated on conclusion,
+    # and workflow_dispatch backfills explicitly skip this gate.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    steps:
+      - name: Wait for Security & Release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SHA="${{ github.sha }}"
+          REF="${{ github.ref }}"
+          TAG="${{ github.ref_name }}"
+          echo "Gating publish on Security & Release for $REF ($SHA)"
+          echo "Security workflow takes 20-45 min; polling for up to 60 min"
+          for i in $(seq 1 60); do
+            # Prefer filtering by workflow file + head_sha; fallback to listing runs by head_sha
+            RESULT=$(gh api "repos/${{ github.repository }}/actions/workflows/security.yml/runs?head_sha=${SHA}&per_page=5" --jq '.workflow_runs[0].conclusion // empty' 2>/dev/null || echo "")
+            if [ -z "$RESULT" ] || [ "$RESULT" = "null" ]; then
+              RESULT=$(gh api "repos/${{ github.repository }}/actions/runs?head_sha=${SHA}&per_page=20" --jq '[.workflow_runs[] | select(.name == "Security & Release")] | .[0].conclusion // empty' 2>/dev/null || echo "")
+            fi
+            if [ -z "$RESULT" ] || [ "$RESULT" = "null" ]; then
+              echo "[$i/60] Security workflow not yet found or still running (conclusion='', waiting 60s)..."
+              sleep 60
+              continue
+            fi
+            echo "[$i/60] Security conclusion: $RESULT"
+            case "$RESULT" in
+              success)
+                echo "Security passed — proceeding"
+                exit 0
+                ;;
+              failure|cancelled|timed_out|action_required)
+                echo "::error::Security workflow $RESULT — blocking publish (see Security & Release run for $SHA)"
+                exit 1
+                ;;
+              in_progress|queued|waiting|pending)
+                echo "Security still $RESULT, waiting 60s..."
+                sleep 60
+                ;;
+              *)
+                echo "Unknown status $RESULT, waiting 60s..."
+                sleep 60
+                ;;
+            esac
+          done
+          echo "::error::Timed out after 60m waiting for Security workflow for $SHA"
+          exit 1
+
+  build:
+    name: build release binaries
+    # Build once and share via artifact; skip on workflow_run where the artifact
+    # comes from the triggering Security run (cross-workflow download).
+    if: github.event_name != 'workflow_run'
+    needs: [version-check]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+      - name: Validate version matches tag (fail-fast before build)
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}"
+          if [ -z "$TAG" ]; then TAG="${{ github.ref_name }}"; fi
+          case "$TAG" in v*) ;; *) echo "::error::Not a version tag: $TAG"; exit 1;; esac
+          VERSION="${TAG#v}"
+          CARGO_VER=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)".*/\1/')
+          echo "Tag $TAG -> $VERSION, Cargo $CARGO_VER"
+          if [ "$CARGO_VER" != "$VERSION" ]; then
+            echo "::error::Cargo.toml $CARGO_VER != $TAG"
+            exit 1
+          fi
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # pinned action commit
+        with:
+          toolchain: "1.97.1"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Build release binaries
+        run: cargo build --release --bin flo --bin flo-server
+      - name: Upload binary artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-binaries
+          path: |
+            target/release/flo
+            target/release/flo-server
+          retention-days: 30
+
   publish:
     name: cargo publish
     if: github.event_name == 'push'
+    needs: [version-check, gate-security]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -61,6 +247,24 @@ jobs:
             echo "Tag commit is not on the main lineage; aborting publish."
             exit 1
           fi
+      - name: Validate Cargo.toml version matches tag
+        run: |
+          set -euo pipefail
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+          CARGO_VER=""
+          if command -v jq >/dev/null 2>&1; then
+            CARGO_VER=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | jq -r '.packages[] | select(.name=="flo-rs") | .version' 2>/dev/null || true)
+          fi
+          if [ -z "$CARGO_VER" ] || [ "$CARGO_VER" = "null" ]; then
+            CARGO_VER=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)".*/\1/')
+          fi
+          echo "Tag $TAG -> $VERSION, Cargo $CARGO_VER"
+          if [ "$CARGO_VER" != "$VERSION" ]; then
+            echo "::error::Cargo.toml $CARGO_VER != $TAG — bump Cargo.toml before tagging"
+            exit 1
+          fi
+          echo "Version check passed"
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # pinned action commit
         with:
           # Pinned to the MSRV (1.97.1, same as ci.yml) so the 'Check lockfile
@@ -77,6 +281,11 @@ jobs:
           # annotations. The publish job runs rarely (v* tags only), so the
           # registry cache is the part that earns its keep.
           cache-targets: false
+      - name: Validate version via cargo metadata (exact INFRA-03 check)
+        run: |
+          set -euo pipefail
+          test "$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name=="flo-rs") | .version')" = "${GITHUB_REF_NAME#v}"
+          echo "cargo metadata version matches ${GITHUB_REF_NAME#v}"
       - name: Check lockfile is in sync with the index
         # cargo publish --dry-run rejects a dirty tree, and its own index
         # resolution can update Cargo.lock mid-run. The committed Cargo.lock
@@ -155,9 +364,10 @@ jobs:
   release:
     name: GitHub Release
     # On a tag push, only after crates.io publish succeeded. On manual
-    # dispatch, always (no crates.io publish is performed).
-    needs: publish
-    if: always() && (github.event_name == 'workflow_dispatch' || needs.publish.result == 'success')
+    # dispatch, always (no crates.io publish is performed). On workflow_run,
+    # only if Security succeeded and after its artifact is available.
+    needs: [publish, build]
+    if: always() && (github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' || needs.publish.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -165,7 +375,7 @@ jobs:
       id-token: write
       attestations: write
     env:
-      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.ref_name }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -186,6 +396,24 @@ jobs:
             exit 1
           }
           echo "Releasing ${RELEASE_TAG}"
+      - name: Validate Cargo.toml version matches tag
+        run: |
+          set -euo pipefail
+          TAG="${RELEASE_TAG}"
+          VERSION="${TAG#v}"
+          CARGO_VER=""
+          if command -v jq >/dev/null 2>&1; then
+            CARGO_VER=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | jq -r '.packages[] | select(.name=="flo-rs") | .version' 2>/dev/null || true)
+          fi
+          if [ -z "$CARGO_VER" ] || [ "$CARGO_VER" = "null" ]; then
+            CARGO_VER=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)".*/\1/')
+          fi
+          echo "Tag $TAG -> $VERSION, Cargo $CARGO_VER"
+          if [ "$CARGO_VER" != "$VERSION" ]; then
+            echo "::error::Cargo.toml $CARGO_VER != tag $TAG"
+            exit 1
+          fi
+          echo "Version check passed"
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # pinned action commit
         with:
           # Pinned to the MSRV (1.97.1, same as the publish job / ci.yml) for a
@@ -193,8 +421,32 @@ jobs:
           # make rebuilds non-reproducible.
           toolchain: "1.97.1"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Build release binary
-        run: cargo build --release --bin flo
+      - name: Validate version via cargo metadata (exact INFRA-03 check)
+        run: |
+          set -euo pipefail
+          # Spec exact: test "$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name=="flo-rs") | .version')" = "${GITHUB_REF_NAME#v}"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            test "$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name=="flo-rs") | .version')" = "${GITHUB_REF_NAME#v}"
+          else
+            test "$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name=="flo-rs") | .version')" = "${RELEASE_TAG#v}"
+          fi
+          echo "cargo metadata version matches tag"
+      - name: Download prebuilt binaries (workflow_run)
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-binaries
+          path: dist
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - name: Download prebuilt binaries (push/dispatch)
+        if: github.event_name != 'workflow_run'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-binaries
+          path: dist
+      - name: Ensure binaries are executable
+        run: chmod +x dist/flo dist/flo-server
       - name: Generate SBOM
         run: |
           cargo install cargo-cyclonedx@0.5.9 --locked
@@ -223,7 +475,8 @@ jobs:
           gh release create "${RELEASE_TAG}" \
             --title "flo-rs ${RELEASE_TAG}" \
             --notes-file release-notes.md \
-            target/release/flo \
+            dist/flo \
+            dist/flo-server \
             sbom.cdx.json
           echo "Created GitHub Release ${RELEASE_TAG}"
           echo "created=true" >> "$GITHUB_OUTPUT"
@@ -234,8 +487,12 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ steps.release.outputs.created }}" = "true" ]; then
-            echo "subject=target/release/flo" >> "$GITHUB_OUTPUT"
+            echo "flo=dist/flo" >> "$GITHUB_OUTPUT"
+            echo "flo_server=dist/flo-server" >> "$GITHUB_OUTPUT"
             echo "sbom=sbom.cdx.json" >> "$GITHUB_OUTPUT"
+            # Combined subject for provenance (comma handling via multiline)
+            echo "subject_flo=dist/flo" >> "$GITHUB_OUTPUT"
+            echo "subject_flo_server=dist/flo-server" >> "$GITHUB_OUTPUT"
           else
             # Release already exists (e.g. a workflow_dispatch backfill or a
             # re-run): sign the *published* assets rather than a fresh local
@@ -243,9 +500,13 @@ jobs:
             # matches what users download.
             rm -rf .release-asset
             gh release download "${RELEASE_TAG}" -p flo -D .release-asset
+            gh release download "${RELEASE_TAG}" -p flo-server -D .release-asset
             gh release download "${RELEASE_TAG}" -p sbom.cdx.json -D .release-asset
-            echo "subject=.release-asset/flo" >> "$GITHUB_OUTPUT"
+            echo "flo=.release-asset/flo" >> "$GITHUB_OUTPUT"
+            echo "flo_server=.release-asset/flo-server" >> "$GITHUB_OUTPUT"
             echo "sbom=.release-asset/sbom.cdx.json" >> "$GITHUB_OUTPUT"
+            echo "subject_flo=.release-asset/flo" >> "$GITHUB_OUTPUT"
+            echo "subject_flo_server=.release-asset/flo-server" >> "$GITHUB_OUTPUT"
           fi
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
@@ -254,30 +515,43 @@ jobs:
           COSIGN_YES: "true"
         run: |
           set -euo pipefail
-          SUBJECT="${{ steps.stage.outputs.subject }}"
-          # Keyless Cosign on the raw binary, mirroring the container pattern.
-          # Each sign-blob uses a fresh ephemeral key + certificate, so (unlike
-          # image re-signing) the entries always differ and Rekor's 409 conflict
-          # does not apply here — only intermittent timeouts do.
-          for attempt in 1 2 3 4 5; do
-            if cosign sign-blob --bundle flo.bundle "$SUBJECT"; then
-              echo "sign OK"
-              exit 0
-            fi
-            echo "sign attempt $attempt/5 failed; retrying in $((attempt * 10))s"
-            sleep "$((attempt * 10))"
+          for SUBJECT in "${{ steps.stage.outputs.flo }}" "${{ steps.stage.outputs.flo_server }}"; do
+            echo "Signing $SUBJECT"
+            for attempt in 1 2 3 4 5; do
+              if cosign sign-blob --bundle "$(basename "$SUBJECT").bundle" "$SUBJECT"; then
+                echo "sign OK for $SUBJECT"
+                break
+              fi
+              echo "sign attempt $attempt/5 failed for $SUBJECT; retrying in $((attempt * 10))s"
+              if [ "$attempt" -eq 5 ]; then
+                echo "::error::cosign sign-blob failed after 5 attempts for $SUBJECT"
+                exit 1
+              fi
+              sleep "$((attempt * 10))"
+            done
           done
-          echo "::error::cosign sign-blob failed after 5 attempts"
-          exit 1
-      - name: Upload signature to Release
+      - name: Upload signatures to Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload --clobber "${RELEASE_TAG}" flo.bundle
+        run: |
+          set -euo pipefail
+          for BUNDLE in flo.bundle flo-server.bundle; do
+            if [ -f "$BUNDLE" ]; then
+              gh release upload --clobber "${RELEASE_TAG}" "$BUNDLE"
+            fi
+          done
+          # Also handle bundles created from .release-asset paths
+          for BUNDLE in .release-asset/flo.bundle .release-asset/flo-server.bundle; do
+            if [ -f "$BUNDLE" ]; then
+              gh release upload --clobber "${RELEASE_TAG}" "$BUNDLE"
+            fi
+          done
       - name: Attach SLSA build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           # subject-path is a newline- or comma-delimited list — a
           # space-joined single string is treated as one glob and fails.
           subject-path: |
-            ${{ steps.stage.outputs.subject }}
+            ${{ steps.stage.outputs.flo }}
+            ${{ steps.stage.outputs.flo_server }}
             ${{ steps.stage.outputs.sbom }}

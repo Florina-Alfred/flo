@@ -1,4 +1,4 @@
-//! flo-rs — Kubernetes robot orchestration client library surface.
+//! flo-rs — Zenoh-mesh robot fleet orchestration library surface.
 //! Exposes all modules so the `flo` and `flo-server` binaries can import them.
 
 #![forbid(unsafe_code)]

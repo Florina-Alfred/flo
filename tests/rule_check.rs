@@ -179,9 +179,12 @@ fn rule_rejects_unknown_subcommand() {
         .expect("run flo rule bogus");
     assert!(!out.status.success(), "unknown subcommand should fail");
     let stderr = String::from_utf8_lossy(&out.stderr);
+    // clap 4 prints "unrecognized subcommand", old manual code printed "unknown"
     assert!(
-        stderr.contains("unknown"),
-        "stderr should mention unknown subcommand"
+        stderr.contains("unknown")
+            || stderr.contains("unrecognized")
+            || stderr.contains("unrecognised"),
+        "stderr should mention unknown/unrecognized subcommand, got: {stderr}"
     );
 }
 

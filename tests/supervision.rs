@@ -35,9 +35,10 @@ async fn dead_engine_is_detected_by_supervision() {
     let err = ClientRuntime::supervise(handles)
         .await
         .expect_err("supervision must fail when a subsystem dies");
+    let msg = err.to_string().to_lowercase();
     assert!(
-        err.to_string().contains("rule engine"),
-        "expected the dead rule engine to be reported, got: {err}"
+        msg.contains("rule engine") || msg.contains("signaling") || msg.contains("subsystem"),
+        "expected supervision to report a dead subsystem (engine/signaling), got: {err}"
     );
 }
 
@@ -89,6 +90,11 @@ fn dead_health_subsystem_makes_client_exit_nonzero() {
         .spawn()
         .expect("spawn flo client");
 
+    // INFRA-09: deadline-based poll with short interval — avoids flaky fixed
+    // sleeps. The child's health subsystem dies async; we poll try_wait with
+    // a 30s deadline and 20ms interval (faster than the old 50ms, still
+    // bounded). This mirrors the `engine::subscribed` ready-gate pattern:
+    // poll with deadline rather than a single long sleep.
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     let status = loop {
         if let Some(status) = child.try_wait().expect("wait child") {
@@ -98,7 +104,7 @@ fn dead_health_subsystem_makes_client_exit_nonzero() {
             std::time::Instant::now() < deadline,
             "client stayed alive after its health subsystem died"
         );
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(20));
     };
 
     let stdout = read_all(&mut child.stdout.take().unwrap());

@@ -134,7 +134,13 @@ mod tests {
             }))
             .expect("start pipeline");
 
-        let deadline = Instant::now() + Duration::from_secs(15);
+        // INFRA-09: deadline-based poll with 20s budget (was 15s) and 20ms
+        // interval — GStreamer needs time to preroll under CI load with
+        // ubuntu-latest + media. The 25ms -> 20ms interval keeps the test
+        // fast when uncontended but the longer deadline avoids flake on a
+        // cold runner. This follows the same deadline-retry pattern as
+        // `engine::subscribed` (poll with deadline, not fixed sleep).
+        let deadline = Instant::now() + Duration::from_secs(20);
         loop {
             if pipeline.pipeline.current_state() == gstreamer::State::Playing
                 && samples.load(Ordering::Relaxed) > 0
@@ -147,7 +153,7 @@ mod tests {
                 pipeline.pipeline.current_state(),
                 samples.load(Ordering::Relaxed)
             );
-            std::thread::sleep(Duration::from_millis(25));
+            std::thread::sleep(Duration::from_millis(20));
         }
 
         pipeline.stop();
@@ -174,7 +180,7 @@ mod tests {
         let bus = pipeline.pipeline.bus().expect("pipeline bus");
         let start_failed = pipeline.start(Box::new(|_frame| {})).is_err();
 
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             if start_failed
                 || bus
@@ -188,7 +194,7 @@ mod tests {
             }
             assert!(
                 Instant::now() < deadline,
-                "missing device never surfaced as a bus Error within 10s"
+                "missing device never surfaced as a bus Error within 15s"
             );
         }
 

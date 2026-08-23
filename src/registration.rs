@@ -346,6 +346,9 @@ pub async fn register_with_client(
     robot_id: &str,
     config: &ClientConfig,
 ) -> Result<(), RegistrationError> {
+    if robot_id.is_empty() {
+        return Err(RegistrationError::ServerError("MissingRobotId".to_string()));
+    }
     let request = RegistrationRequest::Register {
         robot_id: robot_id.to_string(),
         config: Box::new(config.clone()),
@@ -400,6 +403,9 @@ pub async fn register_with_client(
                 RegistrationStatus::RejectPoisoned => Err(RegistrationError::Poisoned),
                 RegistrationStatus::RejectServerError(msg) => {
                     Err(RegistrationError::ServerError(msg))
+                }
+                RegistrationStatus::MissingRobotId => {
+                    Err(RegistrationError::ServerError("MissingRobotId".to_string()))
                 }
                 status => Err(RegistrationError::ServerError(format!(
                     "unexpected registration status: {status:?}"

@@ -10,13 +10,14 @@ edition = "2024"
 rust-version = "1.97.1"
 authors = ["Florina-Alfred"]
 
-description = "Kubernetes robot orchestration in safe Rust with a peer-to-peer WebRTC video pipeline."
+description = "Zenoh-mesh robot fleet orchestration in safe Rust — declarative hot-reloadable rules, pub/sub registration and liveliness."
 license = "Apache-2.0"
 repository = "https://github.com/Florina-Alfred/flo"
 homepage = "https://github.com/Florina-Alfred/flo"
 documentation = "https://github.com/Florina-Alfred/flo#readme"
 readme = "README.md"
-keywords = ["robotics", "kubernetes", "webrtc", "video", "rust"]
+include = ["src/", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE", "CHANGELOG.md", "examples/", "benches/"]
+keywords = ["robotics", "zenoh", "orchestration", "fleet", "robot"]
 categories = ["command-line-utilities", "network-programming"]
 
 [dependencies]

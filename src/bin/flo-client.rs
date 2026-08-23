@@ -12,8 +12,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let args = cli::parse_args();
 
-    if let Some(Command::Rule { args: rule_args }) = args.command.as_ref() {
-        return run_rule_command(rule_args);
+    if let Some(Command::Rule { command }) = args.command.as_ref() {
+        return run_rule_command(command);
     }
 
     if args.healthcheck {
