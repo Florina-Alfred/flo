@@ -51,6 +51,19 @@ config defaults, and the validator agree); `enter`/`exit` are rejected.
 
 Implementation: `topic::check_topic_pattern()` and the topic builders in `src/topic.rs`.
 
+### Safety posture (fail-closed, not safety-rated)
+`flo` is the software pre-estop / coordination layer and is **not** safety-rated.
+Hardware STO / Safety-PLC is the primary stop authority.
+
+- Missing/unreadable/invalid config → fail-safe empty ruleset, no motion, log
+  `safe-state`.
+- Missing/stale sensor input → engine fails closed: `eval_tree` returns `false`
+  on absent field (`src/engine.rs:72-74`) and `resolve_operand` returns `None`
+  on `peer_id` mismatch (`src/engine.rs:131-135`); no action is published.
+  No staleness timeout — `run_engine:279-288` ticks over `latest` forever —
+  and no assumed-hazard default. A stale pose does **not** assume hazard near.
+- Network partition → local rules keep running from last-good compiled set.
+
 ### Error span
 (line, column) pair pointing into the source file, attached to each error.
 Validation errors also carry a field path (e.g. `rules[2].when.all[0].topic`).

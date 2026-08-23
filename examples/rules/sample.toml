@@ -1,3 +1,7 @@
+# Raw engine ruleset (topic + typed `pred`) — not the semantic `when.near_human` form.
+# Validated by `flo rule check` via the raw fallback (`src/common.rs:240-265`).
+# See `docs/RULES.md` §8 for the predicate grammar and §6 for `rule check`.
+
 [[rules]]
 name = "e-stop-on-bumper"
 when.all = [
