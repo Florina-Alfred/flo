@@ -158,6 +158,9 @@ jobs:
             echo "ERROR: no tests discovered — gate is vacuous (INFRA-01)"
             exit 1
           fi
+      - if: needs.changes.outputs.rust == 'true'
+        name: Ignored suite compiles (INFRA-09)
+        run: cargo test -- --ignored --list
 
   # The `media` feature needs system GStreamer, so it is excluded from the
   # default (free-tier, no-system-deps) pipeline above. This job installs the

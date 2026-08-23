@@ -20,7 +20,11 @@ stance has been relaxed to reflect reality:
 
 ## Tests & CI
 
-- Tests: `cargo test` (the crate now has a test setup — run it in CI).
+- Tests: `cargo test --lib --tests` (full suite, not `--bin flo` which had 0 tests — INFRA-01).
+  Media tests: `cargo test --features media --lib --tests` (requires GStreamer, CI `media` job).
+  Ignored suite: `cargo test -- --ignored --list` must compile (INFRA-09).
+  Flaky sleeps are hardened via `oneshot` ready-gate and deadline-based retry
+  (10s `core_loop`, 2s transport, 20s media) — see `tests/core_loop.rs:1-15`.
 - Coverage: `cargo llvm-cov --workspace --all-targets --lcov --output-path lcov.info`
   (tool `cargo-llvm-cov@0.6.18`, `llvm-tools-preview`); CI `coverage` job is
   advisory at 50% line threshold (ratchet, `continue-on-error`), not a required
@@ -34,8 +38,9 @@ stance has been relaxed to reflect reality:
 - Build: `cargo build`
 - Run: `cargo run`
 - Check (fast, no build artifacts): `cargo check`
-- Test: `cargo test`
-- Lint: `cargo clippy` / Format: `cargo fmt`
+- Test: `cargo test --lib --tests` (or `cargo test --features media --lib --tests` for media)
+- Ignored: `cargo test -- --ignored --list`
+- Lint: `cargo clippy --all-targets -- -D warnings` / Format: `cargo fmt --all -- --check`
 - Coverage: `cargo llvm-cov --workspace --all-targets --lcov --output-path lcov.info` (requires `cargo-llvm-cov@0.6.18` + `llvm-tools-preview`; see `CONTRIBUTING.md`)
 
 ## CI / GitHub Actions (free-tier safe)

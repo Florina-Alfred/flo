@@ -17,8 +17,11 @@
 
 ## CI structure (free-tier safe — public repo)
 
-- `.github/workflows/ci.yml` — minimal gate (fmt, clippy, test matrix, coverage) on every
-  push + PR. `coverage` runs `cargo llvm-cov --workspace --all-targets` (advisory 50% threshold,
+- `.github/workflows/ci.yml` — minimal gate (fmt, clippy, test matrix, media, coverage) on every
+  push + PR. `test` runs `cargo test --lib --tests` (not `--bin flo`, INFRA-01);
+  `media` runs `cargo test --features media --lib --tests` plus
+  `cargo test -- --ignored --list` to ensure the ignored suite compiles (INFRA-09);
+  `coverage` runs `cargo llvm-cov --workspace --all-targets` (advisory 50% threshold,
   artifact retained, Codecov upload conditional on `CODECOV_TOKEN`). Required status-check gate is
   `fmt` / `clippy` / `test`; `coverage` is advisory and not required yet (ratchet upward).
 - `.github/workflows/security.yml` — full security + release artifact, **only on
@@ -30,6 +33,20 @@ All jobs use **standard hosted runners** (free & unlimited on a public repo):
 `ubuntu-latest` for x64 and the free `ubuntu-24.04-arm` for native arm64
 container-image builds. No larger/self-hosted runners. Third-party actions are
 pinned to verified commit SHAs (see AGENTS.md).
+
+### Testing
+
+```bash
+cargo test --lib --tests                 # full suite (fast, no GStreamer)
+cargo test --features media --lib --tests # media tests (needs GStreamer)
+cargo test -- --ignored --list            # ensure ignored suite compiles
+cargo clippy --all-targets -- -D warnings
+cargo fmt --all -- --check
+```
+
+Flaky sleeps are hardened via ready-gate `oneshot` (like `engine::subscribed`)
+and deadline-based retry (10s for `core_loop`, 2s for transport, 20s for media)
+— see `tests/core_loop.rs` and `src/transport.rs` for the pattern.
 
 ## Local CI testing
 

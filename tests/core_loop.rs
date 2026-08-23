@@ -7,6 +7,30 @@ use flo_rs::engine;
 use flo_rs::rules::Qos;
 use flo_rs::transport::Transport;
 
+// INFRA-09: flaky-sleep hardening — the engine's subscription readiness is
+// gated via `engine::subscribed` oneshot (like `common::await_engine_ready`
+// does) where feasible, and eval_counter polling uses a deadline-based retry
+// with bounded timeout (not infinite sleep) so CI load doesn't flap. The
+// pattern is: wait for readiness via oneshot, then poll counter with
+// deadline (10s) and short 10ms interval — fast when uncontended, robust
+// when loaded. Timeouts for action delivery are also increased to 10s.
+
+async fn wait_for_counter(counter: &AtomicU64, target: u64, timeout: Duration) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if counter.load(Ordering::SeqCst) >= target {
+            return;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "timeout waiting for eval_counter >= {target} (current {})",
+                counter.load(Ordering::SeqCst)
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn sensor_sample_triggers_action() {
     let transport = Arc::new(
@@ -35,19 +59,23 @@ async fn sensor_sample_triggers_action() {
     let eval_counter = Arc::new(AtomicU64::new(0));
     let eval_counter_for_engine = eval_counter.clone();
     let engine_transport = transport.clone();
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let engine = tokio::spawn(async move {
-        engine::run_engine(engine_transport, store, eval_counter_for_engine, None)
-            .await
-            .expect("engine run");
+        engine::run_engine(
+            engine_transport,
+            store,
+            eval_counter_for_engine,
+            Some(ready_tx),
+        )
+        .await
+        .expect("engine run");
     });
 
-    let baseline = eval_counter.load(Ordering::SeqCst);
-
-    // Wait for the engine's re-eval loop to start ticking, proving subscriptions
-    // are active and the sample channel is live.
-    while eval_counter.load(Ordering::SeqCst) < baseline + 1 {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    // Gate on the engine's subscription oneshot — robust under load.
+    tokio::time::timeout(Duration::from_secs(5), ready_rx)
+        .await
+        .expect("engine should confirm subscriptions within 5s")
+        .expect("subscribed signal");
 
     transport
         .publish(
@@ -58,16 +86,14 @@ async fn sensor_sample_triggers_action() {
         .await
         .expect("publish sensor sample");
 
-    // Allow at least two more ticks for the sample to be processed and action
-    // to be published.
+    // Allow at least two ticks for the sample to be processed and action
+    // to be published — deadline-based, not flaky 20ms loop.
     let after_pub = eval_counter.load(Ordering::SeqCst);
-    while eval_counter.load(Ordering::SeqCst) < after_pub + 2 {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    wait_for_counter(&eval_counter, after_pub + 2, Duration::from_secs(10)).await;
 
-    let result = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+    let result = tokio::time::timeout(Duration::from_secs(10), rx.recv())
         .await
-        .expect("timeout waiting for action")
+        .expect("timeout waiting for action (10s)")
         .expect("action channel closed");
 
     let payload: serde_json::Value = serde_json::from_slice(&result).unwrap();
@@ -105,18 +131,26 @@ async fn no_data_no_action() {
     let eval_counter = Arc::new(AtomicU64::new(0));
     let eval_counter_for_engine = eval_counter.clone();
     let engine_transport = transport.clone();
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let engine = tokio::spawn(async move {
-        engine::run_engine(engine_transport, store, eval_counter_for_engine, None)
-            .await
-            .expect("engine run");
+        engine::run_engine(
+            engine_transport,
+            store,
+            eval_counter_for_engine,
+            Some(ready_tx),
+        )
+        .await
+        .expect("engine run");
     });
 
-    let baseline = eval_counter.load(Ordering::SeqCst);
-    while eval_counter.load(Ordering::SeqCst) < baseline + 5 {
-        tokio::time::sleep(Duration::from_millis(30)).await;
-    }
+    tokio::time::timeout(Duration::from_secs(5), ready_rx)
+        .await
+        .expect("engine ready")
+        .expect("subscribed");
 
-    let result = tokio::time::timeout(Duration::from_millis(300), rx.recv()).await;
+    wait_for_counter(&eval_counter, 5, Duration::from_secs(10)).await;
+
+    let result = tokio::time::timeout(Duration::from_millis(500), rx.recv()).await;
     assert!(result.is_err(), "no action should fire without sensor data");
 
     drop(transport);
@@ -155,16 +189,17 @@ async fn zone_path_uses_managed_subscription_lifecycle() {
     let eval_counter = Arc::new(AtomicU64::new(0));
     let engine_counter = eval_counter.clone();
     let engine_transport = transport.clone();
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let engine = tokio::spawn(async move {
-        engine::run_engine(engine_transport, store, engine_counter, None)
+        engine::run_engine(engine_transport, store, engine_counter, Some(ready_tx))
             .await
             .expect("engine run");
     });
 
-    let baseline = eval_counter.load(Ordering::SeqCst);
-    while eval_counter.load(Ordering::SeqCst) < baseline + 1 {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    tokio::time::timeout(Duration::from_secs(5), ready_rx)
+        .await
+        .expect("engine ready")
+        .expect("subscribed");
 
     // Only one robot in the zone: no collision yet.
     transport
@@ -183,7 +218,7 @@ async fn zone_path_uses_managed_subscription_lifecycle() {
         )
         .await
         .expect("publish probe");
-    let no_action = tokio::time::timeout(Duration::from_millis(300), rx.recv()).await;
+    let no_action = tokio::time::timeout(Duration::from_millis(500), rx.recv()).await;
     assert!(no_action.is_err(), "single-zone robot must not collide");
 
     // Second robot enters the same zone -> SameZoneAs now holds.
@@ -204,9 +239,9 @@ async fn zone_path_uses_managed_subscription_lifecycle() {
         .await
         .expect("publish probe again");
 
-    let result = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+    let result = tokio::time::timeout(Duration::from_secs(10), rx.recv())
         .await
-        .expect("timeout waiting for action")
+        .expect("timeout waiting for action (10s)")
         .expect("action channel closed");
     let payload: serde_json::Value = serde_json::from_slice(&result).unwrap();
     assert_eq!(payload["colliding"], true);

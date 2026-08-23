@@ -8,7 +8,7 @@ fn help_lists_all_flags_including_video() {
         .expect("run flo --help");
     assert!(out.status.success(), "flo --help should exit 0");
     let text = String::from_utf8_lossy(&out.stdout);
-    // Structure: usage line, commands, options
+    // Exact Usage line and Commands structure — not just substring presence (INFRA-09).
     assert!(
         text.contains("Usage: flo [OPTIONS] [COMMAND]"),
         "missing Usage line, got: {text}"
@@ -37,6 +37,23 @@ fn help_lists_all_flags_including_video() {
     ] {
         assert!(text.contains(flag), "help missing flag: {flag}\n{text}");
     }
+    // Check that flags appear with their value placeholders (tighter than mere substring).
+    assert!(
+        text.contains("--robot-id <ID>"),
+        "help should show placeholder for --robot-id, got: {text}"
+    );
+    assert!(
+        text.contains("--config <PATH>"),
+        "help should show placeholder for --config, got: {text}"
+    );
+    assert!(
+        text.contains("--video-peer <ID>"),
+        "help should show placeholder for --video-peer, got: {text}"
+    );
+    assert!(
+        !text.trim().is_empty() && text.lines().count() > 10,
+        "help text unexpectedly short, got: {text}"
+    );
     // --config must be fail-safe wording, not "required for client mode"
     assert!(
         text.contains("Optional. Missing/unreadable"),

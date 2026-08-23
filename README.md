@@ -358,17 +358,26 @@ Structured JSON logging: `FLO_JSON_LOGS=1`. Verbosity: `RUST_LOG` (default
 ## Building from source
 
 ```bash
-cargo build          # default features (no system deps)
-cargo test           # full test suite (count: cargo test -- --list | grep -c ': test')
-cargo clippy         # lint (deny warnings)
-cargo fmt            # format
+cargo build                              # default features (no system deps)
+cargo test --lib --tests                 # full test suite (count: cargo test --lib --tests -- --list | grep -c ': test')
+cargo test --features media --lib --tests # media tests (requires GStreamer, see scripts/setup-dev.sh)
+cargo clippy --all-targets -- -D warnings # lint (deny warnings)
+cargo fmt --all -- --check               # format
 ```
 
 The `media` feature (WebRTC video with GStreamer) is feature-gated — see
 `scripts/setup-dev.sh` for system package install, then build with
-`--features media`. It builds on the `webrtc 0.21` line (Sans-I/O API), pinned
+`--features media` and test with `cargo test --features media --lib --tests`
+(CI `media` job runs this plus `cargo test -- --ignored --list` to ensure the
+ignored suite compiles). It builds on the `webrtc 0.21` line (Sans-I/O API), pinned
 to `0.21.0-alpha.1` until a stable 0.21 publishes; the alpha status is tracked
 upstream.
+
+**Test validity (INFRA-09):** flaky sleeps are replaced by ready-gate
+`oneshot`/`notify` where feasible (like `engine::subscribed`); where polling
+remains, tests use deadline-based retry with bounded timeouts (e.g. 10s for
+`core_loop` eval_counter, 2s for transport drop propagation, 20s for media
+pipeline Playing) so CI load doesn't flap without slowing the suite.
 
 ## Safety posture
 
