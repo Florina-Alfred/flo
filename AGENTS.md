@@ -21,6 +21,11 @@ stance has been relaxed to reflect reality:
 ## Tests & CI
 
 - Tests: `cargo test` (the crate now has a test setup — run it in CI).
+- Coverage: `cargo llvm-cov --workspace --all-targets --lcov --output-path lcov.info`
+  (tool `cargo-llvm-cov@0.6.18`, `llvm-tools-preview`); CI `coverage` job is
+  advisory at 50% line threshold (ratchet, `continue-on-error`), not a required
+  status check yet; lcov retained 30d, Codecov upload conditional on
+  `CODECOV_TOKEN` (`codecov/codecov-action@5a10915` pinned).
 - CI: GitHub Actions workflows in `.github/workflows/` (minimal gate `ci.yml` on
   every branch/PR; full security + release pipeline `security.yml` on `main`/tags).
 
@@ -31,6 +36,7 @@ stance has been relaxed to reflect reality:
 - Check (fast, no build artifacts): `cargo check`
 - Test: `cargo test`
 - Lint: `cargo clippy` / Format: `cargo fmt`
+- Coverage: `cargo llvm-cov --workspace --all-targets --lcov --output-path lcov.info` (requires `cargo-llvm-cov@0.6.18` + `llvm-tools-preview`; see `CONTRIBUTING.md`)
 
 ## CI / GitHub Actions (free-tier safe)
 
@@ -40,7 +46,7 @@ for the native arm64 image build in `container.yml`); no larger/self-hosted runn
 
 - `.github/workflows/ci.yml` — **minimal gate**, runs on every branch push and every PR.
   Jobs: `changes`, `fmt`, `clippy` (`-D warnings`), `test` matrix (`stable`, `beta`, `1.97.1`),
-  `media`. Required status checks: `fmt`, `clippy`, `test (stable)`, `test (beta)`, `test (1.97.1)`.
+  `media`, `coverage` (cargo-llvm-cov 0.6.18, advisory 50% threshold, artifact retained 30d, Codecov upload conditional). Required status checks: `fmt`, `clippy`, `test (stable)`, `test (beta)`, `test (1.97.1)` (`coverage` is advisory, not required — ratchet upward, see `CONTRIBUTING.md`).
   The `changes` job detects scope — docs-only PRs skip the Rust toolchain steps
   (jobs always run and succeed, only the expensive steps are conditional).
 - `.github/workflows/security.yml` — **full security + release**, runs ONLY on `main`
