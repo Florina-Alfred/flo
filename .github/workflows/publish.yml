@@ -33,9 +33,9 @@ on:
 concurrency:
   # On tag pushes the ref is the tag itself. On manual dispatch multiple tags
   # would share refs/heads/main, so key on the target tag to avoid cancelling
-  # concurrent backfilled releases.
+  # concurrent backfilled releases. Releases must never be cancelled (INFRA-10).
   group: publish-${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.tag || 'manual') || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -108,8 +108,13 @@ jobs:
       - name: Check README diff vs last tag
         run: |
           git fetch --tags origin
-          # Get the previous version tag (second-newest, excluding this one)
-          PREV_TAG=$(git tag -l 'v*' --sort=-version:refname | tail -n +2 | head -1)
+          # SemVer-aware predecessor of RELEASE_TAG (INFRA-10): backfilling
+          # v0.1.2 after v0.1.5 must diff against v0.1.1, not v0.1.4. Shares
+          # logic with scripts/release-notes.sh via sort -V + awk predecessor;
+          # injection of current tag ensures correct predecessor even if tag
+          # is not yet in the fetched list.
+          RELEASE_TAG="${GITHUB_REF_NAME}"
+          PREV_TAG=$( (git tag -l 'v*' | grep -oE '^v[0-9]+\.[0-9]+\.[0-9]+$'; echo "${RELEASE_TAG}") | sort -V -u | awk -v rel="${RELEASE_TAG}" '$0 == rel {print prev; exit} {prev=$0}' )
 
           if [ -z "$PREV_TAG" ]; then
             echo "No previous version tag found — first publish. Skipping diff."
@@ -125,8 +130,25 @@ jobs:
             echo "README.md has changed since ${PREV_TAG}:"
             git diff "${PREV_TAG}"..HEAD -- README.md || true
           fi
+      - name: Validate CHANGELOG
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "Checking CHANGELOG.md for ${VERSION}"
+          grep -q "## \\[${VERSION}\\]" CHANGELOG.md || {
+            echo "::error::CHANGELOG.md missing entry for ${VERSION}: add '## [${VERSION}] - YYYY-MM-DD' and move Unreleased content"
+            exit 1
+          }
+          # Ensure Unreleased section is empty (changes have been moved)
+          UNRELEASED_CONTENT=$(awk '/^## \[Unreleased\]/{flag=1; next} /^## \[/{flag=0} flag' CHANGELOG.md)
+          if echo "${UNRELEASED_CONTENT}" | grep -qE '^- |^### '; then
+            echo "::error::CHANGELOG.md Unreleased still has entries; move them under ## [${VERSION}] before release"
+            exit 1
+          fi
+          echo "CHANGELOG.md validation passed for ${VERSION}"
       - name: Publish to crates.io
-        run: cargo publish --token "${CARGO_REGISTRY_TOKEN}"
+        # CARGO_REGISTRY_TOKEN env is read natively by cargo; --token leaks via /proc/args (INFRA-10)
+        run: cargo publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 

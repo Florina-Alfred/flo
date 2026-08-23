@@ -14,11 +14,12 @@ prev="${2:-}"
 if [ -z "$prev" ]; then
   # Highest existing v* tag strictly BELOW the release tag, so backfilled
   # older releases diff against their real predecessor rather than the
-  # newest tag. Assumes plain vX.Y.Z tags (no prerelease suffixes).
-  prev="$(git tag -l 'v*' --sort=-version:refname \
-    | sort -V \
-    | grep -oE '^v[0-9]+\.[0-9]+\.[0-9]+$' \
-    | awk -v rel="${release}" 'rel > $0 { p=$0 } END { if (p != "") print p }' || true)"
+  # newest tag. SemVer-aware via sort -V + awk predecessor (INFRA-10):
+  # lexicographic 'rel > $0' fails for v0.1.10 vs v0.1.9, so we use
+  # version-sorted predecessor lookup.
+  prev="$( (git tag -l 'v*' | grep -oE '^v[0-9]+\.[0-9]+\.[0-9]+$'; echo "${release}") \
+    | sort -V -u \
+    | awk -v rel="${release}" '$0 == rel {print prev; exit} {prev=$0}' || true)"
 fi
 
 echo "## What's Changed"
