@@ -101,6 +101,24 @@ impl std::fmt::Display for AuthError {
 
 impl std::error::Error for AuthError {}
 
+fn validate_pem_file(path: &PathBuf, field: &'static str) -> Result<(), AuthError> {
+    if !path.exists() {
+        return Err(AuthError::MissingCredential(field));
+    }
+    let content = std::fs::read_to_string(path).map_err(|_| AuthError::MissingCredential(field))?;
+    // PEM header check: cert/trust must be a certificate, key must be a private key.
+    // We accept generic -----BEGIN for key flexibility (PRIVATE KEY, RSA PRIVATE KEY, …).
+    let has_header = if field == "key" {
+        content.contains("-----BEGIN")
+    } else {
+        content.contains("-----BEGIN CERTIFICATE-----")
+    };
+    if !has_header {
+        return Err(AuthError::MissingCredential(field));
+    }
+    Ok(())
+}
+
 impl AuthConfig {
     /// Validate the config for a production deployment. `auth: none` is rejected
     /// unless `allow_insecure` is set. Authenticated modes require their
@@ -123,15 +141,21 @@ impl AuthConfig {
         match self.mode {
             AuthMode::None => Ok(self),
             AuthMode::Mtls | AuthMode::Ed25519 => {
-                if self.cert.is_none() {
-                    return Err(AuthError::MissingCredential("cert"));
-                }
-                if self.key.is_none() {
-                    return Err(AuthError::MissingCredential("key"));
-                }
-                if self.trust.is_none() {
-                    return Err(AuthError::MissingCredential("trust"));
-                }
+                let cert = self
+                    .cert
+                    .as_ref()
+                    .ok_or(AuthError::MissingCredential("cert"))?;
+                let key = self
+                    .key
+                    .as_ref()
+                    .ok_or(AuthError::MissingCredential("key"))?;
+                let trust = self
+                    .trust
+                    .as_ref()
+                    .ok_or(AuthError::MissingCredential("trust"))?;
+                validate_pem_file(cert, "cert")?;
+                validate_pem_file(key, "key")?;
+                validate_pem_file(trust, "trust")?;
                 Ok(self)
             }
         }
@@ -144,6 +168,9 @@ impl AuthConfig {
     /// trust anchor. ed25519 is recorded but not yet wired to a handshake
     /// (returns an error until implemented, so we fail closed).
     pub fn zenoh_config(&self, robot_id: &str) -> Result<Config, AuthError> {
+        // Validate credentials (file existence + PEM) before building the zenoh config
+        // so a typo like /nonexistent.pem fails fast at config time, not at runtime.
+        self.check_credentials()?;
         match self.mode {
             AuthMode::None => {
                 let mut c = Config::default();
@@ -282,16 +309,109 @@ mod tests {
         );
     }
 
+    fn temp_pem_file(prefix: &str, content: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "flo-auth-test-{}-{}-{}.pem",
+            prefix,
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&path, content).expect("write temp pem");
+        path
+    }
+
+    const VALID_CERT_PEM: &str = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+    const VALID_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n";
+
     #[test]
     fn mtls_validates_with_all_credentials() {
+        let cert = temp_pem_file("cert", VALID_CERT_PEM);
+        let key = temp_pem_file("key", VALID_KEY_PEM);
+        let trust = temp_pem_file("trust", VALID_CERT_PEM);
         let cfg = AuthConfig {
             mode: AuthMode::Mtls,
-            cert: Some(PathBuf::from("/etc/flo/cert.pem")),
-            key: Some(PathBuf::from("/etc/flo/key.pem")),
-            trust: Some(PathBuf::from("/etc/flo/ca.pem")),
+            cert: Some(cert.clone()),
+            key: Some(key.clone()),
+            trust: Some(trust.clone()),
             ..Default::default()
         };
         assert!(cfg.validate_production().is_ok());
+        let _ = std::fs::remove_file(cert);
+        let _ = std::fs::remove_file(key);
+        let _ = std::fs::remove_file(trust);
+    }
+
+    #[test]
+    fn mtls_rejects_missing_pem_file() {
+        let cert = PathBuf::from("/nonexistent/flo-cert.pem");
+        let key = temp_pem_file("key2", VALID_KEY_PEM);
+        let trust = temp_pem_file("trust2", VALID_CERT_PEM);
+        let cfg = AuthConfig {
+            mode: AuthMode::Mtls,
+            cert: Some(cert),
+            key: Some(key.clone()),
+            trust: Some(trust.clone()),
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.validate_production(),
+            Err(AuthError::MissingCredential("cert"))
+        );
+        let _ = std::fs::remove_file(key);
+        let _ = std::fs::remove_file(trust);
+    }
+
+    #[test]
+    fn mtls_rejects_invalid_pem_header() {
+        let cert = temp_pem_file("badcert", "not a pem");
+        let key = temp_pem_file("key3", VALID_KEY_PEM);
+        let trust = temp_pem_file("trust3", VALID_CERT_PEM);
+        let cfg = AuthConfig {
+            mode: AuthMode::Mtls,
+            cert: Some(cert.clone()),
+            key: Some(key.clone()),
+            trust: Some(trust.clone()),
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.validate_production(),
+            Err(AuthError::MissingCredential("cert"))
+        );
+        let _ = std::fs::remove_file(cert);
+        let _ = std::fs::remove_file(key);
+        let _ = std::fs::remove_file(trust);
+    }
+
+    #[test]
+    fn mtls_zenoh_config_validates_pem_files() {
+        let cert = temp_pem_file("zcert", VALID_CERT_PEM);
+        let key = temp_pem_file("zkey", VALID_KEY_PEM);
+        let trust = temp_pem_file("ztrust", VALID_CERT_PEM);
+        let cfg = AuthConfig {
+            mode: AuthMode::Mtls,
+            cert: Some(cert.clone()),
+            key: Some(key.clone()),
+            trust: Some(trust.clone()),
+            ..Default::default()
+        };
+        assert!(cfg.zenoh_config("robot_7").is_ok());
+        let _ = std::fs::remove_file(cert);
+        let _ = std::fs::remove_file(key);
+        let _ = std::fs::remove_file(trust);
+    }
+
+    #[test]
+    fn mtls_zenoh_config_rejects_missing_file() {
+        let cfg = AuthConfig {
+            mode: AuthMode::Mtls,
+            cert: Some(PathBuf::from("/nonexistent/cert.pem")),
+            key: Some(PathBuf::from("/nonexistent/key.pem")),
+            trust: Some(PathBuf::from("/nonexistent/ca.pem")),
+            ..Default::default()
+        };
+        assert!(cfg.zenoh_config("robot_7").is_err());
     }
 
     #[test]
@@ -305,14 +425,20 @@ mod tests {
 
     #[test]
     fn ed25519_not_yet_wired_fails_closed() {
+        let cert = temp_pem_file("ed-cert", VALID_CERT_PEM);
+        let key = temp_pem_file("ed-key", VALID_KEY_PEM);
+        let trust = temp_pem_file("ed-trust", VALID_CERT_PEM);
         let cfg = AuthConfig {
             mode: AuthMode::Ed25519,
-            cert: Some(PathBuf::from("/etc/flo/cert.pem")),
-            key: Some(PathBuf::from("/etc/flo/key.pem")),
-            trust: Some(PathBuf::from("/etc/flo/allowlist.json")),
+            cert: Some(cert.clone()),
+            key: Some(key.clone()),
+            trust: Some(trust.clone()),
             ..Default::default()
         };
         assert!(cfg.zenoh_config("robot_7").is_err());
+        let _ = std::fs::remove_file(cert);
+        let _ = std::fs::remove_file(key);
+        let _ = std::fs::remove_file(trust);
     }
 
     #[test]

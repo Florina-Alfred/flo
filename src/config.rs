@@ -69,7 +69,7 @@ actions = [
     }
 
     /// Atomically swap in a new ruleset. In-flight holders keep their old `Arc`.
-    async fn swap(&self, rules: Arc<Rules>) {
+    pub async fn swap(&self, rules: Arc<Rules>) {
         *self.inner.write().await = rules;
     }
 }
