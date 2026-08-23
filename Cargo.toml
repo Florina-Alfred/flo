@@ -11,6 +11,7 @@ repository = "https://github.com/Florina-Alfred/flo"
 homepage = "https://github.com/Florina-Alfred/flo"
 documentation = "https://github.com/Florina-Alfred/flo#readme"
 readme = "README.md"
+include = ["src/", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE", "CHANGELOG.md", "examples/", "benches/"]
 keywords = ["robotics", "kubernetes", "webrtc", "video", "rust"]
 categories = ["command-line-utilities", "network-programming"]
 
