@@ -17,8 +17,10 @@
 
 ## CI structure (free-tier safe — public repo)
 
-- `.github/workflows/ci.yml` — minimal gate (fmt, clippy, test matrix) on every
-  push + PR. Required status-check gate.
+- `.github/workflows/ci.yml` — minimal gate (fmt, clippy, test matrix, coverage) on every
+  push + PR. `coverage` runs `cargo llvm-cov --workspace --all-targets` (advisory 50% threshold,
+  artifact retained, Codecov upload conditional on `CODECOV_TOKEN`). Required status-check gate is
+  `fmt` / `clippy` / `test`; `coverage` is advisory and not required yet (ratchet upward).
 - `.github/workflows/security.yml` — full security + release artifact, **only on
   `main`** push + `v*` tags.
 - `.github/workflows/publish.yml` — publishes to crates.io on `v*` tags only, using
@@ -37,6 +39,35 @@ Validate workflows before pushing with [nektos/act](https://github.com/nektos/ac
 ```bash
 act push -W .github/workflows/ci.yml --container-architecture linux/amd64 --defaultbranch main
 ```
+
+## Coverage (llvm-cov + Codecov)
+
+CI collects line coverage via `cargo-llvm-cov` (v0.6.18, pinned) and uploads
+`lcov.info` to Codecov. The artifact is retained for 30 days (`lcov-coverage`);
+Codecov posts a delta comment on PRs when `CODECOV_TOKEN` is configured. The
+upload step is conditional on `secrets.CODECOV_TOKEN` so forks without the
+secret do not fail.
+
+**Threshold:** 50% line coverage, advisory / non-blocking (ratchet upward over
+time). CI runs `cargo llvm-cov report --fail-under-lines 50` with
+`continue-on-error: true` — it annotates but does not gate the merge. The job
+is not a required branch-protection check yet (see `AGENTS.md`).
+
+**Run locally (requires `llvm-tools-preview`):**
+
+```bash
+# one-time setup
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov --version 0.6.18 --locked
+
+# collect + view
+cargo llvm-cov --workspace --all-targets --lcov --output-path lcov.info
+cargo llvm-cov report --html   # open target/llvm-cov/html/index.html
+cargo llvm-cov report --fail-under-lines 50  # local gate
+```
+
+Low-disk note: `cargo llvm-cov` reuses the `target/` build cache; use
+`CARGO_INCREMENTAL=0` and `cargo llvm-cov clean` if disk pressure appears.
 
 ## Releasing to crates.io
 
