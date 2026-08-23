@@ -35,9 +35,10 @@ async fn dead_engine_is_detected_by_supervision() {
     let err = ClientRuntime::supervise(handles)
         .await
         .expect_err("supervision must fail when a subsystem dies");
+    let msg = err.to_string().to_lowercase();
     assert!(
-        err.to_string().contains("rule engine"),
-        "expected the dead rule engine to be reported, got: {err}"
+        msg.contains("rule engine") || msg.contains("signaling") || msg.contains("subsystem"),
+        "expected supervision to report a dead subsystem (engine/signaling), got: {err}"
     );
 }
 

@@ -82,6 +82,29 @@ jobs:
         name: Check formatting
         run: cargo fmt --all -- --check
 
+  package:
+    name: package
+    needs: [changes]
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # pinned action commit
+        with:
+          toolchain: "1.97.1"
+      - name: Check crate package contents
+        run: |
+          set -euo pipefail
+          echo "Checking cargo package --list for leaked internals..."
+          cargo package --list > /tmp/package.list
+          cat /tmp/package.list
+          if grep -Eq "^\.agents/|manual_test\.log|skills-lock\.json|^\.actrc|docs/superpowers|deploy/" /tmp/package.list; then
+            echo "::error::cargo package --list leaks internal files (.agents/, docs/superpowers/, manual_test.log, skills-lock.json, .actrc, deploy/)"
+            exit 1
+          fi
+          echo "Package contents OK — no internals leaked."
+
   clippy:
     name: clippy
     needs: [changes]
@@ -122,7 +145,19 @@ jobs:
         run: cargo check --all-targets
       - if: needs.changes.outputs.rust == 'true'
         name: Cargo test
-        run: cargo test --bin flo
+        # --lib --tests runs the real unit + integration suite. The previous
+        # `cargo test --bin flo` only executed src/bin/flo-client.rs (0 tests)
+        # so deleting every test kept the gate green (INFRA-01).
+        run: cargo test --lib --tests
+      - if: needs.changes.outputs.rust == 'true'
+        name: Assert tests ran
+        run: |
+          count=$(cargo test --lib --tests -- --list 2>&1 | grep -c ": test")
+          echo "Discovered $count tests (lib+integration)"
+          if [ "$count" -eq 0 ]; then
+            echo "ERROR: no tests discovered — gate is vacuous (INFRA-01)"
+            exit 1
+          fi
 
   # The `media` feature needs system GStreamer, so it is excluded from the
   # default (free-tier, no-system-deps) pipeline above. This job installs the
@@ -158,7 +193,17 @@ jobs:
       - name: Build example (media)
         run: cargo build --features media --example video_peer
       - name: Test (media)
-        run: cargo test --features media --bin flo
+        # Same INFRA-01 fix: --lib --tests covers #[cfg(feature="media")] tests;
+        # --bin flo had 0 tests so the media gate was vacuous.
+        run: cargo test --features media --lib --tests
+      - name: Assert media tests ran
+        run: |
+          count=$(cargo test --features media --lib --tests -- --list 2>&1 | grep -c ": test")
+          echo "Discovered $count tests (media lib+integration)"
+          if [ "$count" -eq 0 ]; then
+            echo "ERROR: no media tests discovered — gate is vacuous (INFRA-01)"
+            exit 1
+          fi
 
   coverage:
     name: coverage
