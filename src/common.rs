@@ -201,6 +201,29 @@ pub fn run_rule_command(
                         Ok(())
                     }
                     Err(e) => {
+                        // Semantic validation failed — fall back to raw `Rules::from_toml`
+                        // so `examples/rules/sample.toml` (raw engine format) can still
+                        // validate. Only accept the raw fallback if it parses and has
+                        // non-empty `when` guards; otherwise surface the semantic error
+                        // (e.g. typo'd `in_zne` that would otherwise look like an empty
+                        // raw rule and incorrectly pass).
+                        if let Ok(rules) = crate::rules::Rules::from_toml(&text)
+                            && !rules.rules.is_empty()
+                            && rules
+                                .rules
+                                .iter()
+                                .all(|r| !r.when.all.is_empty() || !r.when.any.is_empty())
+                        {
+                            if *json {
+                                println!(
+                                    "{}",
+                                    serde_json::json!({ "status": "ok", "path": path, "kind": "raw" })
+                                );
+                            } else {
+                                println!("OK: {path} is a valid raw ruleset");
+                            }
+                            return Ok(());
+                        }
                         if *json {
                             eprintln!(
                                 "{}",
@@ -213,6 +236,36 @@ pub fn run_rule_command(
                     }
                 },
                 Err(e) => {
+                    // Parse failed as semantic — try raw `Rules::from_toml` fallback
+                    // before giving up. This lets `flo rule check` accept both
+                    // semantic documents and raw engine TOML (e.g. sample.toml).
+                    if let Ok(rules) = crate::rules::Rules::from_toml(&text)
+                        && !rules.rules.is_empty()
+                        && rules
+                            .rules
+                            .iter()
+                            .all(|r| !r.when.all.is_empty() || !r.when.any.is_empty())
+                    {
+                        // Extra guard: reject raw rules whose topics don't match the
+                        // naming convention — typo'd semantic files would otherwise
+                        // parse as empty-when raw rules and slip through.
+                        let bad_topic = rules
+                            .rules
+                            .iter()
+                            .flat_map(|r| r.when.all.iter().chain(r.when.any.iter()))
+                            .find(|t| crate::topic::check_topic_pattern(&t.topic).is_err());
+                        if bad_topic.is_none() {
+                            if *json {
+                                println!(
+                                    "{}",
+                                    serde_json::json!({ "status": "ok", "path": path, "kind": "raw" })
+                                );
+                            } else {
+                                println!("OK: {path} is a valid raw ruleset");
+                            }
+                            return Ok(());
+                        }
+                    }
                     if *json {
                         eprintln!(
                             "{}",
