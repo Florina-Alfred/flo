@@ -365,9 +365,11 @@ jobs:
     name: GitHub Release
     # On a tag push, only after crates.io publish succeeded. On manual
     # dispatch, always (no crates.io publish is performed). On workflow_run,
-    # only if Security succeeded and after its artifact is available.
+    # only if Security succeeded and after its artifact is available — and only
+    # for version tags (v*), so a Security success on main does not trigger a
+    # spurious "'main' is not a version tag" failure.
     needs: [publish, build]
-    if: always() && (github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' || needs.publish.result == 'success')
+    if: always() && (github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'v')) || needs.publish.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
