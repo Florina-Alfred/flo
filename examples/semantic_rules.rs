@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use flo_rs::config::RuleStore;
+use flo_rs::config::ActiveRules;
 use flo_rs::engine;
 use flo_rs::semantic::{compile, parse_semantic};
 use flo_rs::transport::Transport;
@@ -35,7 +35,7 @@ async fn main() -> anyhow::Result<()> {
     let transport = Arc::new(transport);
 
     let store =
-        RuleStore::bootstrap(&rules.to_toml()).map_err(|e| anyhow::anyhow!("bootstrap: {e}"))?;
+        ActiveRules::bootstrap(&rules.to_toml()).map_err(|e| anyhow::anyhow!("bootstrap: {e}"))?;
 
     engine::run_engine(
         transport,

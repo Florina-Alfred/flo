@@ -22,8 +22,8 @@ fn examples_compile_default() {
     let custom =
         std::fs::read_to_string("examples/custom_rules.rs").expect("read custom_rules example");
     assert!(
-        custom.contains("Transport") && custom.contains("RuleStore"),
-        "custom_rules example should wire Transport + RuleStore, got: {custom}"
+        custom.contains("Transport") && custom.contains("ActiveRules"),
+        "custom_rules example should wire Transport + ActiveRules, got: {custom}"
     );
     assert!(
         custom.contains("topic") || custom.contains("rules_key"),

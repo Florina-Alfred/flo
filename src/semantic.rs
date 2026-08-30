@@ -173,7 +173,7 @@ pub struct SemanticRule {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
-pub struct SemanticDoc {
+pub struct RulesManifest {
     #[serde(default)]
     pub site: Site,
     #[serde(default)]
@@ -182,12 +182,15 @@ pub struct SemanticDoc {
     pub rules: Vec<SemanticRule>,
 }
 
+/// Alias for one release — use [`RulesManifest`] for new code.
+pub type SemanticDoc = RulesManifest;
+
 // ---------------------------------------------------------------------------
 // Parse
 // ---------------------------------------------------------------------------
 
 /// Parse an extended-TOML semantic document.
-pub fn parse_semantic(text: &str) -> Result<SemanticDoc, SemanticError> {
+pub fn parse_semantic(text: &str) -> Result<RulesManifest, SemanticError> {
     toml::from_str(text).map_err(|e| SemanticError::new(ErrorCode::Parse, e.to_string()))
 }
 
@@ -198,7 +201,7 @@ pub fn parse_semantic_ruleset(text: &str) -> Result<SemanticRuleset, SemanticErr
 
 /// Attempt JSON parse, fall back to TOML. Detects format from first non-whitespace
 /// character (`{` means JSON, anything else means TOML).
-pub fn parse_semantic_auto(text: &str) -> Result<SemanticDoc, SemanticError> {
+pub fn parse_semantic_auto(text: &str) -> Result<RulesManifest, SemanticError> {
     match guess_format(text) {
         Format::Json => parse_semantic_json(text),
         Format::Toml => parse_semantic(text),
@@ -218,7 +221,7 @@ enum Format {
     Toml,
 }
 
-fn parse_semantic_json(text: &str) -> Result<SemanticDoc, SemanticError> {
+fn parse_semantic_json(text: &str) -> Result<RulesManifest, SemanticError> {
     serde_json::from_str(text).map_err(|e| SemanticError::new(ErrorCode::Parse, e.to_string()))
 }
 
@@ -232,10 +235,10 @@ fn parse_semantic_ruleset_json(text: &str) -> Result<SemanticRuleset, SemanticEr
 // ---------------------------------------------------------------------------
 
 /// Validate semantic invariants before compile. The single shared validator:
-/// both the direct semantic doc and the ruleset-envelope path (via desugaring)
+/// both the direct manifest and the ruleset-envelope path (via desugaring)
 /// check action verbs, payload primitiveness, `when` shape, distances, and
 /// zone references here.
-pub fn validate(doc: &SemanticDoc) -> Result<(), SemanticError> {
+pub fn validate(doc: &RulesManifest) -> Result<(), SemanticError> {
     for (rule_idx, rule) in doc.rules.iter().enumerate() {
         for (action_idx, a) in rule.actions.iter().enumerate() {
             let path = format!("rules[{rule_idx}].actions[{action_idx}]");
@@ -290,7 +293,7 @@ fn when_is_empty(when: &SemanticWhen) -> bool {
 fn validate_when(
     when: &SemanticWhen,
     rule_name: &str,
-    doc: &SemanticDoc,
+    doc: &RulesManifest,
     path: &str,
 ) -> Result<(), SemanticError> {
     if when_is_empty(when) {
@@ -341,8 +344,8 @@ fn validate_when(
 // Compile (semantic doc → runtime Rules)
 // ---------------------------------------------------------------------------
 
-/// Compile a validated semantic doc to the runtime `Rules` shape.
-pub fn compile(doc: &SemanticDoc, robot_id: &str) -> Result<Rules, SemanticError> {
+/// Compile a validated manifest to the runtime `Rules` shape.
+pub fn compile(doc: &RulesManifest, robot_id: &str) -> Result<Rules, SemanticError> {
     validate(doc)?;
     if doc.site.id.is_empty() {
         return Err(
@@ -568,7 +571,7 @@ fn compile_action(a: &SemanticAction, robot_id: &str) -> Action {
 // ---------------------------------------------------------------------------
 
 /// Envelope-parse shape for a `Ruleset` authored as extended TOML. Carries the
-/// same `site`/`zones`/`when` vocabulary as [`SemanticDoc`] plus ownership
+/// same `site`/`zones`/`when` vocabulary as [`RulesManifest`] plus ownership
 /// metadata; validation and compilation are delegated to the shared
 /// [`validate`]/[`compile`] through a thin desugaring.
 #[derive(Debug, Clone, Deserialize)]
@@ -598,10 +601,10 @@ pub struct SemanticRulesetRule {
 
 /// Compile a `Ruleset` envelope into the runtime `Ruleset` wire/storage unit.
 /// A thin wrapper: it validates the envelope's `ruleset_name`, desugars into a
-/// [`SemanticDoc`], and reuses the single shared validator + compiler.
+/// [`RulesManifest`], and reuses the single shared validator + compiler.
 pub fn compile_ruleset(doc: &SemanticRuleset, robot_id: &str) -> Result<Ruleset, SemanticError> {
     let ruleset_name = normalize_ruleset_name(&doc.ruleset_name)?;
-    let semantic = SemanticDoc {
+    let semantic = RulesManifest {
         site: doc.site.clone(),
         zones: doc.zones.clone(),
         rules: doc

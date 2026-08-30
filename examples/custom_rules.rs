@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use flo_rs::config::{RuleStore, run_hot_reload};
+use flo_rs::config::{ActiveRules, run_hot_reload};
 use flo_rs::engine;
 use flo_rs::transport::Transport;
 
@@ -11,7 +11,7 @@ async fn main() -> anyhow::Result<()> {
         .nth(1)
         .unwrap_or_else(|| "examples/rules/sample.toml".to_string());
     let toml = std::fs::read_to_string(&path).map_err(|e| anyhow::anyhow!("read {path}: {e}"))?;
-    let store = RuleStore::bootstrap(&toml)?;
+    let store = ActiveRules::bootstrap(&toml)?;
     println!("custom_rules: loaded {path}");
 
     let mut transport = Transport::open_with(Transport::loopback_config())
