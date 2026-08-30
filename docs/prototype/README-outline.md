@@ -9,7 +9,9 @@ This is a *rough outline stub* to react to — not the final README. Read it as 
 ## Proposed section order (top → bottom, first screen → deeper)
 
 1. **Title + one-line why** — "flo — Zenoh-mesh robot fleet in safe Rust — declarative rules, hot-reload, pub/sub + liveliness"
-2. **30-second catch (first code block, copy-paste)** — the *only* thing a newcomer should need to trust it:
+2. **Architecture in one diagram + one paragraph** — Zenoh mesh diagram (pub/sub + liveliness, not Queryable), `flo` = client runtime (`topic.rs` builders, `transport.rs` adapter, `semantic.rs` validator), `flo-server` = `try_join!` supervision — *why Zenoh-mesh, not K8s* lands here, not buried
+
+3. **30-second catch (first code block, copy-paste)** — the *only* thing a newcomer needs to trust the diagram:
    ```bash
    git clone https://github.com/Florina-Alfred/flo && cd flo
    cargo test --lib --tests          # 170+ tests, 0 ignored
@@ -21,9 +23,7 @@ This is a *rough outline stub* to react to — not the final README. Read it as 
    ```
    *Note under block:* "Multicast blocked on Docker/WSL? Add `--connect` — find the Zenoh port in the server log `health server listening` is *not* the Zenoh port, see Quickstart."
 
-3. **Architecture in one diagram + one paragraph** — Zenoh mesh diagram (pub/sub + liveliness, not Queryable), `flo` = client runtime (`topic.rs` builders, `transport.rs` adapter, `semantic.rs` validator), `flo-server` = `try_join!` supervision
-
-4. **Quickstart (the 4-step ritual expanded, 5 minutes)** — each ritual step → doc location → script entry point → macOS/Linux note (`scripts/verify-readme-demo.sh` with `lsof` fallback)
+4. **Quickstart (the 4-step ritual expanded, 5 minutes)** — each ritual step → doc location → script entry point → macOS/Linux note (`scripts/verify-readme-demo.sh` with `lsof` fallback) — now *after* the architecture, so the catch proves the diagram
 
 5. **Rule authoring (one example, `hrc-cell.toml` semantic + `sample.toml` raw fallback)** — `docs/RULES.md` is the deep dive; README only shows the two shipped rulesets (`hrc-cell` + `warehouse-fleet`) and the raw `Field("pressed")` vs pure topic-match note
 
@@ -43,7 +43,7 @@ This is a *rough outline stub* to react to — not the final README. Read it as 
 
 **C (single-terminal loopback):** One `cargo run --example mesh_demo` that runs both — but hides the `flo`/`flo-server` split that the architecture diagram tries to teach.
 
-**My recommendation:** **A** — local checks first, then demo. The "why Zenoh-mesh, not K8s" story lands in §3, not §1 — the catch is "it works", the why is "why it works this way."
+**Locked per feedback:** **Architecture first (A′)** — diagram + "why Zenoh-mesh, not K8s" in §2, *then* the catch in §3 proves the diagram. The "why" is not buried; the catch is the proof. (Previous A had catch before architecture — flipped per "Architecture is more important.")
 
 ---
 
