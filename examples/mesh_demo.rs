@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use flo_rs::config::RuleStore;
+use flo_rs::config::ActiveRules;
 use flo_rs::engine;
 use flo_rs::transport::Transport;
 
@@ -29,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
     let transport = Arc::new(transport);
     println!("mesh_demo: robot {robot_id} on loopback zenoh");
 
-    let store = RuleStore::bootstrap_demo(&robot_id);
+    let store = ActiveRules::bootstrap_demo(&robot_id);
     {
         let t = transport.clone();
         let s = store.clone();

@@ -11,11 +11,14 @@ use crate::transport::Transport;
 /// Shared, atomically-swappable ruleset. Readers hold an `Arc` clone; a hot-reload
 /// replaces the inner `Arc` without disturbing in-flight evaluations.
 #[derive(Clone)]
-pub struct RuleStore {
+pub struct ActiveRules {
     inner: Arc<RwLock<Arc<Rules>>>,
 }
 
-impl RuleStore {
+/// Alias for one release — use [`ActiveRules`] for new code.
+pub type RuleStore = ActiveRules;
+
+impl ActiveRules {
     /// Create a store from an already-compiled ruleset.
     pub fn new(rules: Arc<Rules>) -> Self {
         Self {
@@ -79,7 +82,7 @@ actions = [
 pub async fn run_hot_reload(
     transport: &Transport,
     robot_id: &str,
-    store: RuleStore,
+    store: ActiveRules,
 ) -> zenoh::Result<()> {
     let key = crate::topic::rules_key(robot_id);
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<zenoh::sample::Sample>();
@@ -113,7 +116,7 @@ pub async fn run_hot_reload(
 pub async fn run_hot_reload_with_registry(
     transport: &Transport,
     robot_id: &str,
-    store: RuleStore,
+    store: ActiveRules,
     registry: Arc<Registry>,
 ) -> zenoh::Result<()> {
     let wildcard_key = crate::topic::RULESET_PUB_PATTERN;
@@ -410,9 +413,9 @@ period_ms = 1000
 
     #[tokio::test]
     async fn bootstrap_parses_empty_ruleset() {
-        let store = RuleStore::bootstrap("rules = []\n").expect("empty rules parse");
+        let store = ActiveRules::bootstrap("rules = []\n").expect("empty rules parse");
         assert_eq!(store.current().await.rules.len(), 0);
-        let demo = RuleStore::bootstrap_demo("robot-7");
+        let demo = ActiveRules::bootstrap_demo("robot-7");
         assert_eq!(demo.current().await.rules.len(), 2);
     }
 }

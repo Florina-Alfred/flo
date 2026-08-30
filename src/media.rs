@@ -3,14 +3,16 @@
 //! nvv4l2h264enc on Jetson). webrtc-rs owns the PeerConnection; this module only
 //! produces encoded H.264 sample bytes via appsink.
 
-#![cfg(feature = "media")]
-
+#[cfg(feature = "media")]
 use anyhow::{Context, Result, anyhow};
 
+#[cfg(feature = "media")]
 use gstreamer::prelude::*;
+#[cfg(feature = "media")]
 use gstreamer_app::AppSink;
 
 /// Where the video frames come from.
+#[cfg(feature = "media")]
 #[derive(Clone)]
 pub enum SourceSpec {
     /// Synthetic test pattern (no camera needed for the demo).
@@ -21,6 +23,7 @@ pub enum SourceSpec {
 
 /// Pick the H.264 encoder element name. Jetson has `nvv4l2h264enc` (NVENC, zero-copy
 /// NVMM); everywhere else we fall back to `x264enc`. Pure + testable.
+#[cfg(feature = "media")]
 pub fn encoder_element_name(has_nvenc: bool) -> &'static str {
     if has_nvenc {
         "nvv4l2h264enc"
@@ -30,13 +33,16 @@ pub fn encoder_element_name(has_nvenc: bool) -> &'static str {
 }
 
 /// A running GStreamer encode pipeline that hands encoded bytes to a callback.
+#[cfg(feature = "media")]
 pub struct MediaPipeline {
     pipeline: gstreamer::Pipeline,
 }
 
 /// Sample callback: receives each encoded H.264 frame as raw bytes.
+#[cfg(feature = "media")]
 pub type SampleCallback = Box<dyn Fn(&[u8]) + Send + Sync + 'static>;
 
+#[cfg(feature = "media")]
 impl MediaPipeline {
     /// Build the pipeline. `source` chooses the input; `width/height/fps` set caps.
     pub fn build(source: &SourceSpec, width: u32, height: u32, fps: u32) -> Result<Self> {
@@ -108,7 +114,62 @@ impl MediaPipeline {
     }
 }
 
-#[cfg(test)]
+/// Spawn the outbound WebRTC video call requested via `--video-peer`, validating
+/// the configured device up front so a bad path fails fast with a clear message
+/// instead of an opaque GStreamer error.
+/// Only available with the `media` feature (requires system GStreamer + webrtc).
+#[cfg(feature = "media")]
+pub fn spawn_video_peer(
+    args: &crate::cli::Args,
+    transport: std::sync::Arc<crate::transport::Transport>,
+    robot_id: String,
+) {
+    let Some(peer) = args.video.peer.clone() else {
+        return;
+    };
+    let tr = transport.clone();
+    let rid = robot_id.clone();
+    let pid = peer.clone();
+    // Validate the configured video device up front so a bad path fails
+    // fast with a clear message instead of an opaque GStreamer error.
+    let device = match &args.video.device {
+        Some(d) => match crate::device::VideoDevice::from_path(d) {
+            Ok(dev) => Some(dev),
+            Err(e) => {
+                tracing::error!(error = %e, "invalid --video-device, falling back to test pattern");
+                None
+            }
+        },
+        None => None,
+    };
+    tokio::spawn(async move {
+        use crate::media::SourceSpec;
+        let source = match device {
+            Some(dev) => dev.to_source_spec(),
+            None => SourceSpec::Videotest,
+        };
+        if let Err(e) = crate::video::start_video_with_source(&rid, &pid, tr, source).await {
+            tracing::error!(error = %e, "video failed");
+        }
+    });
+}
+
+/// Stub compiled when `media` feature is off: logs a hint and returns.
+#[cfg(not(feature = "media"))]
+pub fn spawn_video_peer(
+    _args: &crate::cli::Args,
+    _transport: std::sync::Arc<crate::transport::Transport>,
+    _robot_id: String,
+) {
+    if _args.video.peer.is_some() {
+        tracing::info!(
+            _robot_id,
+            "--video-peer set but media feature disabled; recompile with --features media"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "media"))]
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
