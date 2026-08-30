@@ -59,7 +59,7 @@ cargo run --bin flo -- rule check examples/rules/sample.toml  # OK: valid raw ru
 
 ## Quickstart — 5 minutes
 
-Each ritual step → where it is documented → script entry point → macOS/Linux note. `scripts/verify-readme-demo.sh` runs this end-to-end with explicit `--connect` so it works with or without multicast.
+Each ritual step → where it is documented → script entry point → macOS/Linux note. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full ritual (`cargo test --features media`, `cargo test -- --ignored --list`, `CARGO_INCREMENTAL=0 -j2` low-disk, `cargo llvm-cov`, `actionlint`). `scripts/verify-readme-demo.sh` runs this end-to-end with explicit `--connect` so it works with or without multicast.
 
 ### 1. Clone and verify locally (no server)
 
@@ -275,11 +275,7 @@ After the catch — not before:
 cargo install flo-rs   # installs both `flo` and `flo-server` binaries (crate is `flo-rs`, binary stays `flo`)
 ```
 
-Verify the package:
-
-```bash
-cargo package           # after `cargo test --lib --tests` and `flo rule check`, before publish
-```
+Package verification (`cargo package --list` + `cargo publish --dry-run`) is CI-only + contributor path — see [`CONTRIBUTING.md`](CONTRIBUTING.md) Package verification and `ci.yml` `package` job.
 
 Container images (multi-arch via `container.yml`, Cosign-signed, SPDX SBOM, SLSA provenance):
 
