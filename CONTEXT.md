@@ -13,6 +13,15 @@ Compiles a semantic ruleset document into the engine's `[[rules]]` format.
 Outputs the compiled TOML ruleset to stdout by default; `--verbose` additionally
 prints the parsed AST.
 
+### Rules vocabulary
+
+Newcomer map — file you write vs data the engine runs vs live set:
+
+- **RulesManifest** — the TOML/JSON file you write (`[site]`, `[zones]`, `[[rules]]` with `when`/`actions`). Parsed by `semantic::parse_semantic` into a `RulesManifest` struct and compiled via `semantic::compile` into `Rules`. Alias `SemanticDoc` kept for one release (deprecated, use `RulesManifest`).
+- **Rules** — compiled data for the engine (`rules::Rules`, a `Vec<Rule>` with `When { all, any }` + `Action { topic, qos, payload }`). What `engine::run_engine` evaluates. No alias.
+- **ActiveRules** — the live atomically-swapped `Rules` set (`config::ActiveRules`). Readers hold `Arc<Rules>` via `current()`, hot-reload swaps via `swap()`, bootstrap via `bootstrap`/`bootstrap_demo`. Alias `RuleStore` kept for one release (deprecated, use `ActiveRules`).
+- **WireRuleset** — the wire `fleet/*/ruleset/**` envelope (`rules::Ruleset { ruleset_name, version, robot_owner, rules }`). Published on `fleet/{site}/ruleset/{name}`, validated by `registry::Registry`, stored in the audit DB. Docs/builders only — not a Rust struct rename.
+
 ### Topic naming convention
 Single source of truth lives in `src/topic.rs`: constants for fixed topics,
 builder functions for parameterized ones (`topic::robot_local`, `topic::rules_key`,
