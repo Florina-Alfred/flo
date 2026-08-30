@@ -1,5 +1,5 @@
 # Raw engine ruleset (topic + typed `pred`) — not the semantic `when.near_human` form.
-# Validated by `flo rule check` via the raw fallback (`src/common.rs:240-265`).
+# Validated by `flo rule check` via the raw fallback (`src/cli.rs:250-280`).
 # See `docs/RULES.md` §8 for the predicate grammar and §6 for `rule check`.
 
 [[rules]]

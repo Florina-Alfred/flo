@@ -301,7 +301,7 @@ Every `flo` process (`flo` and `flo-server`) exposes an HTTP health server on
 the address from `FLO_HEALTH_ADDR`:
 
 - **Host default (no env):** `0.0.0.0:0` — OS-assigned random port on all
-  interfaces (`src/common.rs:52`, `src/server.rs:60`). Each run logs
+  interfaces (`src/runtime.rs:58`, `src/server.rs:60`). Each run logs
   `health server listening addr=0.0.0.0:<port>`.
 - **Container default:** `0.0.0.0:8080` (`ENV FLO_HEALTH_ADDR=0.0.0.0:8080` in
   `Dockerfile`), so inside a container the health server is always on `8080`.
@@ -342,7 +342,7 @@ Docker `HEALTHCHECK`) connects to `FLO_HEALTH_ADDR` with a **fallback default of
 `127.0.0.1:8080`** (`src/bin/flo-client.rs:21`, `src/bin/flo-server.rs:14`).
 This is intentionally different from the serve default:
 
-- **Serve** (`src/common.rs:52`): `0.0.0.0:0` → random port if you don't set `FLO_HEALTH_ADDR`.
+- **Serve** (`src/runtime.rs:58`): `0.0.0.0:0` → random port if you don't set `FLO_HEALTH_ADDR`.
 - **Probe**: `127.0.0.1:8080` → assumes you set `FLO_HEALTH_ADDR=0.0.0.0:8080`.
 
 If you run on a host without setting `FLO_HEALTH_ADDR`, the probe hits
