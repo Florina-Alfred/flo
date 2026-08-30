@@ -2,13 +2,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use flo_rs::config::RuleStore;
+use flo_rs::config::ActiveRules;
 use flo_rs::engine;
 use flo_rs::rules::Qos;
 use flo_rs::transport::Transport;
 
 // INFRA-09: flaky-sleep hardening — the engine's subscription readiness is
-// gated via `engine::subscribed` oneshot (like `common::await_engine_ready`
+// gated via `engine::subscribed` oneshot (like `runtime::await_engine_ready`
 // does) where feasible, and eval_counter polling uses a deadline-based retry
 // with bounded timeout (not infinite sleep) so CI load doesn't flap. The
 // pattern is: wait for readiness via oneshot, then poll counter with
@@ -39,7 +39,7 @@ async fn sensor_sample_triggers_action() {
             .expect("open loopback transport"),
     );
 
-    let store = RuleStore::bootstrap(concat!(
+    let store = ActiveRules::bootstrap(concat!(
         "[[rules]]\n",
         r#"name = "trigger-on-data""#,
         "\nwhen.all = [{ topic = \"sensor/foo\", mode = \"Level\" }]\n",
@@ -111,7 +111,7 @@ async fn no_data_no_action() {
             .expect("open loopback transport"),
     );
 
-    let store = RuleStore::bootstrap(concat!(
+    let store = ActiveRules::bootstrap(concat!(
         "[[rules]]\n",
         r#"name = "trigger-on-data""#,
         "\nwhen.all = [{ topic = \"sensor/never\", mode = \"Level\" }]\n",
@@ -169,7 +169,7 @@ async fn zone_path_uses_managed_subscription_lifecycle() {
             .expect("open loopback transport"),
     );
 
-    let store = RuleStore::bootstrap(concat!(
+    let store = ActiveRules::bootstrap(concat!(
         "[[rules]]\n",
         r#"name = "zone-collision""#,
         "\nwhen.all = [{ topic = \"sensor/probe\", pred = { Comparison = { op = \"SameZoneAs\", lhs = { Str = \"robot-a\" }, rhs = { Str = \"robot-b\" } } } }]\n",

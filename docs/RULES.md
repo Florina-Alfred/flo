@@ -45,6 +45,8 @@ actions = [ { slow_to = 0.1, qos = "best_effort" } ]   # the command
 - `[zones]` is a lookup table: a name → a rectangle. You reference the name in `when.in_zone`.
 - Each `[[rules]]` is one `if → then`.
 
+In code this file is parsed into a [`RulesManifest`] (`semantic::RulesManifest`, formerly `SemanticDoc` — alias kept for one release) and compiled into `Rules` for the engine.
+
 ---
 
 ## 3. Conditions (`when`)
@@ -172,7 +174,7 @@ flo rule check examples/rules/sample.toml
 
 It tries the semantic parser (`parse_semantic_auto` + `validate`) first; if that
 fails it falls back to the raw engine parser (`Rules::from_toml` in
-`src/common.rs:198`, the same fallback `src/runtime.rs:233-253` uses at
+`src/cli.rs:215`, the same fallback `src/runtime.rs:310-330` uses at
 startup). This lets one command validate both authoring layers:
 
 - **Semantic files** (`hrc-cell.toml`, `warehouse-fleet.toml`): checked for
