@@ -155,7 +155,7 @@ fi
 
 # Find the server's Zenoh port (NOT the health port).
 # The Zenoh router listens on tcp/127.0.0.1:0 → random (src/auth.rs:152,
-# src/transport.rs:86); health listens on 0.0.0.0:0 → random (src/common.rs:52).
+# src/transport.rs:86); health listens on 0.0.0.0:0 → random (src/runtime.rs:58).
 # We must pick the Zenoh listener. The script explicitly uses --connect
 # tcp/127.0.0.1:<zenoh-port> for blocked multicast (Docker/WSL/CI) — see README
 # "When multicast is blocked" — it does not rely on multicast scouting.

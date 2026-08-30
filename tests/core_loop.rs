@@ -8,7 +8,7 @@ use flo_rs::rules::Qos;
 use flo_rs::transport::Transport;
 
 // INFRA-09: flaky-sleep hardening — the engine's subscription readiness is
-// gated via `engine::subscribed` oneshot (like `common::await_engine_ready`
+// gated via `engine::subscribed` oneshot (like `runtime::await_engine_ready`
 // does) where feasible, and eval_counter polling uses a deadline-based retry
 // with bounded timeout (not infinite sleep) so CI load doesn't flap. The
 // pattern is: wait for readiness via oneshot, then poll counter with
