@@ -24,14 +24,22 @@ echo ""
 # ── Cleanup any leftover processes from previous runs ──────────────
 # Use precise patterns: "flo-server" and "flo[[:space:]]" so macOS pkill -f and
 # Linux both match. Fallback to pgrep+kill if pkill missing.
+# pkill/pgrep + xargs -r (GNU) vs loop (BSD/macOS): xargs -r is Linux-only;
+# macOS xargs lacks -r and would error, so we detect support.
 if command -v pkill >/dev/null 2>&1; then
   pkill -f "target/debug/flo-server" 2>/dev/null || true
   pkill -f "target/debug/flo[[:space:]]" 2>/dev/null || true
   # also catch bare `target/debug/flo` without trailing space (e.g. no args)
   pkill -f "target/debug/flo$" 2>/dev/null || true
 else
-  pgrep -f "target/debug/flo-server" 2>/dev/null | xargs -r kill 2>/dev/null || true
-  pgrep -f "target/debug/flo[[:space:]]" 2>/dev/null | xargs -r kill 2>/dev/null || true
+  if xargs --help 2>&1 | grep -q "\-r"; then
+    pgrep -f "target/debug/flo-server" 2>/dev/null | xargs -r kill 2>/dev/null || true
+    pgrep -f "target/debug/flo[[:space:]]" 2>/dev/null | xargs -r kill 2>/dev/null || true
+  else
+    # BSD/macOS fallback — loop over pids (xargs -r not available)
+    for pid in $(pgrep -f "target/debug/flo-server" 2>/dev/null || true); do kill "$pid" 2>/dev/null || true; done
+    for pid in $(pgrep -f "target/debug/flo[[:space:]]" 2>/dev/null || true); do kill "$pid" 2>/dev/null || true; done
+  fi
 fi
 sleep 1
 
@@ -155,7 +163,7 @@ fi
 
 # Find the server's Zenoh port (NOT the health port).
 # The Zenoh router listens on tcp/127.0.0.1:0 → random (src/auth.rs:152,
-# src/transport.rs:86); health listens on 0.0.0.0:0 → random (src/common.rs:52).
+# src/transport.rs:86); health listens on 0.0.0.0:0 → random (src/runtime.rs:58).
 # We must pick the Zenoh listener. The script explicitly uses --connect
 # tcp/127.0.0.1:<zenoh-port> for blocked multicast (Docker/WSL/CI) — see README
 # "When multicast is blocked" — it does not rely on multicast scouting.

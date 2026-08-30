@@ -4,7 +4,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use flo_rs::config::{ClientConfig, RuleStore, run_hot_reload_with_registry};
+use flo_rs::config::{ActiveRules, ClientConfig, run_hot_reload_with_registry};
 use flo_rs::engine;
 use flo_rs::registration::{
     ClientState, RegistrationError, RegistrationStatus, register_with_client,
@@ -361,14 +361,14 @@ async fn hot_reload_with_registry_conflict_and_bad_toml() {
     // temp registry db
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "flo-hot-{}-{}",
+        "flo-test-{}-{}",
         std::process::id(),
         COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let db_path = dir.join("audit.db");
     let registry = Arc::new(Registry::new(&db_path).expect("registry new"));
-    let store = RuleStore::bootstrap("rules = []\n").expect("empty store");
+    let store = ActiveRules::bootstrap("rules = []\n").expect("empty store");
 
     let srv_clone = server.clone();
     let st_clone = store.clone();
@@ -505,7 +505,7 @@ name = "old-rule"
 when.all = [{ topic = "sensor/old", mode = "Level" }]
 actions = [{ topic = "actuator/old", qos = "reliable", payload = { fired_old = true } }]
 "#;
-    let store = RuleStore::bootstrap(old_toml).expect("old store");
+    let store = ActiveRules::bootstrap(old_toml).expect("old store");
 
     let (tx_old, mut rx_old) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
     transport
@@ -619,7 +619,7 @@ name = "old-rule"
 when.all = [{ topic = "sensor/old2", mode = "Level" }]
 actions = [{ topic = "actuator/old2", qos = "reliable", payload = { a = 1 } }]
 "#;
-    let store = RuleStore::bootstrap(old_toml).unwrap();
+    let store = ActiveRules::bootstrap(old_toml).unwrap();
     let (tx_old, mut rx_old) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
     transport
         .subscribe("actuator/old2", move |s: zenoh::sample::Sample| {
