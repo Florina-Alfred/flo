@@ -23,4 +23,8 @@ ignore = [
     # lz4_flex requirement. In flo's usage this only affects compressed transport
     # payloads decoded by Zenoh, not flo's own code paths.
     "RUSTSEC-2026-0041",
+    # RUSTSEC-2024-0436 (paste 1.0.15, unmaintained): pulled via zenoh 1.10.0 → petgraph → hashbrown; no direct use in flo. Accepted until Zenoh updates paste.
+    "RUSTSEC-2024-0436",
+    # RUSTSEC-2025-0134 (rustls-pemfile 2.2.0, unmaintained): pulled via zenoh 1.10.0 → rustls; flo uses rustls via zenoh, not directly. Accepted until Zenoh moves to rustls-pki-types.
+    "RUSTSEC-2025-0134",
 ]
