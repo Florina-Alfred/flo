@@ -5,14 +5,14 @@ use std::time::Duration;
 use clap::Parser;
 
 use flo_rs::cli::Args;
-use flo_rs::config::RuleStore;
+use flo_rs::config::ActiveRules;
 use flo_rs::engine;
 use flo_rs::runtime::ClientRuntime;
 use flo_rs::runtime::start_common_subsystems;
 use flo_rs::transport::Transport;
 
-fn empty_store() -> RuleStore {
-    RuleStore::bootstrap("rules = []\n").expect("empty ruleset always parses")
+fn empty_store() -> ActiveRules {
+    ActiveRules::bootstrap("rules = []\n").expect("empty ruleset always parses")
 }
 
 /// Killing one subsystem must be detected by the client's supervision, which

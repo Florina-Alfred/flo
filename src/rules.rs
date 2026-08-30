@@ -123,7 +123,7 @@ impl Rules {
         toml::from_str(text)
     }
 
-    /// Serialize back to TOML — used to feed `RuleStore::bootstrap` after compile.
+    /// Serialize back to TOML — used to feed `ActiveRules::bootstrap` after compile.
     pub fn to_toml(&self) -> String {
         toml::to_string(self).expect("Rules is serializable")
     }
