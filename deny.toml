@@ -5,12 +5,15 @@
 
 [advisories]
 version = 2
-yanked = "deny"
+yanked = "warn"
 unmaintained = "none"
 # Keep in sync with audit.toml [advisories].ignore — reviewed exceptions:
 # - RUSTSEC-2023-0071 (rsa): no fixed upgrade, transitive via zenoh
 # - RUSTSEC-2026-0041 (lz4_flex): fix exists but zenoh 1.9.0 pins 0.10
-ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0041"]
+# - RUSTSEC-2024-0436 (paste 1.0.15, unmaintained): transitive via zenoh 1.10.0
+# - RUSTSEC-2025-0134 (rustls-pemfile 2.2.0, unmaintained): transitive via zenoh 1.10.0
+# yanked = "warn" (was "deny") — chacha20 0.10.1 is yanked but still pulled via rand 0.10.2 → quinn-proto → zenoh 1.10.0; no direct use, accepted as warning until Zenoh updates rand.
+ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0041", "RUSTSEC-2024-0436", "RUSTSEC-2025-0134"]
 
 [licenses]
 version = 2
