@@ -10,7 +10,7 @@ use tracing::{error, info};
 
 use crate::auth::{AuthConfig, AuthMode};
 use crate::cli::Args;
-use crate::config::{ClientConfig, RuleStore, run_hot_reload};
+use crate::config::{ActiveRules, ClientConfig, run_hot_reload};
 use crate::engine;
 use crate::health;
 use crate::health::Health;
@@ -46,7 +46,7 @@ pub struct SubsystemHandles {
 /// device so the always-on answerer can stream video back when a device is set.
 pub async fn start_common_subsystems(
     transport: &Arc<Transport>,
-    store: &RuleStore,
+    store: &ActiveRules,
     robot_id: &str,
     #[cfg_attr(not(feature = "media"), allow(unused_variables))] args: &Args,
 ) -> SubsystemHandles {
@@ -278,7 +278,7 @@ fn build_auth(args: &Args) -> Result<AuthConfig, Box<dyn std::error::Error + Sen
 /// (registration is skipped) and the store holds the empty fail-safe ruleset.
 struct Inputs {
     client_config: Option<ClientConfig>,
-    store: RuleStore,
+    store: ActiveRules,
 }
 
 /// Load the client config file and ruleset with fail-safe fallback. A
@@ -333,7 +333,7 @@ fn load_inputs(args: &Args, robot_id: &str) -> Inputs {
         },
         None if client_config.is_some() => {
             info!("no ruleset file — using built-in demo");
-            RuleStore::bootstrap_demo(robot_id)
+            ActiveRules::bootstrap_demo(robot_id)
         }
         None => fail_safe_store(),
     };
@@ -345,16 +345,16 @@ fn load_inputs(args: &Args, robot_id: &str) -> Inputs {
 }
 
 /// The minimal fail-safe ruleset: no motion commands are emitted.
-fn fail_safe_store() -> RuleStore {
-    RuleStore::bootstrap("rules = []\n").expect("empty ruleset always parses")
+fn fail_safe_store() -> ActiveRules {
+    ActiveRules::bootstrap("rules = []\n").expect("empty ruleset always parses")
 }
 
 /// Compile extended-TOML if it parses as semantic; otherwise treat as raw TOML.
 /// On any failure, fall back to a fail-safe empty ruleset.
-fn compile_rules_or_default(text: &str, robot_id: &str) -> RuleStore {
+fn compile_rules_or_default(text: &str, robot_id: &str) -> ActiveRules {
     if let Ok(doc) = semantic::parse_semantic(text) {
         match semantic::compile(&doc, robot_id) {
-            Ok(rules) => match RuleStore::bootstrap(&rules.to_toml()) {
+            Ok(rules) => match ActiveRules::bootstrap(&rules.to_toml()) {
                 Ok(s) => return s,
                 Err(e) => {
                     error!(error = %e, "semantic compile produced invalid rules -> safe-state")
@@ -365,7 +365,7 @@ fn compile_rules_or_default(text: &str, robot_id: &str) -> RuleStore {
             }
         }
     }
-    match RuleStore::bootstrap(text) {
+    match ActiveRules::bootstrap(text) {
         Ok(s) => s,
         Err(e) => {
             error!(error = %e, "config invalid -> starting in fail-safe safe-state");

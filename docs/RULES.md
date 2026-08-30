@@ -45,6 +45,8 @@ actions = [ { slow_to = 0.1, qos = "best_effort" } ]   # the command
 - `[zones]` is a lookup table: a name → a rectangle. You reference the name in `when.in_zone`.
 - Each `[[rules]]` is one `if → then`.
 
+In code this file is parsed into a [`RulesManifest`] (`semantic::RulesManifest`, formerly `SemanticDoc` — alias kept for one release) and compiled into `Rules` for the engine.
+
 ---
 
 ## 3. Conditions (`when`)

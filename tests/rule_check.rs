@@ -234,7 +234,7 @@ fn rule_check_rejects_ruleset_envelope() {
         .args(["rule", "check", p.to_str().unwrap()])
         .output()
         .expect("run flo rule check on envelope");
-    // Envelope format parses as a SemanticDoc with no site, no rules — it's valid
+    // Envelope format parses as a RulesManifest with no site, no rules — it's valid
     // TOML but semantically empty. The check should still succeed (empty ruleset
     // is valid) or at least not crash.
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -314,7 +314,7 @@ fn rule_check_rejects_empty_when() {
 async fn demo_rules_parse_with_field_operands() {
     // The built-in demo rules must parse into evaluable Field references, not
     // dead Str literals — the regression that made them impossible to fire.
-    let rules = flo_rs::config::RuleStore::bootstrap_demo("7")
+    let rules = flo_rs::config::ActiveRules::bootstrap_demo("7")
         .current()
         .await;
     let e_stop = rules
