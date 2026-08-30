@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use flo_rs::config::RuleStore;
+use flo_rs::config::ActiveRules;
 use flo_rs::engine;
 use flo_rs::rules::Qos;
 use flo_rs::semantic::{compile, parse_semantic, validate};
@@ -31,7 +31,7 @@ async fn semantic_compile_to_engine_e2e() {
     validate(&doc).expect("validate");
     let rules = compile(&doc, "7").expect("compile");
 
-    let store = RuleStore::new(Arc::new(rules));
+    let store = ActiveRules::new(Arc::new(rules));
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
     transport
@@ -95,7 +95,7 @@ async fn compile_with_custom_robot_id_routes_topics() {
     validate(&doc).expect("validate");
     let rules = compile(&doc, "42").expect("compile with robot 42");
 
-    let store = RuleStore::new(Arc::new(rules));
+    let store = ActiveRules::new(Arc::new(rules));
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
     transport

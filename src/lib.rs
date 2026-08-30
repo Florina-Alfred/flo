@@ -8,7 +8,6 @@ extern crate self as flo_rs;
 pub mod auth;
 pub mod cli;
 pub mod codec;
-pub mod common;
 pub mod config;
 pub mod device;
 pub mod engine;
@@ -24,7 +23,6 @@ pub mod signaling;
 pub mod topic;
 pub mod transport;
 
-#[cfg(feature = "media")]
 pub mod media;
 #[cfg(feature = "media")]
 pub mod mesh;

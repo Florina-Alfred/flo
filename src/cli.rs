@@ -156,6 +156,14 @@ pub enum RuleSubcommand {
     },
 }
 
+impl RuleSubcommand {
+    /// Dispatch the rule subcommand. Merged from `common::run_rule_command` so the
+    /// CLI seam owns its `flo rule` dispatch directly.
+    pub fn run(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        run_rule_command(self)
+    }
+}
+
 /// Video / WebRTC options, flattened into [`Args`].
 #[derive(ClapArgs, Debug, Default)]
 pub struct VideoArgs {
@@ -186,6 +194,126 @@ pub fn parse_args() -> Args {
 /// on invalid input.
 pub fn parse_server_args() -> ServerArgs {
     ServerArgs::parse()
+}
+
+/// Handle the `flo rule check <path>` and `flo rule compile <path>` subcommands.
+/// Validates / compiles a semantic ruleset (extended TOML) before deploy.
+/// Exits the process on invalid input.
+pub fn run_rule_command(
+    cmd: &RuleSubcommand,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    match cmd {
+        RuleSubcommand::Check { path, json } => {
+            let text =
+                std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+            match crate::semantic::parse_semantic_auto(&text) {
+                Ok(doc) => match crate::semantic::validate(&doc) {
+                    Ok(()) => {
+                        if *json {
+                            println!("{}", serde_json::json!({ "status": "ok", "path": path }));
+                        } else {
+                            println!("OK: {path} is a valid semantic ruleset");
+                        }
+                        Ok(())
+                    }
+                    Err(e) => {
+                        // Semantic validation failed — fall back to raw `Rules::from_toml`
+                        // so `examples/rules/sample.toml` (raw engine format) can still
+                        // validate. Only accept the raw fallback if it parses and has
+                        // non-empty `when` guards; otherwise surface the semantic error
+                        // (e.g. typo'd `in_zne` that would otherwise look like an empty
+                        // raw rule and incorrectly pass).
+                        if let Ok(rules) = crate::rules::Rules::from_toml(&text)
+                            && !rules.rules.is_empty()
+                            && rules
+                                .rules
+                                .iter()
+                                .all(|r| !r.when.all.is_empty() || !r.when.any.is_empty())
+                        {
+                            if *json {
+                                println!(
+                                    "{}",
+                                    serde_json::json!({ "status": "ok", "path": path, "kind": "raw" })
+                                );
+                            } else {
+                                println!("OK: {path} is a valid raw ruleset");
+                            }
+                            return Ok(());
+                        }
+                        if *json {
+                            eprintln!(
+                                "{}",
+                                serde_json::json!({ "status": "error", "path": path, "error": e.to_string() })
+                            );
+                        } else {
+                            eprintln!("INVALID: {e}");
+                        }
+                        std::process::exit(1);
+                    }
+                },
+                Err(e) => {
+                    // Parse failed as semantic — try raw `Rules::from_toml` fallback
+                    // before giving up. This lets `flo rule check` accept both
+                    // semantic documents and raw engine TOML (e.g. sample.toml).
+                    if let Ok(rules) = crate::rules::Rules::from_toml(&text)
+                        && !rules.rules.is_empty()
+                        && rules
+                            .rules
+                            .iter()
+                            .all(|r| !r.when.all.is_empty() || !r.when.any.is_empty())
+                    {
+                        // Extra guard: reject raw rules whose topics don't match the
+                        // naming convention — typo'd semantic files would otherwise
+                        // parse as empty-when raw rules and slip through.
+                        let bad_topic = rules
+                            .rules
+                            .iter()
+                            .flat_map(|r| r.when.all.iter().chain(r.when.any.iter()))
+                            .find(|t| crate::topic::check_topic_pattern(&t.topic).is_err());
+                        if bad_topic.is_none() {
+                            if *json {
+                                println!(
+                                    "{}",
+                                    serde_json::json!({ "status": "ok", "path": path, "kind": "raw" })
+                                );
+                            } else {
+                                println!("OK: {path} is a valid raw ruleset");
+                            }
+                            return Ok(());
+                        }
+                    }
+                    if *json {
+                        eprintln!(
+                            "{}",
+                            serde_json::json!({ "status": "error", "path": path, "error": e.to_string() })
+                        );
+                    } else {
+                        eprintln!("PARSE ERROR: {e}");
+                    }
+                    std::process::exit(1);
+                }
+            }
+        }
+        RuleSubcommand::Compile {
+            path,
+            robot_id,
+            json: _,
+        } => {
+            let rid = robot_id.as_deref().unwrap_or("7");
+            let text =
+                std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+            let doc = crate::semantic::parse_semantic_auto(&text).map_err(|e| {
+                eprintln!("PARSE ERROR: {e}");
+                std::process::exit(1);
+            })?;
+            let rules = crate::semantic::compile(&doc, rid).map_err(|e| {
+                eprintln!("COMPILE ERROR: {e}");
+                std::process::exit(1);
+            })?;
+            println!("{}", serde_json::to_string_pretty(&rules).unwrap());
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
