@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicU64;
 use serde_json::Value;
 use tracing::{debug, info, warn};
 
-use crate::config::RuleStore;
+use crate::config::ActiveRules;
 use crate::rules::{Action, EvalMode, Op, Operand, Predicate, PrimitiveRef, Rules, Trigger, When};
 use crate::transport::{Subscription, Transport};
 
@@ -236,7 +236,7 @@ fn when_satisfied_with_prev(
 /// are live so the caller can gate readiness on actual subscription, not spawn.
 pub async fn run_engine(
     transport: Arc<Transport>,
-    store: RuleStore,
+    store: ActiveRules,
     eval_counter: Arc<AtomicU64>,
     subscribed: Option<tokio::sync::oneshot::Sender<()>>,
 ) -> zenoh::Result<()> {
@@ -807,7 +807,7 @@ mod tests {
     async fn demo_rule_fires_on_bumper_pressed() {
         let zones = no_zones();
         let mut prev = HashMap::new();
-        let rules = crate::config::RuleStore::bootstrap_demo("7")
+        let rules = crate::config::ActiveRules::bootstrap_demo("7")
             .current()
             .await;
         let e_stop = rules

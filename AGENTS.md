@@ -20,16 +20,9 @@ stance has been relaxed to reflect reality:
 
 ## Tests & CI
 
-- Tests: `cargo test --lib --tests` (full suite, not `--bin flo` which had 0 tests — INFRA-01).
-  Media tests: `cargo test --features media --lib --tests` (requires GStreamer, CI `media` job).
-  Ignored suite: `cargo test -- --ignored --list` must compile (INFRA-09).
+- Tests: `cargo test --lib --tests` (full suite, not `--bin flo` which had 0 tests — INFRA-01) — see CONTRIBUTING.md for `media` + `ignored` + low-disk + coverage.
   Flaky sleeps are hardened via `oneshot` ready-gate and deadline-based retry
   (10s `core_loop`, 2s transport, 20s media) — see `tests/core_loop.rs:1-15`.
-- Coverage: `cargo llvm-cov --workspace --all-targets --lcov --output-path lcov.info`
-  (tool `cargo-llvm-cov@0.6.18`, `llvm-tools-preview`); CI `coverage` job is
-  advisory at 50% line threshold (ratchet, `continue-on-error`), not a required
-  status check yet; lcov retained 30d, Codecov upload conditional on
-  `CODECOV_TOKEN` (`codecov/codecov-action@5a10915` pinned).
 - CI: GitHub Actions workflows in `.github/workflows/` (minimal gate `ci.yml` on
   every branch/PR; full security + release pipeline `security.yml` on `main`/tags).
 
@@ -38,10 +31,9 @@ stance has been relaxed to reflect reality:
 - Build: `cargo build`
 - Run: `cargo run`
 - Check (fast, no build artifacts): `cargo check`
-- Test: `cargo test --lib --tests` (or `cargo test --features media --lib --tests` for media)
-- Ignored: `cargo test -- --ignored --list`
+- Test: `cargo test --lib --tests` (full suite) — see CONTRIBUTING.md for `media` + `ignored` + low-disk + coverage
 - Lint: `cargo clippy --all-targets -- -D warnings` / Format: `cargo fmt --all -- --check`
-- Coverage: `cargo llvm-cov --workspace --all-targets --lcov --output-path lcov.info` (requires `cargo-llvm-cov@0.6.18` + `llvm-tools-preview`; see `CONTRIBUTING.md`)
+- Coverage: `cargo llvm-cov --workspace --all-targets --lcov --output-path lcov.info` (requires `cargo-llvm-cov@0.6.18` + `llvm-tools-preview`; see CONTRIBUTING.md)
 
 ## CI / GitHub Actions (free-tier safe)
 

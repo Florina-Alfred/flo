@@ -4,7 +4,7 @@ use std::sync::atomic::AtomicU64;
 use tracing::info;
 
 use crate::auth::{AuthConfig, AuthMode};
-use crate::config::{RuleStore, ServerConfig, run_hot_reload_with_registry};
+use crate::config::{ActiveRules, ServerConfig, run_hot_reload_with_registry};
 use crate::engine;
 use crate::health::Health;
 use crate::registration::{RegistrationServer, run_heartbeat_monitor, run_registration_handler};
@@ -40,7 +40,7 @@ pub async fn run_server(
     };
 
     let transport = Arc::new(Transport::open_with(config).await?);
-    let store = RuleStore::bootstrap_demo(&robot_id);
+    let store = ActiveRules::bootstrap_demo(&robot_id);
     let counter = Arc::new(AtomicU64::new(0));
 
     let db_path = std::env::temp_dir()
