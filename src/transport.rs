@@ -108,6 +108,20 @@ impl Transport {
         Ok(())
     }
 
+    /// Return the locators this transport is listening on (e.g. `tcp/127.0.0.1:7447`).
+    /// Used by `flo-server` to log the Zenoh endpoint so `flo --connect` can be
+    /// discovered without `ss`/`lsof` — the health port (`FLO_HEALTH_ADDR`) is a
+    /// different listener and must not be confused with the Zenoh port.
+    pub async fn locators(&self) -> Vec<String> {
+        self.session
+            .info()
+            .locators()
+            .await
+            .into_iter()
+            .map(|l| l.to_string())
+            .collect()
+    }
+
     /// Publish `payload` to `topic` with the QoS class from the locked decision:
     /// Reliable => class 1 (STOP: Reliable + Block + InteractiveHigh);
     /// BestEffort => class 2 (lidar: BestEffort + Drop + DataLow).

@@ -48,12 +48,13 @@ git clone https://github.com/Florina-Alfred/flo && cd flo
 cargo test --lib --tests          # 170+ tests, 0 ignored
 cargo run --bin flo -- --help     # client flags (no --video-* leak)
 cargo run --bin flo -- rule check examples/rules/sample.toml  # OK: valid raw ruleset
-# loopback demo without multicast/Docker — two terminals:
-#   cargo run --bin flo-server -- --auth-mode none --auth-allow-insecure
-#   cargo run --bin flo -- --config tests/fixtures/minimal-client-config.toml --connect tcp/127.0.0.1:<zenoh-port>
+# loopback demo — two terminals (explicit --connect, works with or without multicast):
+#   terminal 1: cargo run --bin flo-server -- --auth-mode none --auth-allow-insecure
+#     → log: zenoh router listening locators=["tcp/127.0.0.1:<zenoh-port>"]  # <-- Zenoh port, not health port
+#   terminal 2: cargo run --bin flo -- --config tests/fixtures/minimal-client-config.toml --connect tcp/127.0.0.1:<zenoh-port>
 ```
 
-> **Multicast blocked on Docker/WSL/CI/VPN?** Zenoh scouting is on `224.0.0.224:7446` and is often filtered — the client hangs at `registering with server...`. Add `--connect tcp/127.0.0.1:<zenoh-port>` (the **Zenoh** port, not the health port). The `health server listening` line in the server log is *not* the Zenoh port — find the Zenoh listener via `ss -tlnp` (Linux) or `lsof -i -P -n | grep LISTEN` (macOS). See [Quickstart](#quickstart--5-minutes) and `scripts/verify-readme-demo.sh` (auto-discovers the Zenoh port with `ss`/`lsof` fallback).
+> **Why explicit `--connect`?** Zenoh scouting is on `224.0.0.224:7446` and is often filtered on Docker/WSL/CI/VPN — without `--connect` the client hangs at `registering with server...` and times out after 3 retries. The demo uses `--connect` by default so it works everywhere. Find `<zenoh-port>` in the server log `zenoh router listening locators=[...]` (not `health server listening`, which is the HTTP port). Fallback discovery via `ss -tlnp` / `lsof -i -P -n | grep LISTEN` also works — see [Quickstart](#quickstart--5-minutes) and `scripts/verify-readme-demo.sh` (prefers the `zenoh router listening` log, falls back to `ss`/`lsof`).
 
 `FLO_HEALTH_ADDR` (default `0.0.0.0:0` → random port on host, `0.0.0.0:8080` in containers via `Dockerfile`) is the health HTTP address, not the Zenoh mesh address — do not pass it to `--connect`.
 
@@ -92,7 +93,7 @@ cargo run --bin flo-server -- \
   --auth-allow-insecure
 ```
 
-The server opens a Zenoh router (`tcp/127.0.0.1:0` → random port, `src/auth.rs:152`, `src/transport.rs:86`), starts the registration handler on `fleet/registration`, and monitors liveliness on `robot/*/client/liveliness`. Log: `flo-engine server mode started`. Script: `verify-readme-demo.sh` step 4 (background start + `health server listening` / `ss` port discovery).
+The server opens a Zenoh router (`tcp/127.0.0.1:0` → random port, `src/auth.rs:152`, `src/transport.rs:86`), starts the registration handler on `fleet/registration`, and monitors liveliness on `robot/*/client/liveliness`. Log: `flo-engine server mode started` and `zenoh router listening locators=["tcp/127.0.0.1:<zenoh-port>"]` (the Zenoh mesh port — distinct from `health server listening`). Script: `verify-readme-demo.sh` step 4 (background start + `zenoh router listening` log + `ss`/`lsof` fallback).
 
 ### 3. Start a robot (terminal 2)
 
@@ -101,17 +102,17 @@ Copy the minimal client config and a ruleset:
 ```bash
 cp tests/fixtures/minimal-client-config.toml robot-7-config.toml
 cp examples/rules/sample.toml robot-7-rules.toml
+# Find the Zenoh port from the server log: zenoh router listening locators=["tcp/127.0.0.1:<zenoh-port>"]
 cargo run --bin flo -- \
   --robot-id robot-7 \
   --config robot-7-config.toml \
   --ruleset robot-7-rules.toml \
   --auth-mode none \
-  --auth-allow-insecure
-# If multicast is blocked, append:
-#   --connect tcp/127.0.0.1:<zenoh-port>
+  --auth-allow-insecure \
+  --connect tcp/127.0.0.1:<zenoh-port>
 ```
 
-Multicast note: on Docker/WSL/CI/VPN add `--connect tcp/127.0.0.1:<zenoh-port>` (see 30-second catch). Find `<zenoh-port>` via `ss -tlnp` (Linux, shows `flo-server` owner) or `lsof -i -P -n | grep LISTEN` (macOS fallback) — exclude the health port (`health server listening addr=0.0.0.0:<port>`). `--connect` is `src/cli.rs:54`, sets `connect/endpoints` and forces Zenoh client mode. Script auto-discovers the Zenoh port this way.
+`--connect` is the default (not a fallback) — it makes the demo work with or without multicast. Without it, `registering with server...` hangs and times out after 3 retries on hosts where `224.0.0.224:7446` is filtered (Docker/WSL/CI/VPN). Find `<zenoh-port>` in the server log `zenoh router listening locators=[...]` (not `health server listening`, which is the HTTP port). Fallback discovery via `ss -tlnp` / `lsof -i -P -n | grep LISTEN` also works — exclude the health port. `--connect` is `src/cli.rs:54`, sets `connect/endpoints` and forces Zenoh client mode. Script auto-discovers the Zenoh port via the `zenoh router listening` log.
 
 ### 4. Health probing (any terminal)
 

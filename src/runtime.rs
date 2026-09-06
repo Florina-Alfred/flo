@@ -172,9 +172,11 @@ impl ClientRuntime {
             let _ = config.insert_json5("connect/endpoints", &format!("[{}]", endpoints.join(",")));
         }
         let mut transport = Transport::open_with(config).await?;
+        let locators = transport.locators().await;
+        info!(locators = ?locators, %robot_id, "zenoh session open");
         transport.declare_liveliness(&robot_id).await?;
         let transport = Arc::new(transport);
-        info!(%robot_id, "zenoh session open, liveliness declared");
+        info!(%robot_id, "liveliness declared");
 
         // Register with the server when a valid client config is present; in
         // safe-state there is no config payload to register with.
