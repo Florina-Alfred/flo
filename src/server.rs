@@ -40,6 +40,8 @@ pub async fn run_server(
     };
 
     let transport = Arc::new(Transport::open_with(config).await?);
+    let locators = transport.locators().await;
+    info!(locators = ?locators, robot_id = %robot_id, "zenoh router listening");
     let store = ActiveRules::bootstrap_demo(&robot_id);
     let counter = Arc::new(AtomicU64::new(0));
 

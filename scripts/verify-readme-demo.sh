@@ -170,8 +170,17 @@ fi
 HEALTH_PORT_SERVER=$(grep 'health server listening' /tmp/flo-server.log 2>/dev/null | grep -oE '0\.0\.0\.0:[0-9]+' | grep -oE '[0-9]+$' | head -1 || true)
 echo "  Health port (server): ${HEALTH_PORT_SERVER:-unknown} (from log)"
 
-ZENOH_LISTEN_RAW=""
-if command -v ss >/dev/null 2>&1; then
+# Prefer the explicit Zenoh log (cross-platform, no ss/lsof needed) — added for #286
+# Server now logs: zenoh router listening locators=["tcp/127.0.0.1:<zenoh-port>"] (src/server.rs, src/runtime.rs)
+ZENOH_PORT_FROM_LOG=$(grep -oE 'zenoh router listening.*tcp/127\.0\.0\.1:[0-9]+' /tmp/flo-server.log 2>/dev/null | grep -oE '[0-9]+$' | head -1 || true)
+if [ -n "$ZENOH_PORT_FROM_LOG" ]; then
+  SERVER_PORT="$ZENOH_PORT_FROM_LOG"
+  echo "  Zenoh port: $SERVER_PORT (from 'zenoh router listening' log) — will use --connect"
+  echo "  (Health and Zenoh are distinct ports — do not use health port for --connect)"
+  echo ""
+else
+  ZENOH_LISTEN_RAW=""
+  if command -v ss >/dev/null 2>&1; then
   # Linux: ss with -tlnp shows owning process
   ZENOH_LISTEN_RAW=$(ss -tlnp 2>/dev/null | grep "flo-server" || true)
   if [ -z "$ZENOH_LISTEN_RAW" ]; then
@@ -208,6 +217,7 @@ fi
 echo "  Zenoh port: $SERVER_PORT (tcp/127.0.0.1:$SERVER_PORT) — will use --connect (explicit unicast, not multicast)"
 echo "  (Health and Zenoh are distinct ports — do not use health port for --connect)"
 echo ""
+fi
 
 # ── Step 4: Start clients ──────────────────────────────────────────
 echo "[5/5] Starting clients (explicit --connect tcp/127.0.0.1:<zenoh-port> for blocked multicast)..."
