@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use clap::Parser;
@@ -7,8 +6,8 @@ use clap::Parser;
 use flo_rs::cli::Args;
 use flo_rs::config::ActiveRules;
 use flo_rs::engine;
-use flo_rs::runtime::ClientRuntime;
-use flo_rs::runtime::start_common_subsystems;
+use flo_rs::health::ReadyGate;
+use flo_rs::runtime::{Runtime, start_common_subsystems};
 use flo_rs::transport::Transport;
 
 fn empty_store() -> ActiveRules {
@@ -26,13 +25,14 @@ async fn dead_engine_is_detected_by_supervision() {
     );
     let store = empty_store();
     let args = Args::parse_from(["flo", "--auth-mode", "none", "--auth-allow-insecure"]);
+    let gate = ReadyGate::new();
 
-    let handles = start_common_subsystems(&transport, &store, "robot-7", &args).await;
+    let handles = start_common_subsystems(&transport, &store, "robot-7", &args, gate).await;
 
     // Kill the rule engine subsystem; supervision must take the client down.
     handles.engine.abort();
 
-    let err = ClientRuntime::supervise(handles)
+    let err = Runtime::supervise(handles)
         .await
         .expect_err("supervision must fail when a subsystem dies");
     let msg = err.to_string().to_lowercase();
@@ -42,7 +42,7 @@ async fn dead_engine_is_detected_by_supervision() {
     );
 }
 
-/// The engine reports through the ready-gate channel only once its sensor
+/// The engine consumes the ReadyGate token and flips it once its sensor
 /// subscriptions are live, so `/readyz` can never flip before subscription.
 #[tokio::test(flavor = "multi_thread")]
 async fn engine_confirms_subscriptions_on_ready_gate() {
@@ -53,21 +53,28 @@ async fn engine_confirms_subscriptions_on_ready_gate() {
     );
     let store = empty_store();
 
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let counter = Arc::new(AtomicU64::new(0));
+    let gate = ReadyGate::new();
+    let gate_clone = gate.clone();
     let t = transport.clone();
     let s = store.clone();
-    let c = counter.clone();
     let task = tokio::spawn(async move {
-        engine::run_engine(t, s, c, Some(tx))
+        engine::run_engine(t, s, gate_clone)
             .await
             .expect("engine run");
     });
 
-    tokio::time::timeout(Duration::from_secs(5), rx)
-        .await
-        .expect("engine must confirm subscriptions within 5s")
-        .expect("subscribed signal must fire");
+    // Poll gate.is_ready_public until engine flips it, bounded by 5s deadline.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if gate.is_ready_public() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "engine must confirm subscriptions within 5s"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
 
     task.abort();
 }

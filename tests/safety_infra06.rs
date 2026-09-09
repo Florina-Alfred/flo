@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use flo_rs::config::{ActiveRules, ClientConfig, run_hot_reload_with_registry};
 use flo_rs::engine;
+use flo_rs::health::ReadyGate;
 use flo_rs::registration::{
     ClientState, RegistrationError, RegistrationStatus, register_with_client,
     run_heartbeat_monitor, run_registration_handler,
@@ -523,12 +524,13 @@ actions = [{ topic = "actuator/old", qos = "reliable", payload = { fired_old = t
         .await
         .expect("sub new");
 
-    let counter = Arc::new(AtomicU64::new(0));
-    let c2 = counter.clone();
+    let gate = ReadyGate::new();
+    let counter = gate.eval_counter();
     let t2 = transport.clone();
     let s2 = store.clone();
+    let g2 = gate.clone();
     let engine_h = tokio::spawn(async move {
-        let _ = engine::run_engine(t2, s2, c2, None).await;
+        let _ = engine::run_engine(t2, s2, g2).await;
     });
 
     // wait for engine tick so subscriptions are live
@@ -627,13 +629,14 @@ actions = [{ topic = "actuator/old2", qos = "reliable", payload = { a = 1 } }]
         })
         .await
         .unwrap();
-    let counter = Arc::new(AtomicU64::new(0));
+    let gate = ReadyGate::new();
+    let counter = gate.eval_counter();
     let h = tokio::spawn({
         let t = transport.clone();
         let s = store.clone();
-        let c = counter.clone();
+        let g = gate.clone();
         async move {
-            let _ = engine::run_engine(t, s, c, None).await;
+            let _ = engine::run_engine(t, s, g).await;
         }
     });
     // wait tick

@@ -3,7 +3,7 @@
 use flo_rs::cli;
 use flo_rs::cli::Command;
 use flo_rs::health::init_tracing;
-use flo_rs::runtime::ClientRuntime;
+use flo_rs::runtime::Runtime;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -25,5 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         };
     }
 
-    ClientRuntime::run(args).await
+    let args_clone = args.clone();
+    let (runtime, _gate) = Runtime::bootstrap(args).await?;
+    runtime.run(args_clone).await
 }

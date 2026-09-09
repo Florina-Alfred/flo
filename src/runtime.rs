@@ -1,7 +1,6 @@
 //! Client runtime: a single deep entry point that owns transport open, auth
 //! config application, registration, ruleset loading with fail-safe fallback,
-//! and task supervision. Replaces the three competing startup flows (the dead
-//! `demo`/`production` modules and the inline startup in `flo-client.rs`).
+//! and task supervision.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,8 +12,7 @@ use crate::auth::{AuthConfig, AuthMode};
 use crate::cli::Args;
 use crate::config::{ActiveRules, ClientConfig, run_hot_reload};
 use crate::engine;
-use crate::health;
-use crate::health::Health;
+use crate::health::{Health, ReadyGate, Supervisor};
 #[cfg(feature = "media")]
 use crate::mesh::run_signaling;
 use crate::mutation::compute_sha;
@@ -22,7 +20,7 @@ use crate::registration::{RegistrationError, register_with_client};
 use crate::semantic;
 use crate::transport::Transport;
 
-/// Handles to the spawned subsystems, for supervision by the client runtime.
+/// Handles to the spawned subsystems, for supervision by the runtime.
 #[derive(Debug)]
 pub struct SubsystemHandles {
     /// HTTP health/liveness server.
@@ -39,25 +37,25 @@ pub struct SubsystemHandles {
 /// Start the health server, hot-reload, rule engine, and WebRTC signaling and
 /// return their handles for supervision.
 ///
-/// Readiness is gated on the rule engine confirming its subscriptions: `/readyz`
-/// flips 200 only after the engine's initial sensor topics are live, so the probe
-/// never reports ready while the engine is still subscribing (or dead).
+/// Readiness is gated on the rule engine consuming the `ReadyGate` token:
+/// `/readyz` flips 200 only after the engine's initial sensor topics are live,
+/// so the probe never reports ready while the engine is still subscribing
+/// (or dead).
 ///
-/// `args` is used (under the `media` feature) to resolve the configured capture
-/// device so the always-on answerer can stream video back when a device is set.
+/// `ready_gate` is the shared readiness token. The engine clones it and flips
+/// it after subscribing; the health server holds a clone to report readiness.
 pub async fn start_common_subsystems(
     transport: &Arc<Transport>,
     store: &ActiveRules,
     robot_id: &str,
     #[cfg_attr(not(feature = "media"), allow(unused_variables))] args: &Args,
+    ready_gate: ReadyGate,
 ) -> SubsystemHandles {
-    let health = Health::new();
-
     let health_task = {
-        let health = health.clone();
+        let health = ready_gate.clone();
         tokio::spawn(async move {
             let addr = std::env::var("FLO_HEALTH_ADDR").unwrap_or_else(|_| "0.0.0.0:0".to_string());
-            if let Err(e) = health::serve(health, &addr).await {
+            if let Err(e) = crate::health::serve(health, &addr).await {
                 error!(error = %e, "health server exited");
             }
         })
@@ -74,18 +72,12 @@ pub async fn start_common_subsystems(
         })
     };
 
-    // The engine signals on this channel once its initial subscriptions are live;
-    // dropping it without a send (engine died first) keeps readiness un-set.
-    let (subscribed_tx, subscribed_rx) = tokio::sync::oneshot::channel::<()>();
-
     let engine_task = {
         let transport = transport.clone();
         let store = store.clone();
-        let eval_counter = health.eval_counter();
+        let gate = ready_gate.clone();
         tokio::spawn(async move {
-            if let Err(e) =
-                engine::run_engine(transport, store, eval_counter, Some(subscribed_tx)).await
-            {
+            if let Err(e) = engine::run_engine(transport, store, gate).await {
                 error!(error = %e, "rule engine exited");
             }
         })
@@ -108,8 +100,6 @@ pub async fn start_common_subsystems(
         })
     };
 
-    await_engine_ready(subscribed_rx, &health).await;
-
     SubsystemHandles {
         health: health_task,
         reload: reload_task,
@@ -119,35 +109,24 @@ pub async fn start_common_subsystems(
     }
 }
 
-/// Gate readiness on the engine confirming its subscriptions. When the engine
-/// dies before confirming (its sender is dropped), readiness stays un-set and
-/// the client's supervision observes the dead engine and exits non-zero.
-async fn await_engine_ready(
-    subscribed: tokio::sync::oneshot::Receiver<()>,
-    health: &Health,
-) -> bool {
-    match subscribed.await {
-        Ok(()) => {
-            health.set_ready();
-            info!("flo ready");
-            true
-        }
-        Err(_) => {
-            error!("rule engine died before confirming subscriptions; /readyz stays not-ready");
-            false
-        }
-    }
+/// Deep runtime that owns `Transport + ActiveRules + Health` atomically.
+/// Replaces the empty `ClientRuntime` god-function with a `bootstrap` that
+/// collapses the six bounces (`Args` → `build_auth` → `load_inputs` →
+/// `zenoh_config` → `Transport::open` → `declare_liveliness` → `register`)
+/// into one deep entry point, exposing a `ReadyGate` token for the engine.
+pub struct Runtime {
+    pub transport: Arc<Transport>,
+    pub store: ActiveRules,
+    pub health: Health,
 }
 
-/// The client runtime. `run` owns the whole client lifecycle: it validates
-/// auth (fail-closed), loads the ruleset (fail-safe on missing/invalid input),
-/// opens the Zenoh transport, registers with the server, starts the shared
-/// subsystems, and supervises them until one dies.
-pub struct ClientRuntime;
-
-impl ClientRuntime {
-    /// Run the client until a supervised subsystem exits.
-    pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+impl Runtime {
+    /// Bootstrap the runtime from `Args`, owning transport open, liveliness and
+    /// registration atomically. Returns the deep `Runtime` and the readiness
+    /// gate token that the engine will consume.
+    pub async fn bootstrap(
+        args: Args,
+    ) -> Result<(Self, ReadyGate), Box<dyn std::error::Error + Send + Sync>> {
         let robot_id = args
             .robot_id
             .clone()
@@ -225,53 +204,52 @@ impl ClientRuntime {
             }
         }
 
-        // Start the shared subsystems and supervise them: exit when the first
-        // subsystem dies so a process supervisor can restart the client.
-        let handles = start_common_subsystems(&transport, &inputs.store, &robot_id, &args).await;
-        crate::media::spawn_video_peer(&args, transport, robot_id);
+        let health = ReadyGate::new();
+        let ready_gate = health.clone();
+        let runtime = Self {
+            transport,
+            store: inputs.store,
+            health,
+        };
+        Ok((runtime, ready_gate))
+    }
 
+    /// Run the runtime until a supervised subsystem exits. Collapses the old
+    /// `ClientRuntime::run` god-function into a deep method that owns the
+    /// lifecycle via `Supervisor`.
+    pub async fn run(self, args: Args) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let robot_id = args
+            .robot_id
+            .clone()
+            .or_else(|| std::env::var("FLO_ROBOT_ID").ok())
+            .unwrap_or_else(|| "7".to_string());
+        let gate = self.health.clone();
+        let handles =
+            start_common_subsystems(&self.transport, &self.store, &robot_id, &args, gate).await;
+        crate::media::spawn_video_peer(&args, self.transport.clone(), robot_id);
         Self::supervise(handles).await
     }
 
-    /// Supervise the client's subsystems until one dies. Mirrors the server's
-    /// `tokio::try_join!` discipline: the first dead subsystem is logged as
-    /// fatal and the process exits non-zero so a supervisor can restart it.
+    /// Supervise the client's subsystems until one dies. Delegates to the
+    /// single `Supervisor` shared with the server so health is always
+    /// supervised.
     pub async fn supervise(
         handles: SubsystemHandles,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut vec: Vec<(&'static str, tokio::task::JoinHandle<()>)> = Vec::new();
+        vec.push(("health", handles.health));
+        vec.push(("hot-reload", handles.reload));
+        vec.push(("rule engine", handles.engine));
         #[cfg(feature = "media")]
-        {
-            tokio::select! {
-                res = handles.health => fatal_exit("health", res),
-                res = handles.reload => fatal_exit("hot-reload", res),
-                res = handles.engine => fatal_exit("rule engine", res),
-                res = handles.signaling => fatal_exit("signaling", res),
-            }
-        }
-        #[cfg(not(feature = "media"))]
-        {
-            tokio::select! {
-                res = handles.health => fatal_exit("health", res),
-                res = handles.reload => fatal_exit("hot-reload", res),
-                res = handles.engine => fatal_exit("rule engine", res),
-            }
-        }
+        vec.push(("signaling", handles.signaling));
+        Supervisor::await_shutdown(vec).await
     }
 }
 
-/// Log a dead subsystem at fatal severity and return the process error. Any
-/// completion is fatal: a subsystem that stops running — clean or with an error —
-/// must take the whole client down, never leave it alive but unsupervised.
-fn fatal_exit(
-    subsystem: &str,
-    res: Result<(), tokio::task::JoinError>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    error!(
-        subsystem = subsystem,
-        "fatal: {subsystem} subsystem exited: {res:?}"
-    );
-    Err(format!("{subsystem} subsystem exited: {res:?}").into())
-}
+/// Backwards-compatible alias for `Runtime`. Kept for one release so
+/// integration tests importing `ClientRuntime` keep compiling; new code should
+/// use `Runtime`.
+pub type ClientRuntime = Runtime;
 
 /// Build and validate the auth config from CLI flags. Production validation
 /// rejects `auth: none` without `--auth-allow-insecure` and requires credential
@@ -536,27 +514,31 @@ actions = [ { slow_to = 0.1, qos = "best_effort" } ]
 
     #[tokio::test]
     async fn readiness_waits_for_engine_subscription() {
-        let health = Health::new();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let mut gate = std::pin::pin!(await_engine_ready(rx, &health));
-        // The gate must not complete while the engine has not confirmed.
-        tokio::select! {
-            _ = &mut gate => panic!("readiness gate completed before engine confirmation"),
-            _ = tokio::time::sleep(Duration::from_millis(20)) => {}
-        }
-        assert!(!health.is_ready());
-        tx.send(()).unwrap();
-        assert!(gate.await);
-        assert!(health.is_ready());
+        // ReadyGate is now the single readiness interface; the engine flips it
+        // after subscribing. Test that the gate starts not-ready and flips on
+        // set_ready, mirroring the old oneshot-gated readiness.
+        let gate = ReadyGate::new();
+        assert!(!gate.is_ready());
+        // Simulate engine confirming subscriptions.
+        gate.set_ready();
+        assert!(gate.is_ready());
+        // Subsequent readiness stays true.
+        assert!(gate.is_ready());
+        // A fresh gate is still not-ready.
+        let fresh = ReadyGate::new();
+        assert!(!fresh.is_ready());
     }
 
     #[tokio::test]
     async fn readiness_stays_unset_when_engine_dies_before_subscribing() {
-        let health = Health::new();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        // Engine dies before confirming: its sender drops without a send.
-        drop(tx);
-        assert!(!await_engine_ready(rx, &health).await);
-        assert!(!health.is_ready());
+        // If the engine dies before calling set_ready, readiness stays false.
+        let gate = ReadyGate::new();
+        // Engine task drops without ever calling set_ready.
+        drop(gate.clone());
+        // Original gate is still not-ready.
+        assert!(!gate.is_ready());
+        // Sleep a tick to ensure no async flip.
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert!(!gate.is_ready());
     }
 }

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use flo_rs::config::{ActiveRules, run_hot_reload};
 use flo_rs::engine;
+use flo_rs::health::ReadyGate;
 use flo_rs::transport::Transport;
 
 #[tokio::main]
@@ -37,14 +38,7 @@ async fn main() -> anyhow::Result<()> {
         let t = transport.clone();
         let s = store.clone();
         tokio::spawn(async move {
-            if let Err(e) = engine::run_engine(
-                t,
-                s,
-                std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-                None,
-            )
-            .await
-            {
+            if let Err(e) = engine::run_engine(t, s, ReadyGate::new()).await {
                 eprintln!("engine exited: {e}");
             }
         });

@@ -1,11 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
 
 use serde_json::Value;
 use tracing::{debug, info, warn};
 
 use crate::config::ActiveRules;
+use crate::health::ReadyGate;
 use crate::rules::{Action, EvalMode, Op, Operand, Predicate, PrimitiveRef, Rules, Trigger, When};
 use crate::transport::{Subscription, Transport};
 
@@ -232,14 +232,15 @@ fn when_satisfied_with_prev(
 /// Run the rule engine: subscribe to sensor topics, maintain latest samples, and
 /// fire actions for satisfied rules. One subscription per distinct trigger topic.
 ///
-/// `subscribed`, when provided, is signalled once the initial sensor subscriptions
-/// are live so the caller can gate readiness on actual subscription, not spawn.
+/// `ready_gate` is consumed as the readiness token: the engine flips it once its
+/// initial sensor subscriptions are live, so the caller can gate `/readyz` on
+/// actual subscription, not spawn.
 pub async fn run_engine(
     transport: Arc<Transport>,
     store: ActiveRules,
-    eval_counter: Arc<AtomicU64>,
-    subscribed: Option<tokio::sync::oneshot::Sender<()>>,
+    ready_gate: ReadyGate,
 ) -> zenoh::Result<()> {
+    let eval_counter = ready_gate.eval_counter();
     let (sample_tx, mut sample_rx) = tokio::sync::mpsc::channel::<(String, Value)>(256);
 
     // Zone-tracking: observe zone entered/cleared to support SameZoneAs. The
@@ -261,9 +262,7 @@ pub async fn run_engine(
         &mut current_topics,
     )
     .await?;
-    if let Some(tx) = subscribed {
-        let _ = tx.send(());
-    }
+    ready_gate.set_ready();
     info!(sensor_topics = ?current_topics, "rule engine subscribed");
 
     // Latest sample per topic, plus a re-evaluation tick so `when` holds compose.
