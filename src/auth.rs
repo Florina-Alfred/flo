@@ -194,19 +194,23 @@ impl AuthConfig {
                     .as_ref()
                     .ok_or(AuthError::MissingCredential("trust"))?;
                 // Zenoh 1.x mTLS: enable_mtls + PEM cert/key + CA trust.
+                // Use serde_json to properly escape paths — no string interpolation.
                 let _ = c.insert_json5("transport/auth/usrpwd", "false");
                 let _ = c.insert_json5("transport/link/tls/enable_mtls", "true");
-                let _ = c.insert_json5(
-                    "transport/link/tls/certificate",
-                    &format!("\"{}\"", cert.display()),
-                );
-                let _ = c.insert_json5("transport/link/tls/key", &format!("\"{}\"", key.display()));
-                let _ = c.insert_json5(
-                    "transport/link/tls/trust_anchors",
-                    &format!("\"{}\"", trust.display()),
-                );
+                let cert_json = serde_json::to_string(&cert.display().to_string())
+                    .map_err(|_| AuthError::MissingCredential("cert"))?;
+                let key_json = serde_json::to_string(&key.display().to_string())
+                    .map_err(|_| AuthError::MissingCredential("key"))?;
+                let trust_json = serde_json::to_string(&trust.display().to_string())
+                    .map_err(|_| AuthError::MissingCredential("trust"))?;
+                let _ = c.insert_json5("transport/link/tls/certificate", &cert_json);
+                let _ = c.insert_json5("transport/link/tls/key", &key_json);
+                let _ = c.insert_json5("transport/link/tls/trust_anchors", &trust_json);
                 // Enforce per-robot least-privilege namespace.
-                let _ = c.insert_json5("access_control", &Self::acl_config(robot_id));
+                let acl = Self::acl_config(robot_id);
+                let acl_json = serde_json::to_string(&acl)
+                    .map_err(|_| AuthError::MissingCredential("trust"))?;
+                let _ = c.insert_json5("access_control", &acl_json);
                 Ok(c)
             }
             AuthMode::Ed25519 => {
@@ -229,30 +233,22 @@ impl AuthConfig {
     /// `subject_id` binds the rule to the client cert's common name; for mTLS
     /// the cert CN/SAN should equal `robot_id` (the transport enforces the
     /// cert chain via `trust_anchors`; this ACL adds the namespace scoping).
-    pub fn acl_config(robot_id: &str) -> String {
+    pub fn acl_config(robot_id: &str) -> serde_json::Value {
         let own = crate::topic::robot_namespace(robot_id);
         let rules_key = crate::topic::rules_key(robot_id);
-        format!(
-            r#"{{
-                "enabled": true,
-                "default_permission": "deny",
-                "rules": [
-                    {{
-                        "id": "r_own",
-                        "permission": "allow",
-                        "flows": ["egress", "ingress"],
-                        "messages": ["put", "query", "reply"],
-                        "key_exprs": ["{own}", "{rules_key}"]
-                    }}
-                ],
-                "subjects": [
-                    {{ "id": "{robot_id}", "cert_common_names": ["{robot_id}"] }}
-                ],
-                "policies": [
-                    {{ "id": "p_own", "rules": ["r_own"], "subjects": ["{robot_id}"] }}
-                ]
-            }}"#
-        )
+        serde_json::json!({
+            "enabled": true,
+            "default_permission": "deny",
+            "rules": [{
+                "id": "r_own",
+                "permission": "allow",
+                "flows": ["egress", "ingress"],
+                "messages": ["put", "query", "reply"],
+                "key_exprs": [own.as_str(), rules_key.as_str()]
+            }],
+            "subjects": [{ "id": robot_id, "cert_common_names": [robot_id] }],
+            "policies": [{ "id": "p_own", "rules": ["r_own"], "subjects": [robot_id] }]
+        })
     }
 }
 
@@ -453,13 +449,34 @@ mod tests {
     #[test]
     fn acl_scopes_own_namespace_and_denies_rest() {
         let acl = AuthConfig::acl_config("robot_7");
+        let s = serde_json::to_string(&acl).unwrap();
         // own subtree allowed
-        assert!(acl.contains("/robot/robot_7/**"));
+        assert!(s.contains("/robot/robot_7/**"));
         // default deny everywhere else
-        assert!(acl.contains("\"default_permission\": \"deny\""));
+        assert!(
+            s.contains("\"default_permission\":\"deny\"")
+                || s.contains("\"default_permission\": \"deny\"")
+        );
         // own robot id is the subject + cert common name
-        assert!(acl.contains("\"cert_common_names\": [\"robot_7\"]"));
+        assert!(
+            s.contains("\"cert_common_names\":[\"robot_7\"]")
+                || s.contains("\"cert_common_names\": [\"robot_7\"]")
+        );
         // a different robot's namespace is NOT in the allowed key_exprs
-        assert!(!acl.contains("/robot/robot_8/**"));
+        assert!(!s.contains("/robot/robot_8/**"));
+        // validated as JSON
+        assert!(acl.get("enabled").is_some());
+        assert_eq!(acl["default_permission"], "deny");
+    }
+
+    #[test]
+    fn acl_config_is_valid_json() {
+        let acl = AuthConfig::acl_config("robot_7");
+        // Must be valid JSON and contain expected fields
+        assert_eq!(acl["enabled"], true);
+        assert_eq!(acl["default_permission"], "deny");
+        assert!(acl["rules"].is_array());
+        assert!(acl["subjects"].is_array());
+        assert!(acl["policies"].is_array());
     }
 }

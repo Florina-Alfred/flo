@@ -269,7 +269,7 @@ pub fn run_rule_command(
                             .rules
                             .iter()
                             .flat_map(|r| r.when.all.iter().chain(r.when.any.iter()))
-                            .find(|t| crate::topic::check_topic_pattern(&t.topic).is_err());
+                            .find(|t| crate::topic::Topic::try_new(&t.topic).is_err());
                         if bad_topic.is_none() {
                             if *json {
                                 println!(

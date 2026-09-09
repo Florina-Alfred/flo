@@ -20,7 +20,7 @@ fn empty_store() -> ActiveRules {
 #[tokio::test(flavor = "multi_thread")]
 async fn dead_engine_is_detected_by_supervision() {
     let transport = Arc::new(
-        Transport::open_with(Transport::loopback_config())
+        Transport::open_router()
             .await
             .expect("open loopback transport"),
     );
@@ -47,7 +47,7 @@ async fn dead_engine_is_detected_by_supervision() {
 #[tokio::test(flavor = "multi_thread")]
 async fn engine_confirms_subscriptions_on_ready_gate() {
     let transport = Arc::new(
-        Transport::open_with(Transport::loopback_config())
+        Transport::open_router()
             .await
             .expect("open loopback transport"),
     );

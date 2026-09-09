@@ -57,13 +57,12 @@ async fn cli_demo_registration_with_connect() {
         allow_insecure: true,
         ..Default::default()
     };
-    let mut client_config_zenoh = client_auth
+    let client_config_zenoh = client_auth
         .zenoh_config("robot-7")
         .expect("client auth config");
-    // Mimic `runtime.rs` `--connect` handling: set mode client + connect endpoint
-    let _ = client_config_zenoh.insert_json5("mode", "\"client\"");
-    let _ =
-        client_config_zenoh.insert_json5("connect/endpoints", &format!("[\"{server_endpoint}\"]"));
+    // Use Transport helper to merge --connect without touching insert_json5 directly
+    let endpoints = vec![server_endpoint.clone()];
+    let client_config_zenoh = Transport::with_endpoints(client_config_zenoh, &endpoints);
     let client_transport = Arc::new(
         Transport::open_with(client_config_zenoh)
             .await

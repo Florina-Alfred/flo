@@ -224,7 +224,7 @@ mod tests {
         let offerer = "robot7";
         let answerer = "peer8";
         let transport = Arc::new(
-            Transport::open_with(Transport::loopback_config())
+            Transport::open_router()
                 .await
                 .expect("open loopback transport"),
         );
@@ -238,16 +238,22 @@ mod tests {
         // Subscribe to the answer the answerer should publish back.
         // Key layout: robot/{answerer}/signal/{offerer}/answer.
         let answer_key = crate::topic::signal_answer_key(answerer, offerer);
-        let (tx, rx) = tokio::sync::oneshot::channel::<Vec<u8>>();
-        let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
-        transport
-            .subscribe(&answer_key, move |s: zenoh::sample::Sample| {
-                if let Some(tx) = tx.lock().expect("test lock poisoned").take() {
-                    let _ = tx.send(s.payload().to_bytes().to_vec());
-                }
-            })
+        let answer_pattern =
+            crate::topic::Pattern::try_new(answer_key.as_str()).expect("valid pattern");
+        let answer_sub = transport
+            .subscribe(answer_pattern)
             .await
             .expect("subscribe answer key");
+        let (tx, rx) = tokio::sync::oneshot::channel::<Vec<u8>>();
+        let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+        tokio::spawn(async move {
+            while let Ok(sample) = answer_sub.recv_async().await {
+                if let Some(tx) = tx.lock().expect("test lock poisoned").take() {
+                    let _ = tx.send(sample.payload().to_bytes().to_vec());
+                    break;
+                }
+            }
+        });
 
         // The offerer side: a real PeerConnection producing a valid SDP offer.
         // `VideoPeer::offer` publishes the offer over the same transport, which

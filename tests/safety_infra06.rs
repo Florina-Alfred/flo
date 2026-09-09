@@ -12,7 +12,8 @@ use flo_rs::registration::{
 };
 use flo_rs::registry::Registry;
 use flo_rs::rules::{Action, EvalMode, Qos, Rule, Rules, Ruleset, Trigger, When};
-use flo_rs::transport::Transport;
+use flo_rs::topic::{Pattern, Topic};
+use flo_rs::transport::{Envelope, Transport};
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -22,26 +23,8 @@ fn get_free_port() -> u16 {
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let p = l.local_addr().unwrap().port();
     drop(l);
-    // small pause so OS releases it before zenoh binds
     std::thread::sleep(Duration::from_millis(10));
     p
-}
-
-fn router_config(port: u16) -> zenoh::Config {
-    let mut c = zenoh::Config::default();
-    let _ = c.insert_json5("mode", "\"router\"");
-    let _ = c.insert_json5("scouting/multicast/enabled", "false");
-    let _ = c.insert_json5("scouting/gossip/enabled", "false");
-    let _ = c.insert_json5("listen/endpoints", &format!("[\"tcp/127.0.0.1:{port}\"]"));
-    c
-}
-
-fn client_config(port: u16) -> zenoh::Config {
-    let mut c = zenoh::Config::default();
-    let _ = c.insert_json5("mode", "\"client\"");
-    let _ = c.insert_json5("scouting/multicast/enabled", "false");
-    let _ = c.insert_json5("connect/endpoints", &format!("[\"tcp/127.0.0.1:{port}\"]"));
-    c
 }
 
 fn test_client_config() -> ClientConfig {
@@ -96,7 +79,7 @@ where
 async fn heartbeat_poison_on_delete_after_registered() {
     let port = get_free_port();
     let server = Arc::new(
-        Transport::open_with(router_config(port))
+        Transport::open_test_router(port)
             .await
             .expect("open router"),
     );
@@ -115,18 +98,22 @@ async fn heartbeat_poison_on_delete_after_registered() {
     tokio::time::sleep(Duration::from_millis(400)).await;
 
     // subscribe to alert before the delete so we don't miss it
-    let alert_key = flo_rs::topic::heartbeat_alert("robot-hb-1");
-    let (alert_tx, mut alert_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-    let _alert_sub = server
-        .subscribe_managed(&alert_key, move |s: zenoh::sample::Sample| {
-            let _ = alert_tx.send(s.payload().to_bytes().to_vec());
-        })
+    let alert_topic = flo_rs::topic::heartbeat_alert("robot-hb-1");
+    let alert_pattern = Pattern::try_new(alert_topic.as_str()).unwrap();
+    let sub = server
+        .subscribe(alert_pattern)
         .await
         .expect("subscribe alert");
+    let (alert_tx, mut alert_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    tokio::spawn(async move {
+        while let Ok(sample) = sub.recv_async().await {
+            let _ = alert_tx.send(sample.payload().to_bytes().to_vec());
+        }
+    });
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // client declares liveliness
-    let mut client = Transport::open_with(client_config(port))
+    let mut client = Transport::open_test_client(port)
         .await
         .expect("open client");
     tokio::time::sleep(Duration::from_millis(600)).await;
@@ -175,7 +162,7 @@ async fn heartbeat_poison_on_delete_after_registered() {
 async fn heartbeat_no_poison_when_token_dropped_before_register() {
     let port = get_free_port();
     let server = Arc::new(
-        Transport::open_with(router_config(port))
+        Transport::open_test_router(port)
             .await
             .expect("open router"),
     );
@@ -189,17 +176,21 @@ async fn heartbeat_no_poison_when_token_dropped_before_register() {
     });
     tokio::time::sleep(Duration::from_millis(400)).await;
 
-    let alert_key = flo_rs::topic::heartbeat_alert("robot-hb-pre");
-    let (alert_tx, mut alert_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-    let _alert_sub = server
-        .subscribe_managed(&alert_key, move |s: zenoh::sample::Sample| {
-            let _ = alert_tx.send(s.payload().to_bytes().to_vec());
-        })
+    let alert_topic = flo_rs::topic::heartbeat_alert("robot-hb-pre");
+    let alert_pattern = Pattern::try_new(alert_topic.as_str()).unwrap();
+    let sub = server
+        .subscribe(alert_pattern)
         .await
         .expect("subscribe alert");
+    let (alert_tx, mut alert_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    tokio::spawn(async move {
+        while let Ok(sample) = sub.recv_async().await {
+            let _ = alert_tx.send(sample.payload().to_bytes().to_vec());
+        }
+    });
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let mut client = Transport::open_with(client_config(port))
+    let mut client = Transport::open_test_client(port)
         .await
         .expect("open client");
     tokio::time::sleep(Duration::from_millis(600)).await;
@@ -236,7 +227,7 @@ async fn heartbeat_no_poison_when_token_dropped_before_register() {
 async fn registration_envelope_loopback() {
     let port = get_free_port();
     let server = Arc::new(
-        Transport::open_with(router_config(port))
+        Transport::open_test_router(port)
             .await
             .expect("open router"),
     );
@@ -250,7 +241,7 @@ async fn registration_envelope_loopback() {
     tokio::time::sleep(Duration::from_millis(600)).await;
 
     let client = Arc::new(
-        Transport::open_with(client_config(port))
+        Transport::open_test_client(port)
             .await
             .expect("open client"),
     );
@@ -270,8 +261,9 @@ async fn registration_envelope_loopback() {
     );
 
     // 3) bad JSON ignored: publish raw invalid bytes, then ensure next valid still works
+    let reg_topic = Topic::try_new(flo_rs::topic::REGISTRATION_KEY).unwrap();
     client
-        .put_bytes(flo_rs::topic::REGISTRATION_KEY, b"not json at all".to_vec())
+        .publish(reg_topic, Envelope::RawBytes(b"not json at all".to_vec()))
         .await
         .expect("put bad json");
     tokio::time::sleep(Duration::from_millis(400)).await;
@@ -281,13 +273,10 @@ async fn registration_envelope_loopback() {
         "after bad JSON, next valid register should still Ack, got {r3:?}"
     );
 
-    // 4) empty robot_id -> error (handler returns MissingRobotId which surfaces as ServerError)
+    // 4) empty robot_id -> error
     let r4 = register_with_client(client.clone(), "", &cfg).await;
     assert!(r4.is_err(), "empty robot_id must error, got {r4:?}");
-    // Ensure it's not a Timeout that would hide MissingRobotId, but any Err satisfies spec.
-    // If we got MissingRobotId via ServerError, the string should mention it.
     if let Err(RegistrationError::ServerError(msg)) = &r4 {
-        // either contains MissingRobotId or generic unexpected status that still proves handler replied
         assert!(
             msg.contains("MissingRobotId") || msg.contains("unexpected"),
             "empty robot_id ServerError should mention MissingRobotId, got {msg}"
@@ -299,10 +288,9 @@ async fn registration_envelope_loopback() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn registration_bad_json_does_not_crash_handler() {
-    // explicit second test for bad JSON isolation
     let port = get_free_port();
     let server = Arc::new(
-        Transport::open_with(router_config(port))
+        Transport::open_test_router(port)
             .await
             .expect("open router"),
     );
@@ -314,7 +302,7 @@ async fn registration_bad_json_does_not_crash_handler() {
     });
     tokio::time::sleep(Duration::from_millis(600)).await;
     let client = Arc::new(
-        Transport::open_with(client_config(port))
+        Transport::open_test_client(port)
             .await
             .expect("open client"),
     );
@@ -322,8 +310,9 @@ async fn registration_bad_json_does_not_crash_handler() {
 
     // flood a few bad payloads
     for _ in 0..3 {
+        let reg_topic = Topic::try_new(flo_rs::topic::REGISTRATION_KEY).unwrap();
         client
-            .put_bytes(flo_rs::topic::REGISTRATION_KEY, b"{ bad json".to_vec())
+            .publish(reg_topic, Envelope::RawBytes(b"{ bad json".to_vec()))
             .await
             .unwrap();
     }
@@ -346,19 +335,18 @@ async fn registration_bad_json_does_not_crash_handler() {
 async fn hot_reload_with_registry_conflict_and_bad_toml() {
     let port = get_free_port();
     let server = Arc::new(
-        Transport::open_with(router_config(port))
+        Transport::open_test_router(port)
             .await
             .expect("open router"),
     );
     tokio::time::sleep(Duration::from_millis(200)).await;
     let client = Arc::new(
-        Transport::open_with(client_config(port))
+        Transport::open_test_client(port)
             .await
             .expect("open client"),
     );
     tokio::time::sleep(Duration::from_millis(700)).await;
 
-    // temp registry db
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
         "flo-test-{}-{}",
@@ -401,9 +389,9 @@ async fn hot_reload_with_registry_conflict_and_bad_toml() {
         }],
     };
     let good_toml = good.to_toml();
-    let pub_key = flo_rs::topic::ruleset_pub_key("cell-7", "acme");
+    let pub_topic = flo_rs::topic::ruleset_pub_key("cell-7", "acme");
     client
-        .put_bytes(&pub_key, good_toml.as_bytes().to_vec())
+        .publish(pub_topic, Envelope::RawBytes(good_toml.as_bytes().to_vec()))
         .await
         .expect("publish good");
     let updated = poll_until(
@@ -439,12 +427,15 @@ async fn hot_reload_with_registry_conflict_and_bad_toml() {
         }],
     };
     let conflict_toml = conflict.to_toml();
+    let pub_topic2 = flo_rs::topic::ruleset_pub_key("cell-7", "acme");
     client
-        .put_bytes(&pub_key, conflict_toml.as_bytes().to_vec())
+        .publish(
+            pub_topic2,
+            Envelope::RawBytes(conflict_toml.as_bytes().to_vec()),
+        )
         .await
         .expect("publish conflict");
     tokio::time::sleep(Duration::from_millis(800)).await;
-    // store must stay unchanged
     assert_eq!(
         store.current().await.rules.len(),
         1,
@@ -456,7 +447,6 @@ async fn hot_reload_with_registry_conflict_and_bad_toml() {
         "conflict must keep previous rule"
     );
 
-    // audit must contain rejected_conflict
     let conn = rusqlite::Connection::open(&db_path).expect("open audit db");
     let cnt: i64 = conn
         .query_row(
@@ -471,8 +461,12 @@ async fn hot_reload_with_registry_conflict_and_bad_toml() {
     );
 
     // bad TOML keeps previous
+    let pub_topic3 = flo_rs::topic::ruleset_pub_key("cell-7", "acme");
     client
-        .put_bytes(&pub_key, b"this is not toml {{{".to_vec())
+        .publish(
+            pub_topic3,
+            Envelope::RawBytes(b"this is not toml {{{".to_vec()),
+        )
         .await
         .expect("publish bad toml");
     tokio::time::sleep(Duration::from_millis(600)).await;
@@ -492,12 +486,7 @@ async fn hot_reload_with_registry_conflict_and_bad_toml() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn engine_hot_swap_new_topic_fires() {
-    // single-transport engine test (loopback, no mesh needed)
-    let transport = Arc::new(
-        Transport::open_with(Transport::loopback_config())
-            .await
-            .expect("open loopback"),
-    );
+    let transport = Arc::new(Transport::open_router().await.expect("open loopback"));
 
     let old_toml = r#"
 [[rules]]
@@ -507,21 +496,23 @@ actions = [{ topic = "actuator/old", qos = "reliable", payload = { fired_old = t
 "#;
     let store = ActiveRules::bootstrap(old_toml).expect("old store");
 
+    let pattern_old = Pattern::try_new("actuator/old").unwrap();
+    let sub_old = transport.subscribe(pattern_old).await.expect("sub old");
     let (tx_old, mut rx_old) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-    transport
-        .subscribe("actuator/old", move |s: zenoh::sample::Sample| {
-            let _ = tx_old.send(s.payload().to_bytes().to_vec());
-        })
-        .await
-        .expect("sub old");
+    tokio::spawn(async move {
+        while let Ok(sample) = sub_old.recv_async().await {
+            let _ = tx_old.send(sample.payload().to_bytes().to_vec());
+        }
+    });
 
+    let pattern_new = Pattern::try_new("actuator/new").unwrap();
+    let sub_new = transport.subscribe(pattern_new).await.expect("sub new");
     let (tx_new, mut rx_new) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-    transport
-        .subscribe("actuator/new", move |s: zenoh::sample::Sample| {
-            let _ = tx_new.send(s.payload().to_bytes().to_vec());
-        })
-        .await
-        .expect("sub new");
+    tokio::spawn(async move {
+        while let Ok(sample) = sub_new.recv_async().await {
+            let _ = tx_new.send(sample.payload().to_bytes().to_vec());
+        }
+    });
 
     let counter = Arc::new(AtomicU64::new(0));
     let c2 = counter.clone();
@@ -531,7 +522,6 @@ actions = [{ topic = "actuator/old", qos = "reliable", payload = { fired_old = t
         let _ = engine::run_engine(t2, s2, c2, None).await;
     });
 
-    // wait for engine tick so subscriptions are live
     let baseline = counter.load(Ordering::SeqCst);
     let ok = poll_until(
         || {
@@ -544,9 +534,15 @@ actions = [{ topic = "actuator/old", qos = "reliable", payload = { fired_old = t
     .await;
     assert!(ok, "engine should start ticking");
 
-    // old topic must fire
+    let sensor_old = Topic::try_new("sensor/old").unwrap();
     transport
-        .publish("sensor/old", Qos::BestEffort, &serde_json::json!({"v": 1}))
+        .publish(
+            sensor_old,
+            Envelope::Action {
+                qos: Qos::BestEffort,
+                payload: serde_json::json!({"v": 1}),
+            },
+        )
         .await
         .expect("pub old");
     let got_old = tokio::time::timeout(Duration::from_secs(3), rx_old.recv()).await;
@@ -555,7 +551,6 @@ actions = [{ topic = "actuator/old", qos = "reliable", payload = { fired_old = t
         "old rule should fire before swap"
     );
 
-    // swap to new topic
     let new_toml = r#"
 [[rules]]
 name = "new-rule"
@@ -565,22 +560,32 @@ actions = [{ topic = "actuator/new", qos = "reliable", payload = { fired_new = t
     let new_rules = Rules::from_toml(new_toml).expect("new rules parse");
     store.swap(Arc::new(new_rules)).await;
 
-    // send filler samples to trigger rebuild (counter %16)
-    // we publish to old topic which engine still subscribed to until rebuild
     for _ in 0..24 {
+        let t = Topic::try_new("sensor/old").unwrap();
         let _ = transport
-            .publish("sensor/old", Qos::BestEffort, &serde_json::json!({"v": 1}))
+            .publish(
+                t,
+                Envelope::Action {
+                    qos: Qos::BestEffort,
+                    payload: serde_json::json!({"v": 1}),
+                },
+            )
             .await;
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    // give rebuild time to run (subscribe_to_topics is async)
     tokio::time::sleep(Duration::from_millis(600)).await;
 
-    // now new topic must fire; retry a few times in case rebuild still lagging
     let mut fired = false;
     for _ in 0..6 {
+        let t = Topic::try_new("sensor/new").unwrap();
         transport
-            .publish("sensor/new", Qos::BestEffort, &serde_json::json!({"v": 1}))
+            .publish(
+                t,
+                Envelope::Action {
+                    qos: Qos::BestEffort,
+                    payload: serde_json::json!({"v": 1}),
+                },
+            )
             .await
             .expect("pub new");
         if tokio::time::timeout(Duration::from_millis(600), rx_new.recv())
@@ -590,10 +595,16 @@ actions = [{ topic = "actuator/new", qos = "reliable", payload = { fired_new = t
             fired = true;
             break;
         }
-        // also send a couple filler to nudge rebuild if not yet done
         for _ in 0..4 {
+            let t2 = Topic::try_new("sensor/new").unwrap();
             let _ = transport
-                .publish("sensor/new", Qos::BestEffort, &serde_json::json!({"v": 1}))
+                .publish(
+                    t2,
+                    Envelope::Action {
+                        qos: Qos::BestEffort,
+                        payload: serde_json::json!({"v": 1}),
+                    },
+                )
                 .await;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -606,13 +617,7 @@ actions = [{ topic = "actuator/new", qos = "reliable", payload = { fired_new = t
 
 #[tokio::test(flavor = "multi_thread")]
 async fn engine_hot_swap_old_topic_no_longer_fires_after_rebuild() {
-    // verify the old subscription is dropped after rebuild, so old no longer fires
-    // (this is a secondary check, not strictly required but proves the rebuild)
-    let transport = Arc::new(
-        Transport::open_with(Transport::loopback_config())
-            .await
-            .expect("open loopback"),
-    );
+    let transport = Arc::new(Transport::open_router().await.expect("open loopback"));
     let old_toml = r#"
 [[rules]]
 name = "old-rule"
@@ -620,13 +625,14 @@ when.all = [{ topic = "sensor/old2", mode = "Level" }]
 actions = [{ topic = "actuator/old2", qos = "reliable", payload = { a = 1 } }]
 "#;
     let store = ActiveRules::bootstrap(old_toml).unwrap();
+    let pattern = Pattern::try_new("actuator/old2").unwrap();
+    let sub = transport.subscribe(pattern).await.unwrap();
     let (tx_old, mut rx_old) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-    transport
-        .subscribe("actuator/old2", move |s: zenoh::sample::Sample| {
-            let _ = tx_old.send(s.payload().to_bytes().to_vec());
-        })
-        .await
-        .unwrap();
+    tokio::spawn(async move {
+        while let Ok(sample) = sub.recv_async().await {
+            let _ = tx_old.send(sample.payload().to_bytes().to_vec());
+        }
+    });
     let counter = Arc::new(AtomicU64::new(0));
     let h = tokio::spawn({
         let t = transport.clone();
@@ -636,7 +642,6 @@ actions = [{ topic = "actuator/old2", qos = "reliable", payload = { a = 1 } }]
             let _ = engine::run_engine(t, s, c, None).await;
         }
     });
-    // wait tick
     let baseline = counter.load(Ordering::SeqCst);
     poll_until(
         || {
@@ -647,7 +652,6 @@ actions = [{ topic = "actuator/old2", qos = "reliable", payload = { a = 1 } }]
     )
     .await;
 
-    // swap to new
     let new_toml = r#"
 [[rules]]
 name = "new-rule"
@@ -657,20 +661,32 @@ actions = [{ topic = "actuator/new2", qos = "reliable", payload = { b = 2 } }]
     let nr = Rules::from_toml(new_toml).unwrap();
     store.swap(Arc::new(nr)).await;
     for _ in 0..24 {
+        let t = Topic::try_new("sensor/old2").unwrap();
         let _ = transport
-            .publish("sensor/old2", Qos::BestEffort, &serde_json::json!({}))
+            .publish(
+                t,
+                Envelope::Action {
+                    qos: Qos::BestEffort,
+                    payload: serde_json::json!({}),
+                },
+            )
             .await;
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     tokio::time::sleep(Duration::from_millis(600)).await;
-    // drain any old actions that fired during filler
     while tokio::time::timeout(Duration::from_millis(100), rx_old.recv())
         .await
         .is_ok()
     {}
-    // after rebuild, publishing old should not fire
+    let t = Topic::try_new("sensor/old2").unwrap();
     transport
-        .publish("sensor/old2", Qos::BestEffort, &serde_json::json!({}))
+        .publish(
+            t,
+            Envelope::Action {
+                qos: Qos::BestEffort,
+                payload: serde_json::json!({}),
+            },
+        )
         .await
         .unwrap();
     let should_be_none = tokio::time::timeout(Duration::from_millis(600), rx_old.recv()).await;

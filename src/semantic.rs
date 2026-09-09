@@ -357,11 +357,12 @@ pub fn compile(doc: &RulesManifest, robot_id: &str) -> Result<Rules, SemanticErr
     for rule in &doc.rules {
         let (all, any) = expand_when(&rule.when, robot_id, &rule.name, "when")?;
 
-        let actions: Vec<Action> = rule
+        let actions: Result<Vec<Action>, SemanticError> = rule
             .actions
             .iter()
             .map(|a| compile_action(a, robot_id))
             .collect();
+        let actions = actions?;
 
         out.push(Rule {
             name: rule.name.clone(),
@@ -412,7 +413,7 @@ fn expand_when(
 
     if let Some(z) = &when.in_zone {
         all.push(Trigger {
-            topic: crate::topic::robot_local(robot_id, "zone"),
+            topic: crate::topic::robot_local(robot_id, "zone").into_string(),
             pred: Some(Predicate::Comparison {
                 op: Op::Eq,
                 lhs: Operand::Prim(PrimitiveRef::Zone),
@@ -423,7 +424,7 @@ fn expand_when(
     }
     if let Some(z) = &when.not_in_zone {
         all.push(Trigger {
-            topic: crate::topic::robot_local(robot_id, "zone"),
+            topic: crate::topic::robot_local(robot_id, "zone").into_string(),
             pred: Some(Predicate::Not(Box::new(Predicate::Comparison {
                 op: Op::Eq,
                 lhs: Operand::Prim(PrimitiveRef::Zone),
@@ -434,7 +435,7 @@ fn expand_when(
     }
     if let Some(d) = when.near_human {
         all.push(Trigger {
-            topic: crate::topic::robot_local(robot_id, "human_present"),
+            topic: crate::topic::robot_local(robot_id, "human_present").into_string(),
             pred: Some(Predicate::Comparison {
                 op: Op::Lt,
                 lhs: Operand::Prim(PrimitiveRef::HumanPresence),
@@ -445,7 +446,7 @@ fn expand_when(
     }
     if let Some(d) = when.not_near_human {
         all.push(Trigger {
-            topic: crate::topic::robot_local(robot_id, "human_present"),
+            topic: crate::topic::robot_local(robot_id, "human_present").into_string(),
             pred: Some(Predicate::Comparison {
                 op: Op::Ge,
                 lhs: Operand::Prim(PrimitiveRef::HumanPresence),
@@ -456,7 +457,7 @@ fn expand_when(
     }
     if let Some(n) = &when.near {
         all.push(Trigger {
-            topic: crate::topic::robot_local(robot_id, "proximity"),
+            topic: crate::topic::robot_local(robot_id, "proximity").into_string(),
             pred: Some(Predicate::Comparison {
                 op: Op::Lt,
                 lhs: Operand::Prim(PrimitiveRef::Proximity(n.entity.clone())),
@@ -467,7 +468,7 @@ fn expand_when(
     }
     if let Some(r) = &when.role {
         all.push(Trigger {
-            topic: crate::topic::robot_local(robot_id, "role"),
+            topic: crate::topic::robot_local(robot_id, "role").into_string(),
             pred: Some(Predicate::Comparison {
                 op: Op::Eq,
                 lhs: Operand::Prim(PrimitiveRef::Robot),
@@ -538,31 +539,38 @@ fn expand_when(
     Ok((all, any))
 }
 
-fn compile_action(a: &SemanticAction, robot_id: &str) -> Action {
+fn compile_action(a: &SemanticAction, robot_id: &str) -> Result<Action, SemanticError> {
     if a.estop {
-        Action {
-            topic: crate::topic::stop_cmd("fleet"),
+        Ok(Action {
+            topic: crate::topic::stop_cmd("fleet").into_string(),
             qos: Qos::Reliable,
             payload: serde_json::json!({ "stop": true }),
-        }
+        })
     } else if a.resume {
-        Action {
-            topic: crate::topic::robot_local(robot_id, "drive"),
+        Ok(Action {
+            topic: crate::topic::robot_local(robot_id, "drive").into_string(),
             qos: Qos::Reliable,
             payload: serde_json::json!({ "resume": true }),
-        }
+        })
     } else if let Some(topic) = &a.topic {
-        Action {
-            topic: topic.clone(),
+        // Validate raw topic strings at construction — a typo fails here, not at publish.
+        let validated = crate::topic::Topic::try_new(topic).map_err(|e| {
+            SemanticError::new(
+                ErrorCode::InvalidTopic,
+                format!("invalid topic '{topic}': {e}"),
+            )
+        })?;
+        Ok(Action {
+            topic: validated.into_string(),
             qos: a.qos,
             payload: a.payload.clone().unwrap_or(serde_json::Value::Null),
-        }
+        })
     } else {
-        Action {
-            topic: crate::topic::robot_local(robot_id, "drive"),
+        Ok(Action {
+            topic: crate::topic::robot_local(robot_id, "drive").into_string(),
             qos: a.qos,
             payload: serde_json::json!({ "speed_mps": a.slow_to.unwrap_or(0.0) }),
-        }
+        })
     }
 }
 

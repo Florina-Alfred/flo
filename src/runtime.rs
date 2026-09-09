@@ -164,14 +164,15 @@ impl ClientRuntime {
         let inputs = load_inputs(&args, &robot_id);
 
         // Transport: auth-derived config (mTLS / none) plus explicit peers.
-        let mut config = auth
+        // Deep adapter: callers never touch the low-level config — endpoint merging is inside `Transport`.
+        let config = auth
             .zenoh_config(&robot_id)
             .map_err(|e| format!("auth config invalid: {e}"))?;
-        if !args.connect.is_empty() {
-            let _ = config.insert_json5("mode", "\"client\"");
-            let endpoints: Vec<String> = args.connect.iter().map(|e| format!("\"{e}\"")).collect();
-            let _ = config.insert_json5("connect/endpoints", &format!("[{}]", endpoints.join(",")));
-        }
+        let config = if args.connect.is_empty() {
+            config
+        } else {
+            Transport::with_endpoints(config, &args.connect)
+        };
         let mut transport = Transport::open_with(config).await?;
         let locators = transport.locators().await;
         info!(locators = ?locators, %robot_id, "zenoh session open");
