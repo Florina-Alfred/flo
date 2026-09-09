@@ -5,8 +5,9 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::auth::{AuthConfig, AuthMode};
 use crate::cli::Args;
@@ -180,24 +181,46 @@ impl ClientRuntime {
 
         // Register with the server when a valid client config is present; in
         // safe-state there is no config payload to register with.
+        // Retry/backoff is caller policy (ARCH-01): the transport's
+        // `register_with_client` is blocking single-attempt; this loop owns
+        // the `3× + 1s*attempt` backoff.
         if let Some(cfg) = &inputs.client_config {
             info!(%robot_id, "registering with server...");
-            match register_with_client(transport.clone(), &robot_id, cfg).await {
-                Ok(()) => info!("registration confirmed"),
-                Err(RegistrationError::AlreadyRegistered) => {
-                    return Err("client already registered with server".into());
-                }
-                Err(RegistrationError::Poisoned) => {
-                    return Err("client is poisoned on server — cannot join".into());
-                }
-                Err(RegistrationError::NotRegistered) => {
-                    return Err("client not registered with server".into());
-                }
-                Err(RegistrationError::Timeout) => {
-                    return Err("registration timed out after 3 retries".into());
-                }
-                Err(RegistrationError::ServerError(e)) => {
-                    return Err(format!("registration rejected: {e}").into());
+            const REGISTRATION_RETRIES: u32 = 3;
+            const RETRY_BACKOFF_MS: u64 = 1000;
+            for attempt in 1..=REGISTRATION_RETRIES {
+                match register_with_client(transport.clone(), &robot_id, cfg).await {
+                    Ok(()) => {
+                        info!("registration confirmed");
+                        break;
+                    }
+                    Err(RegistrationError::Timeout) => {
+                        if attempt < REGISTRATION_RETRIES {
+                            warn!(
+                                attempt,
+                                %robot_id,
+                                "registration not acknowledged, retrying..."
+                            );
+                            tokio::time::sleep(Duration::from_millis(
+                                RETRY_BACKOFF_MS * attempt as u64,
+                            ))
+                            .await;
+                        } else {
+                            return Err("registration timed out after 3 retries".into());
+                        }
+                    }
+                    Err(RegistrationError::AlreadyRegistered) => {
+                        return Err("client already registered with server".into());
+                    }
+                    Err(RegistrationError::Poisoned) => {
+                        return Err("client is poisoned on server — cannot join".into());
+                    }
+                    Err(RegistrationError::NotRegistered) => {
+                        return Err("client not registered with server".into());
+                    }
+                    Err(RegistrationError::ServerError(e)) => {
+                        return Err(format!("registration rejected: {e}").into());
+                    }
                 }
             }
         }
