@@ -1,3 +1,5 @@
+mod helpers;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -6,6 +8,7 @@ use flo_rs::config::ActiveRules;
 use flo_rs::engine;
 use flo_rs::rules::Qos;
 use flo_rs::transport::Transport;
+use helpers::wait_for_counter;
 
 // INFRA-09: flaky-sleep hardening — the engine's subscription readiness is
 // gated via `engine::subscribed` oneshot (like `runtime::await_engine_ready`
@@ -14,22 +17,6 @@ use flo_rs::transport::Transport;
 // pattern is: wait for readiness via oneshot, then poll counter with
 // deadline (10s) and short 10ms interval — fast when uncontended, robust
 // when loaded. Timeouts for action delivery are also increased to 10s.
-
-async fn wait_for_counter(counter: &AtomicU64, target: u64, timeout: Duration) {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        if counter.load(Ordering::SeqCst) >= target {
-            return;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            panic!(
-                "timeout waiting for eval_counter >= {target} (current {})",
-                counter.load(Ordering::SeqCst)
-            );
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sensor_sample_triggers_action() {
