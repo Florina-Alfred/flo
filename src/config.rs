@@ -3,6 +3,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{error, info};
+use zenoh::key_expr::KeyExpr;
 
 use crate::registry::{RegisterOutcome, Registry};
 use crate::rules::{Rules, Ruleset};
@@ -39,26 +40,7 @@ impl ActiveRules {
     /// `cargo run` with no args shows a rule firing immediately — no config file.
     /// `{id}` placeholders in the rules are rewritten to `robot_id`.
     pub fn bootstrap_demo(robot_id: &str) -> Self {
-        const DEMO: &str = r#"
-[[rules]]
-name = "e-stop-on-bumper"
-when.all = [
-  { topic = "robot/{id}/local/bumper", mode = "Level", pred = { Comparison = { op = "Eq", lhs = { Field = "pressed" }, rhs = { Bool = true } } } },
-  { topic = "robot/{id}/local/imu",    mode = "Level", pred = { Comparison = { op = "Gt", lhs = { Field = "speed_mps" }, rhs = { Float = 0.2 } } } },
-]
-actions = [
-  { topic = "stop/fleet/cmd", qos = "reliable", payload = { stop = true } },
-]
-
-[[rules]]
-name = "lidar-block-slowdown"
-when.any = [
-  { topic = "lidar/fleet/scan", mode = "Level", pred = { Comparison = { op = "Lt", lhs = { Field = "min_range_m" }, rhs = { Float = 0.5 } } } },
-]
-actions = [
-  { topic = "robot/{id}/local/drive", qos = "best_effort", payload = { speed_mps = 0.1 } },
-]
-"#;
+        const DEMO: &str = include_str!("../examples/rules/hrc-demo.toml");
         let toml = DEMO.replace("{id}", robot_id);
         let rules = Rules::from_toml(&toml).expect("built-in demo rules must parse");
         Self {
@@ -77,6 +59,92 @@ actions = [
     }
 }
 
+/// Unified hot-reload subscriber. `policy` decides the mode:
+/// - `None` => per-robot `Rules::from_toml` on `robot/{id}/local/rules`.
+/// - `Some(registry)` => fleet `Ruleset::from_toml` → `registry.publish` → `Rules::from_toml` on `fleet/*/ruleset/**`.
+pub struct HotReload {
+    transport: Arc<Transport>,
+    store: ActiveRules,
+    policy: Option<Arc<Registry>>,
+    topic: KeyExpr<'static>,
+    robot_id: String,
+}
+
+impl HotReload {
+    pub fn new(
+        transport: Arc<Transport>,
+        store: ActiveRules,
+        policy: Option<Arc<Registry>>,
+        topic: impl Into<KeyExpr<'static>>,
+        robot_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            transport,
+            store,
+            policy,
+            topic: topic.into(),
+            robot_id: robot_id.into(),
+        }
+    }
+
+    /// Run the hot-reload loop. A malformed update is rejected (old rules stay active) and logged.
+    pub async fn run(&self) -> zenoh::Result<()> {
+        let pattern = crate::topic::Pattern::try_new(self.topic.as_str()).expect("hot-reload topic is valid pattern");
+        let sub = self.transport.subscribe(pattern).await?;
+        if self.policy.is_some() {
+            info!(topic = %self.topic, "hot-reload subscriber active (registry)");
+        } else {
+            info!(topic = %self.topic, "hot-reload subscriber active");
+        }
+
+        loop {
+            let sample = match sub.recv_async().await {
+                Ok(s) => s,
+                Err(_) => break,
+            };
+            let bytes = sample.payload().to_bytes();
+            let text = String::from_utf8_lossy(&bytes);
+            if let Some(registry) = &self.policy {
+                match Ruleset::from_toml(&text) {
+                    Ok(rs) => match registry.publish(&rs, &self.robot_id) {
+                        Ok(RegisterOutcome::Inserted) | Ok(RegisterOutcome::Updated { .. }) => {
+                            match Rules::from_toml(&rs.to_toml()) {
+                                Ok(rules) => {
+                                    let n = rules.rules.len();
+                                    self.store.swap(Arc::new(rules)).await;
+                                    info!(
+                                        rules = n,
+                                        name = %rs.ruleset_name,
+                                        "ruleset hot-reloaded via registry"
+                                    );
+                                }
+                                Err(e) => {
+                                    error!(error = %e, "compiled ruleset invalid; keeping previous")
+                                }
+                            }
+                        }
+                        Ok(RegisterOutcome::RejectedConflict) => {
+                            error!("ruleset rejected: owner conflict; keeping previous");
+                        }
+                        Err(e) => error!(error = %e, "registry error; keeping previous"),
+                    },
+                    Err(e) => error!(error = %e, "rejected bad ruleset update; keeping previous"),
+                }
+            } else {
+                match Rules::from_toml(&text) {
+                    Ok(rules) => {
+                        let n = rules.rules.len();
+                        self.store.swap(Arc::new(rules)).await;
+                        info!(rules = n, "ruleset hot-reloaded");
+                    }
+                    Err(e) => error!(error = %e, "rejected bad ruleset update; keeping previous"),
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Subscribe to the zenoh hot-reload topic and swap the store on each update.
 /// A malformed TOML update is rejected (old rules stay active) and logged.
 pub async fn run_hot_reload(
@@ -85,28 +153,16 @@ pub async fn run_hot_reload(
     store: ActiveRules,
 ) -> zenoh::Result<()> {
     let key = crate::topic::rules_key(robot_id);
-    let pattern = crate::topic::Pattern::try_new(key.as_str()).expect("rules_key is valid pattern");
-    let sub = transport.subscribe(pattern).await?;
-    info!(topic = %key, "hot-reload subscriber active");
-
-    // Stream updates; swap the store atomically on each valid TOML payload.
-    loop {
-        let sample = match sub.recv_async().await {
-            Ok(s) => s,
-            Err(_) => break,
-        };
-        let bytes = sample.payload().to_bytes();
-        let text = String::from_utf8_lossy(&bytes);
-        match Rules::from_toml(&text) {
-            Ok(rules) => {
-                let n = rules.rules.len();
-                store.swap(Arc::new(rules)).await;
-                info!(rules = n, "ruleset hot-reloaded");
-            }
-            Err(e) => error!(error = %e, "rejected bad ruleset update; keeping previous"),
-        }
-    }
-    Ok(())
+    let owned = Arc::new(Transport::from_arc_session(transport.session_arc()));
+    HotReload::new(
+        owned,
+        store,
+        None,
+        KeyExpr::new(key.into_string()).unwrap(),
+        robot_id.to_string(),
+    )
+    .run()
+    .await
 }
 
 /// Server-mode hot-reload: subscribe to the fleet-scoped ruleset publish topic,
@@ -119,43 +175,16 @@ pub async fn run_hot_reload_with_registry(
     store: ActiveRules,
     registry: Arc<Registry>,
 ) -> zenoh::Result<()> {
-    let wildcard_key = crate::topic::RULESET_PUB_PATTERN;
-    let pattern = crate::topic::Pattern::try_new(wildcard_key).expect("RULESET_PUB_PATTERN valid");
-    let sub = transport.subscribe(pattern).await?;
-    info!(topic = %wildcard_key, "hot-reload subscriber active (registry)"); // cspell:disable-line
-
-    loop {
-        let sample = match sub.recv_async().await {
-            Ok(s) => s,
-            Err(_) => break,
-        };
-        let bytes = sample.payload().to_bytes();
-        let text = String::from_utf8_lossy(&bytes);
-        match Ruleset::from_toml(&text) {
-            Ok(rs) => match registry.publish(&rs, robot_id) {
-                Ok(RegisterOutcome::Inserted) | Ok(RegisterOutcome::Updated { .. }) => {
-                    match Rules::from_toml(&rs.to_toml()) {
-                        Ok(rules) => {
-                            let n = rules.rules.len();
-                            store.swap(Arc::new(rules)).await;
-                            info!(
-                                rules = n,
-                                name = %rs.ruleset_name,
-                                "ruleset hot-reloaded via registry"
-                            );
-                        }
-                        Err(e) => error!(error = %e, "compiled ruleset invalid; keeping previous"),
-                    }
-                }
-                Ok(RegisterOutcome::RejectedConflict) => {
-                    error!("ruleset rejected: owner conflict; keeping previous");
-                }
-                Err(e) => error!(error = %e, "registry error; keeping previous"),
-            },
-            Err(e) => error!(error = %e, "rejected bad ruleset update; keeping previous"),
-        }
-    }
-    Ok(())
+    let owned = Arc::new(Transport::from_arc_session(transport.session_arc()));
+    HotReload::new(
+        owned,
+        store,
+        Some(registry),
+        KeyExpr::new(crate::topic::RULESET_PUB_PATTERN).unwrap(),
+        robot_id.to_string(),
+    )
+    .run()
+    .await
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -417,5 +446,48 @@ period_ms = 1000
         assert_eq!(store.current().await.rules.len(), 0);
         let demo = ActiveRules::bootstrap_demo("robot-7");
         assert_eq!(demo.current().await.rules.len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hot_reload_swaps_via_transport() {
+        // Verify ActiveRules::swap/current via the HotReload path (not just unit RwLock).
+        let transport = Arc::new(
+            crate::transport::Transport::open_router()
+                .await
+                .expect("open loopback"),
+        );
+        let store = ActiveRules::bootstrap("rules = []\n").unwrap();
+        let hr = HotReload::new(
+            transport.clone(),
+            store.clone(),
+            None,
+            KeyExpr::new(crate::topic::rules_key("7").into_string()).unwrap(),
+            "7".to_string(),
+        );
+        let h = tokio::spawn(async move {
+            let _ = hr.run().await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let new_toml = r#"
+[[rules]]
+name = "hr-test"
+when.all = [{ topic = "robot/7/local/bumper", mode = "Level" }]
+actions = [{ topic = "stop/fleet/cmd", qos = "reliable", payload = { stop = true } }]
+"#;
+        let topic = crate::topic::Topic::try_new(crate::topic::rules_key("7").as_str()).unwrap();
+        transport
+            .publish(topic, crate::transport::Envelope::RawBytes(new_toml.as_bytes().to_vec()))
+            .await
+            .expect("put toml");
+        let mut ok = false;
+        for _ in 0..20 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if store.current().await.rules.len() == 1 {
+                ok = true;
+                break;
+            }
+        }
+        assert!(ok, "HotReload should have swapped store to 1 rule");
+        h.abort();
     }
 }
