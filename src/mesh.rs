@@ -195,7 +195,7 @@ pub async fn run_signaling(
     signaling::publish_presence(
         &transport,
         robot_id,
-        vec![crate::topic::robot_local(robot_id, "cam0")],
+        vec![crate::topic::robot_local(robot_id, "cam0").into_string()],
     )
     .await?;
     signaling::subscribe_presence(&transport, |p: signaling::Presence| {
