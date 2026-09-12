@@ -6,10 +6,24 @@ use std::time::Duration;
 
 use flo_rs::config::ActiveRules;
 use flo_rs::engine;
+use flo_rs::health::ReadyGate;
 use flo_rs::rules::Qos;
 use flo_rs::topic::{Pattern, Topic};
 use flo_rs::transport::{Envelope, Transport};
 use helpers::wait_for_counter;
+
+async fn wait_for_ready(gate: &ReadyGate, timeout: Duration) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if gate.is_ready_public() {
+            return;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("timeout waiting for ReadyGate");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sensor_sample_triggers_action() {
@@ -40,25 +54,17 @@ async fn sensor_sample_triggers_action() {
         }
     });
 
-    let eval_counter = Arc::new(AtomicU64::new(0));
-    let eval_counter_for_engine = eval_counter.clone();
+    let gate = ReadyGate::new();
+    let eval_counter = gate.eval_counter();
     let engine_transport = transport.clone();
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let gate_clone = gate.clone();
     let engine = tokio::spawn(async move {
-        engine::run_engine(
-            engine_transport,
-            store,
-            eval_counter_for_engine,
-            Some(ready_tx),
-        )
-        .await
-        .expect("engine run");
+        engine::run_engine(engine_transport, store, gate_clone)
+            .await
+            .expect("engine run");
     });
 
-    tokio::time::timeout(Duration::from_secs(5), ready_rx)
-        .await
-        .expect("engine should confirm subscriptions within 5s")
-        .expect("subscribed signal");
+    wait_for_ready(&gate, Duration::from_secs(5)).await;
 
     let topic = Topic::try_new("sensor/foo").unwrap();
     transport
@@ -116,25 +122,17 @@ async fn no_data_no_action() {
         }
     });
 
-    let eval_counter = Arc::new(AtomicU64::new(0));
-    let eval_counter_for_engine = eval_counter.clone();
+    let gate = ReadyGate::new();
+    let eval_counter = gate.eval_counter();
     let engine_transport = transport.clone();
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let gate_clone = gate.clone();
     let engine = tokio::spawn(async move {
-        engine::run_engine(
-            engine_transport,
-            store,
-            eval_counter_for_engine,
-            Some(ready_tx),
-        )
-        .await
-        .expect("engine run");
+        engine::run_engine(engine_transport, store, gate_clone)
+            .await
+            .expect("engine run");
     });
 
-    tokio::time::timeout(Duration::from_secs(5), ready_rx)
-        .await
-        .expect("engine ready")
-        .expect("subscribed");
+    wait_for_ready(&gate, Duration::from_secs(5)).await;
 
     wait_for_counter(&eval_counter, 5, Duration::from_secs(10)).await;
 
@@ -174,20 +172,16 @@ async fn zone_path_uses_managed_subscription_lifecycle() {
         }
     });
 
-    let eval_counter = Arc::new(AtomicU64::new(0));
-    let engine_counter = eval_counter.clone();
+    let gate = ReadyGate::new();
     let engine_transport = transport.clone();
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let gate_clone = gate.clone();
     let engine = tokio::spawn(async move {
-        engine::run_engine(engine_transport, store, engine_counter, Some(ready_tx))
+        engine::run_engine(engine_transport, store, gate_clone)
             .await
             .expect("engine run");
     });
 
-    tokio::time::timeout(Duration::from_secs(5), ready_rx)
-        .await
-        .expect("engine ready")
-        .expect("subscribed");
+    wait_for_ready(&gate, Duration::from_secs(5)).await;
 
     // Only one robot in the zone: no collision yet.
     let t = Topic::try_new("zone/cell-3/entered").unwrap();

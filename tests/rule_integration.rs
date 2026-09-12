@@ -1,9 +1,10 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use flo_rs::config::ActiveRules;
 use flo_rs::engine;
+use flo_rs::health::ReadyGate;
 use flo_rs::rules::Qos;
 use flo_rs::semantic::{compile, parse_semantic, validate};
 use flo_rs::topic::{Pattern, Topic};
@@ -46,11 +47,11 @@ async fn semantic_compile_to_engine_e2e() {
         }
     });
 
-    let eval_counter = Arc::new(AtomicU64::new(0));
-    let engine_counter = eval_counter.clone();
-    let engine_transport = transport.clone();
+    let gate = ReadyGate::new();
+    let eval_counter = gate.eval_counter();
+    let t = transport.clone();
     let engine_handle = tokio::spawn(async move {
-        engine::run_engine(engine_transport, store, engine_counter, None)
+        engine::run_engine(t, store, gate)
             .await
             .expect("engine run");
     });
@@ -85,7 +86,6 @@ async fn semantic_compile_to_engine_e2e() {
     let payload: serde_json::Value = serde_json::from_slice(&result).unwrap();
     assert_eq!(payload["speed_mps"], 0.2);
 
-    drop(transport);
     engine_handle.abort();
 }
 
@@ -115,11 +115,11 @@ async fn compile_with_custom_robot_id_routes_topics() {
         }
     });
 
-    let eval_counter = Arc::new(AtomicU64::new(0));
-    let engine_counter = eval_counter.clone();
-    let engine_transport = transport.clone();
+    let gate = ReadyGate::new();
+    let eval_counter = gate.eval_counter();
+    let t = transport.clone();
     let engine_handle = tokio::spawn(async move {
-        engine::run_engine(engine_transport, store, engine_counter, None)
+        engine::run_engine(t, store, gate)
             .await
             .expect("engine run");
     });
@@ -154,6 +154,5 @@ async fn compile_with_custom_robot_id_routes_topics() {
     let payload: serde_json::Value = serde_json::from_slice(&result).unwrap();
     assert_eq!(payload["speed_mps"], 0.2);
 
-    drop(transport);
     engine_handle.abort();
 }

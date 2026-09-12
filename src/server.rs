@@ -1,12 +1,11 @@
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
 
 use tracing::info;
 
 use crate::auth::{AuthConfig, AuthMode};
 use crate::config::{ActiveRules, ServerConfig, run_hot_reload_with_registry};
 use crate::engine;
-use crate::health::Health;
+use crate::health::{ReadyGate, Supervisor};
 use crate::registration::{RegistrationServer, run_heartbeat_monitor, run_registration_handler};
 use crate::registry::Registry;
 use crate::transport::Transport;
@@ -43,7 +42,6 @@ pub async fn run_server(
     let locators = transport.locators().await;
     info!(locators = ?locators, robot_id = %robot_id, "zenoh router listening");
     let store = ActiveRules::bootstrap_demo(&robot_id);
-    let counter = Arc::new(AtomicU64::new(0));
 
     let db_path = std::env::temp_dir()
         .join("flo-server-registry")
@@ -55,7 +53,9 @@ pub async fn run_server(
 
     info!("flo-engine server mode started (robot_id={robot_id})");
 
-    let health = Health::new();
+    let health = ReadyGate::new();
+    let ready_gate = health.clone();
+
     let health_task = {
         let health = health.clone();
         tokio::spawn(async move {
@@ -65,17 +65,56 @@ pub async fn run_server(
             }
         })
     };
-    health.set_ready();
 
-    tokio::try_join!(
-        engine::run_engine(transport.clone(), store.clone(), counter, None),
-        run_hot_reload_with_registry(&transport, &robot_id, store.clone(), registry),
-        run_registration_handler(transport.clone(), reg_server.clone()),
-        run_heartbeat_monitor(transport.clone(), reg_server),
-        async {
-            health_task.await.ok();
-            Ok(())
-        },
-    )?;
-    Ok(())
+    let engine_task = {
+        let t = transport.clone();
+        let s = store.clone();
+        let g = ready_gate.clone();
+        tokio::spawn(async move {
+            if let Err(e) = engine::run_engine(t, s, g).await {
+                tracing::error!(error = %e, "rule engine exited");
+            }
+        })
+    };
+
+    let reload_task = {
+        let t = transport.clone();
+        let s = store.clone();
+        let rid = robot_id.clone();
+        let reg = registry.clone();
+        tokio::spawn(async move {
+            if let Err(e) = run_hot_reload_with_registry(&t, &rid, s, reg).await {
+                tracing::error!(error = %e, "hot-reload subscriber exited");
+            }
+        })
+    };
+
+    let registration_task = {
+        let t = transport.clone();
+        let rs = reg_server.clone();
+        tokio::spawn(async move {
+            if let Err(e) = run_registration_handler(t, rs).await {
+                tracing::error!(error = %e, "registration handler exited");
+            }
+        })
+    };
+
+    let heartbeat_task = {
+        let t = transport.clone();
+        let rs = reg_server.clone();
+        tokio::spawn(async move {
+            if let Err(e) = run_heartbeat_monitor(t, rs).await {
+                tracing::error!(error = %e, "heartbeat monitor exited");
+            }
+        })
+    };
+
+    Supervisor::await_shutdown(vec![
+        ("health", health_task),
+        ("rule engine", engine_task),
+        ("hot-reload", reload_task),
+        ("registration", registration_task),
+        ("heartbeat", heartbeat_task),
+    ])
+    .await
 }

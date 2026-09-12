@@ -4,7 +4,7 @@ use flo_rs::auth::{AuthConfig, AuthMode};
 use flo_rs::cli;
 use flo_rs::cli::Command;
 use flo_rs::health::init_tracing;
-use flo_rs::runtime::ClientRuntime;
+use flo_rs::runtime::Runtime;
 use flo_rs::transport::Transport;
 
 #[tokio::main]
@@ -64,5 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         return Ok(());
     }
 
-    ClientRuntime::run(args).await
+    let args_clone = args.clone();
+    let (runtime, _gate) = Runtime::bootstrap(args).await?;
+    runtime.run(args_clone).await
 }

@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use flo_rs::config::{ActiveRules, run_hot_reload_with_registry};
 use flo_rs::engine;
+use flo_rs::health::ReadyGate;
 use flo_rs::registration::{
     ClientState, RegistrationError, RegistrationStatus, register_with_client,
     run_heartbeat_monitor, run_registration_handler,
@@ -421,12 +422,13 @@ actions = [{ topic = "actuator/old", qos = "reliable", payload = { fired_old = t
         }
     });
 
-    let counter = Arc::new(AtomicU64::new(0));
-    let c2 = counter.clone();
+    let gate = ReadyGate::new();
+    let counter = gate.eval_counter();
     let t2 = transport.clone();
     let s2 = store.clone();
+    let g2 = gate.clone();
     let engine_h = tokio::spawn(async move {
-        let _ = engine::run_engine(t2, s2, c2, None).await;
+        let _ = engine::run_engine(t2, s2, g2).await;
     });
 
     let baseline = counter.load(Ordering::SeqCst);
@@ -540,13 +542,14 @@ actions = [{ topic = "actuator/old2", qos = "reliable", payload = { a = 1 } }]
             let _ = tx_old.send(sample.payload().to_bytes().to_vec());
         }
     });
-    let counter = Arc::new(AtomicU64::new(0));
+    let gate = ReadyGate::new();
+    let counter = gate.eval_counter();
     let h = tokio::spawn({
         let t = transport.clone();
         let s = store.clone();
-        let c = counter.clone();
+        let g = gate.clone();
         async move {
-            let _ = engine::run_engine(t, s, c, None).await;
+            let _ = engine::run_engine(t, s, g).await;
         }
     });
     let baseline = counter.load(Ordering::SeqCst);

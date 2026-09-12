@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use axum::Router;
@@ -21,16 +21,21 @@ pub fn init_tracing() {
     }
 }
 
-/// Shared observability state for the HTTP server: readiness flag, rule-eval
-/// counter, and process start time. All cheap, lock-free atomics.
+/// Shared observability + readiness gate. ReadyGate is the single readiness
+/// interface: the engine consumes the token and flips it once its sensor
+/// subscriptions are live; the HTTP server reports it on `/readyz`. Health is
+/// kept as a type alias for backwards compatibility.
+///
+/// All fields are cheap, lock-free atomics behind `Arc` so the gate can be
+/// cloned cheaply between the health server and the engine.
 #[derive(Clone)]
-pub struct Health {
+pub struct ReadyGate {
     ready: Arc<AtomicBool>,
     eval_total: Arc<AtomicU64>,
     start: Arc<Instant>,
 }
 
-impl Default for Health {
+impl Default for ReadyGate {
     fn default() -> Self {
         Self {
             ready: Arc::new(AtomicBool::new(false)),
@@ -40,31 +45,46 @@ impl Default for Health {
     }
 }
 
-impl Health {
+impl ReadyGate {
     pub fn new() -> Self {
         Self::default()
     }
-    /// Mark the client live (Zenoh session + liveliness declared).
-    pub fn set_ready(&self) {
-        self.ready.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    /// Mark the process ready. Crate-private: only the engine flips readiness
+    /// after its subscriptions are live, so readiness has a single writer.
+    pub(crate) fn set_ready(&self) {
+        self.ready.store(true, Ordering::SeqCst);
     }
+
     /// Whether readiness has been confirmed (what `/readyz` reports).
-    pub fn is_ready(&self) -> bool {
-        self.ready.load(std::sync::atomic::Ordering::SeqCst)
+    /// Crate-private: external callers observe via the HTTP probe, not direct
+    /// flag reads. Tests within the crate may still call it.
+    pub(crate) fn is_ready(&self) -> bool {
+        self.ready.load(Ordering::SeqCst)
     }
+
+    /// Public read for integration tests and external observers that need to
+    /// poll readiness without HTTP. Kept `pub` for supervision tests that
+    /// previously used `Health::is_ready`; new code should prefer the HTTP
+    /// `/readyz` probe.
+    pub fn is_ready_public(&self) -> bool {
+        self.is_ready()
+    }
+
     /// Shared handle to the eval counter, for the engine to increment.
     pub fn eval_counter(&self) -> Arc<AtomicU64> {
         self.eval_total.clone()
     }
+
     /// Prometheus text exposition of the current metrics.
     pub fn metrics_text(&self) -> String {
         let uptime = self.start.elapsed().as_secs_f64();
-        let ready = if self.ready.load(std::sync::atomic::Ordering::SeqCst) {
+        let ready = if self.ready.load(Ordering::SeqCst) {
             1
         } else {
             0
         };
-        let evals = self.eval_total.load(std::sync::atomic::Ordering::SeqCst);
+        let evals = self.eval_total.load(Ordering::SeqCst);
         format!(
             "# HELP flo_uptime_seconds seconds since the process started\n\
              # TYPE flo_uptime_seconds gauge\n\
@@ -79,9 +99,12 @@ impl Health {
     }
 }
 
+/// Backwards-compatible alias: `Health` is now `ReadyGate`.
+pub type Health = ReadyGate;
+
 /// Build the health router: `/healthz` (liveness), `/readyz` (readiness),
 /// and `/metrics` (Prometheus text exposition).
-pub fn router(health: Health) -> Router {
+pub fn router(health: ReadyGate) -> Router {
     Router::new()
         .route("/healthz", get(|| async { axum::http::StatusCode::OK }))
         .route(
@@ -89,7 +112,7 @@ pub fn router(health: Health) -> Router {
             get({
                 let health = health.clone();
                 move || {
-                    let ready = health.ready.load(std::sync::atomic::Ordering::SeqCst);
+                    let ready = health.ready.load(Ordering::SeqCst);
                     async move {
                         if ready {
                             axum::http::StatusCode::OK
@@ -122,7 +145,7 @@ pub fn router(health: Health) -> Router {
 
 /// Serve the health router on the given address (e.g. `0.0.0.0:8080`).
 /// Use `"0.0.0.0:0"` to let the OS assign a random port.
-pub async fn serve(health: Health, addr: &str) -> std::io::Result<()> {
+pub async fn serve(health: ReadyGate, addr: &str) -> std::io::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     let actual = listener.local_addr()?;
     info!(addr = %actual, "health server listening");
@@ -189,6 +212,53 @@ pub fn probe(addr: &str) -> bool {
         .next()
         .map(|line| line.starts_with("HTTP/1.1 200"))
         .unwrap_or(false)
+}
+
+/// Single supervisor for both binaries. `await_shutdown` waits for the first
+/// supervised subsystem to exit and treats any completion as fatal, so health
+/// is never hidden behind a `health_task.await.ok(); Ok(())` shim.
+#[derive(Debug)]
+pub struct Supervisor;
+
+impl Supervisor {
+    /// Wait for the first subsystem in `handles` to complete. Any completion —
+    /// clean exit or panic — is logged as fatal and returned as an error so a
+    /// process supervisor can restart the binary. Health is always supervised.
+    pub async fn await_shutdown(
+        handles: Vec<(&'static str, tokio::task::JoinHandle<()>)>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if handles.is_empty() {
+            return Ok(());
+        }
+        let mut set = tokio::task::JoinSet::new();
+        for (name, handle) in handles {
+            set.spawn(async move {
+                let res = handle.await;
+                (name, res)
+            });
+        }
+        if let Some(joined) = set.join_next().await {
+            match joined {
+                Ok((name, res)) => return Self::fatal_exit(name, res),
+                Err(join_err) => {
+                    tracing::error!(error = %join_err, "supervisor wrapper panicked");
+                    return Err(format!("supervisor wrapper panicked: {join_err:?}").into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn fatal_exit(
+        subsystem: &str,
+        res: Result<(), tokio::task::JoinError>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        tracing::error!(
+            subsystem = subsystem,
+            "fatal: {subsystem} subsystem exited: {res:?}"
+        );
+        Err(format!("{subsystem} subsystem exited: {res:?}").into())
+    }
 }
 
 #[cfg(test)]
