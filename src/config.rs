@@ -112,7 +112,8 @@ impl HotReload {
 
     /// Run the hot-reload loop. A malformed update is rejected (old rules stay active) and logged.
     pub async fn run(&self) -> zenoh::Result<()> {
-        let pattern = crate::topic::Pattern::try_new(self.topic.as_str()).expect("hot-reload topic is valid pattern");
+        let pattern = crate::topic::Pattern::try_new(self.topic.as_str())
+            .expect("hot-reload topic is valid pattern");
         let sub = self.transport.subscribe(pattern).await?;
         if self.policy.is_some() {
             info!(topic = %self.topic, "hot-reload subscriber active (registry)");
@@ -499,7 +500,10 @@ actions = [{ topic = "stop/fleet/cmd", qos = "reliable", payload = { stop = true
 "#;
         let topic = crate::topic::Topic::try_new(crate::topic::rules_key("7").as_str()).unwrap();
         transport
-            .publish(topic, crate::transport::Envelope::RawBytes(new_toml.as_bytes().to_vec()))
+            .publish(
+                topic,
+                crate::transport::Envelope::RawBytes(new_toml.as_bytes().to_vec()),
+            )
             .await
             .expect("put toml");
         let mut ok = false;
