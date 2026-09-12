@@ -16,7 +16,7 @@
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};
 
-use crate::transport::Transport;
+use crate::transport::{Envelope, Transport};
 
 /// A trickled ICE candidate, carried opaquely (we never parse it; webrtc-rs does).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,7 +73,7 @@ pub async fn publish_presence(
         streams,
     };
     let value = serde_json::to_value(&presence).map_err(|e| Box::new(e) as zenoh::Error)?;
-    transport.publish_signal(&key, &value).await?;
+    transport.publish(key, Envelope::Signal(value)).await?;
     info!(robot_id, "published presence");
     Ok(())
 }
@@ -89,7 +89,7 @@ pub async fn publish_offer(
     let key = crate::topic::signal_offer_key(robot_id, peer_id);
     put_signal(
         transport,
-        &key,
+        key,
         SignalKind::Offer,
         robot_id,
         peer_id,
@@ -110,7 +110,7 @@ pub async fn publish_answer(
     let key = crate::topic::signal_answer_key(robot_id, peer_id);
     put_signal(
         transport,
-        &key,
+        key,
         SignalKind::Answer,
         robot_id,
         peer_id,
@@ -130,7 +130,7 @@ pub async fn publish_ice(
     let key = crate::topic::signal_ice_key(robot_id, peer_id);
     put_signal(
         transport,
-        &key,
+        key,
         SignalKind::Offer, // kind is irrelevant for ICE; retained for envelope shape
         robot_id,
         peer_id,
@@ -142,7 +142,7 @@ pub async fn publish_ice(
 
 async fn put_signal(
     transport: &Transport,
-    key: &str,
+    key: crate::topic::Topic,
     kind: SignalKind,
     from: &str,
     to: &str,
@@ -157,7 +157,7 @@ async fn put_signal(
         ice,
     };
     let value = serde_json::to_value(&msg).map_err(|e| Box::new(e) as zenoh::Error)?;
-    transport.publish_signal(key, &value).await
+    transport.publish(key, Envelope::Signal(value)).await
 }
 
 /// Callbacks invoked when inbound signaling messages arrive for this robot.
@@ -172,9 +172,6 @@ pub trait SignalHandler {
 
 /// Subscribe to all inbound signal key-exprs addressed to `robot_id` and dispatch
 /// to `handler`. Presence is subscribed separately via [`subscribe_presence`].
-///
-/// Returns an error if any subscription fails; subscriptions otherwise live until
-/// the session closes (zenoh owns them after `background()`).
 pub async fn run_signal_receiver<H>(
     transport: &Transport,
     robot_id: &str,
@@ -188,38 +185,41 @@ where
 
     // Offers addressed to us: robot/*/signal/<us>/offer
     let offers = crate::topic::signal_offer_pattern(&self_id);
+    let sub_offers = transport.subscribe(offers).await?;
     let h = handler.clone();
-    transport
-        .subscribe(&offers, move |sample: zenoh::sample::Sample| {
+    tokio::spawn(async move {
+        while let Ok(sample) = sub_offers.recv_async().await {
             if let Some(msg) = parse_signal(&sample) {
                 h.on_offer(&msg.from, &msg);
             }
-        })
-        .await?;
+        }
+    });
 
     // Answers addressed to us.
     let answers = crate::topic::signal_answer_pattern(&self_id);
+    let sub_answers = transport.subscribe(answers).await?;
     let h = handler.clone();
-    transport
-        .subscribe(&answers, move |sample: zenoh::sample::Sample| {
+    tokio::spawn(async move {
+        while let Ok(sample) = sub_answers.recv_async().await {
             if let Some(msg) = parse_signal(&sample) {
                 h.on_answer(&msg.from, &msg);
             }
-        })
-        .await?;
+        }
+    });
 
     // ICE addressed to us.
     let ice = crate::topic::signal_ice_pattern(&self_id);
+    let sub_ice = transport.subscribe(ice).await?;
     let h = handler.clone();
-    transport
-        .subscribe(&ice, move |sample: zenoh::sample::Sample| {
+    tokio::spawn(async move {
+        while let Ok(sample) = sub_ice.recv_async().await {
             if let Some(msg) = parse_signal(&sample) {
                 for candidate in &msg.ice {
                     h.on_ice(&msg.from, candidate);
                 }
             }
-        })
-        .await?;
+        }
+    });
 
     info!(robot_id, "signal receiver subscribed (offer/answer/ice)");
     Ok(())
@@ -230,16 +230,18 @@ pub async fn subscribe_presence<H>(transport: &Transport, handler: H) -> zenoh::
 where
     H: Fn(Presence) + Send + Sync + 'static,
 {
-    let key = crate::topic::SIGNAL_PRESENCE_PATTERN;
-    transport
-        .subscribe(key, move |sample: zenoh::sample::Sample| {
+    let pattern = crate::topic::Pattern::try_new(crate::topic::SIGNAL_PRESENCE_PATTERN).unwrap();
+    let sub = transport.subscribe(pattern).await?;
+    tokio::spawn(async move {
+        while let Ok(sample) = sub.recv_async().await {
             let bytes = sample.payload().to_bytes();
             match serde_json::from_slice::<Presence>(&bytes) {
                 Ok(p) => handler(p),
                 Err(e) => debug!(error = %e, "ignored malformed presence"),
             }
-        })
-        .await
+        }
+    });
+    Ok(())
 }
 
 fn parse_signal(sample: &zenoh::sample::Sample) -> Option<SignalMessage> {
@@ -303,8 +305,6 @@ mod tests {
 
     #[test]
     fn answer_without_ice_field_defaults_empty() {
-        // The `ice` field is `#[serde(default)]`: a wire message that omits it
-        // (common for the first offer/answer) must deserialize with an empty vec.
         let wire = br#"{"sdp":"v=0","kind":"answer","from":"robot-9","to":"robot-7"}"#;
         let msg: SignalMessage = serde_json::from_slice(wire).unwrap();
         assert!(msg.ice.is_empty());
@@ -313,9 +313,6 @@ mod tests {
 
     #[test]
     fn malformed_signal_json_is_rejected() {
-        // `parse_signal` maps a failed decode to `None` (fail-closed); the serde
-        // layer it wraps must reject both non-JSON and a JSON object missing a
-        // required field (e.g. `sdp`).
         assert!(serde_json::from_slice::<SignalMessage>(b"{ not json").is_err());
         let missing_sdp = br#"{"kind":"answer","from":"robot-9","to":"robot-7"}"#;
         assert!(serde_json::from_slice::<SignalMessage>(missing_sdp).is_err());
@@ -335,11 +332,11 @@ mod tests {
     #[test]
     fn topic_builders_substitute_self_and_peer() {
         assert_eq!(
-            crate::topic::signal_offer_key("robot-7", "robot-9"),
+            crate::topic::signal_offer_key("robot-7", "robot-9").as_str(),
             "robot/robot-7/signal/robot-9/offer"
         );
         assert_eq!(
-            crate::topic::signal_offer_key("a", "b"),
+            crate::topic::signal_offer_key("a", "b").as_str(),
             "robot/a/signal/b/offer"
         );
     }

@@ -4,9 +4,10 @@
 # decision reviewed against flo's threat model (a Kubernetes robot orchestration
 # client; crypto/compression are handled by the Zenoh transport, not flo directly).
 #
-# This file is the audited record of allowlisted advisories. cargo-audit reads
-# it natively via .cargo/audit.toml (copied from here in CI, INFRA-10) and
-# deny.toml [advisories].ignore is kept in sync (single source of truth).
+# This file is the audited record of allowlisted advisories (single source).
+# cargo-audit reads it via .cargo/audit.toml (copied from here in CI, INFRA-10)
+# and deny.toml [advisories].ignore mirrors it — CI enforces the two stay in
+# sync (see .github/workflows/security.yml drift check).
 # Re-run `cargo audit` after every dependency bump and remove entries that
 # become fixable (e.g. when Zenoh upgrades lz4_flex).
 

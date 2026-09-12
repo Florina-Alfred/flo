@@ -186,6 +186,123 @@ pub struct RulesManifest {
 pub type SemanticDoc = RulesManifest;
 
 // ---------------------------------------------------------------------------
+// WhenExpr IR — can represent arbitrary nesting, then single lower()
+// ---------------------------------------------------------------------------
+
+/// Intermediate representation for a `when` guard that can hold arbitrary
+/// nesting of AND/OR. A `SemanticWhen` is built into this IR (validating leaf
+/// invariants), then `lower(&WhenExpr)` flattens it to the two-level runtime
+/// `When { all, any }` with diagnostics.
+#[derive(Debug, Clone)]
+pub enum WhenExpr {
+    All(Vec<WhenExpr>),
+    Any(Vec<WhenExpr>),
+    Leaf(Trigger),
+}
+
+// ---------------------------------------------------------------------------
+// ActionSpec IR — replaces slow_to/estop combo
+// ---------------------------------------------------------------------------
+
+/// Validated action verb. Replaces the stringly `slow_to: Option<f64>` + `estop: bool` combo.
+#[derive(Debug, Clone)]
+pub enum ActionSpec {
+    Estop,
+    SlowTo(f64),
+    Resume,
+    Raw {
+        topic: String,
+        payload: serde_json::Value,
+    },
+}
+
+impl ActionSpec {
+    /// Validate a [`SemanticAction`] into a typed verb. The single `TryFrom`-like
+    /// entry point replaces the `slow_to.unwrap_or` 4-way branch.
+    pub fn try_from_action(a: &SemanticAction, rule_name: &str) -> Result<Self, SemanticError> {
+        let mut count = 0u8;
+        if a.estop {
+            count += 1;
+        }
+        if a.slow_to.is_some() {
+            count += 1;
+        }
+        if a.resume {
+            count += 1;
+        }
+        if a.topic.is_some() {
+            count += 1;
+        }
+        if count == 0 {
+            return Err(SemanticError::new(
+                ErrorCode::NoActionVerb,
+                format!(
+                    "rule '{}': action has no known verb (estop/slow_to/resume)",
+                    rule_name
+                ),
+            ));
+        }
+        if count > 1 {
+            return Err(SemanticError::new(
+                ErrorCode::NoActionVerb,
+                format!(
+                    "rule '{}': action has multiple verbs (only one of estop/slow_to/resume/topic allowed)",
+                    rule_name
+                ),
+            ));
+        }
+        if let Some(payload) = &a.payload
+            && !is_primitive(payload)
+        {
+            return Err(SemanticError::new(
+                ErrorCode::NonPrimitivePayload,
+                format!(
+                    "rule '{}': action payload must be primitive (bool/int/float/string), got {payload}",
+                    rule_name
+                ),
+            ));
+        }
+        if a.estop {
+            return Ok(ActionSpec::Estop);
+        }
+        if a.resume {
+            return Ok(ActionSpec::Resume);
+        }
+        if let Some(v) = a.slow_to {
+            if !v.is_finite() {
+                return Err(SemanticError::new(
+                    ErrorCode::InvalidDistance,
+                    format!("rule '{}': slow_to must be finite, got {v}", rule_name),
+                ));
+            }
+            return Ok(ActionSpec::SlowTo(v));
+        }
+        if let Some(topic) = &a.topic {
+            if topic.is_empty() {
+                return Err(SemanticError::new(
+                    ErrorCode::InvalidTopic,
+                    format!("rule '{}': action topic is empty", rule_name),
+                ));
+            }
+            let payload = a.payload.clone().unwrap_or(serde_json::Value::Null);
+            return Ok(ActionSpec::Raw {
+                topic: topic.clone(),
+                payload,
+            });
+        }
+        unreachable!()
+    }
+}
+
+impl TryFrom<&SemanticAction> for ActionSpec {
+    type Error = SemanticError;
+    fn try_from(a: &SemanticAction) -> Result<Self, Self::Error> {
+        // Generic without rule name (used only for external callers that don't have it)
+        ActionSpec::try_from_action(a, "<unknown>")
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Parse
 // ---------------------------------------------------------------------------
 
@@ -231,7 +348,7 @@ fn parse_semantic_ruleset_json(text: &str) -> Result<SemanticRuleset, SemanticEr
 }
 
 // ---------------------------------------------------------------------------
-// Validate (semantic doc)
+// Validate (semantic doc) — single traversal via WhenExpr builder + ActionSpec
 // ---------------------------------------------------------------------------
 
 /// Validate semantic invariants before compile. The single shared validator:
@@ -242,35 +359,35 @@ pub fn validate(doc: &RulesManifest) -> Result<(), SemanticError> {
     for (rule_idx, rule) in doc.rules.iter().enumerate() {
         for (action_idx, a) in rule.actions.iter().enumerate() {
             let path = format!("rules[{rule_idx}].actions[{action_idx}]");
-            if !a.estop && a.slow_to.is_none() && !a.resume && a.topic.is_none() {
-                return Err(SemanticError::new(
-                    ErrorCode::NoActionVerb,
-                    format!(
-                        "rule '{}': action has no known verb (estop/slow_to/resume)",
-                        rule.name
-                    ),
-                )
-                .with_path(&path));
-            }
-            if let Some(payload) = &a.payload
-                && !is_primitive(payload)
-            {
-                return Err(SemanticError::new(
-                    ErrorCode::NonPrimitivePayload,
-                    format!(
-                        "rule '{}': action payload must be primitive (bool/int/float/string), got {payload}",
-                        rule.name
-                    ),
-                )
-                .with_path(format!("{path}.payload")));
-            }
+            ActionSpec::try_from_action(a, &rule.name)
+                .map_err(|e| {
+                    if e.field_path.is_none() {
+                        e.with_path(&path)
+                    } else {
+                        // payload errors already have inner path, promote to full
+                        if e.field_path.as_deref() == Some("payload") {
+                            e.with_path(format!("{path}.payload"))
+                        } else {
+                            e.with_path(&path)
+                        }
+                    }
+                })
+                .map_err(|mut e| {
+                    // Ensure payload path is correctly prefixed when needed
+                    if e.code == ErrorCode::NonPrimitivePayload
+                        && !e.field_path.as_deref().unwrap_or("").ends_with(".payload")
+                    {
+                        e.field_path = Some(format!("{path}.payload"));
+                    }
+                    e
+                })?;
         }
-        validate_when(
-            &rule.when,
-            &rule.name,
-            doc,
-            &format!("rules[{rule_idx}].when"),
-        )?;
+        // Build WhenExpr with a dummy robot_id to validate leaf invariants
+        // (distances, zones, empty) without needing a real robot_id.
+        // Do NOT lower — `validate` mirrors the old behavior where
+        // UnrepresentableNesting is only caught at compile time.
+        let path = format!("rules[{rule_idx}].when");
+        let _ = build_when_expr(&rule.when, "validation", doc, &rule.name, &path)?;
     }
     Ok(())
 }
@@ -289,13 +406,16 @@ fn when_is_empty(when: &SemanticWhen) -> bool {
         && when.any.is_empty()
 }
 
-/// Recursively validate a `SemanticWhen` (flat fields plus nested `all`/`any`).
-fn validate_when(
+/// Build a `WhenExpr` IR from a `SemanticWhen`, validating leaf invariants
+/// (distances, zones, empty) in the same single traversal that previously was
+/// duplicated across `validate_when` and `expand_when`.
+fn build_when_expr(
     when: &SemanticWhen,
-    rule_name: &str,
+    robot_id: &str,
     doc: &RulesManifest,
+    rule_name: &str,
     path: &str,
-) -> Result<(), SemanticError> {
+) -> Result<WhenExpr, SemanticError> {
     if when_is_empty(when) {
         return Err(SemanticError::new(
             ErrorCode::EmptyWhen,
@@ -303,6 +423,7 @@ fn validate_when(
         )
         .with_path(path));
     }
+    // Validate distances
     for d in [
         when.near_human,
         when.not_near_human,
@@ -319,6 +440,7 @@ fn validate_when(
             .with_path(path));
         }
     }
+    // Validate zones
     for z in [when.in_zone.clone(), when.not_in_zone.clone()]
         .into_iter()
         .flatten()
@@ -331,13 +453,196 @@ fn validate_when(
             .with_path(path));
         }
     }
-    for (nested_idx, nested) in when.all.iter().enumerate() {
-        validate_when(nested, rule_name, doc, &format!("{path}.all[{nested_idx}]"))?;
+
+    // Leaf triggers for flat fields
+    let mut leaf_triggers = Vec::new();
+    if let Some(z) = &when.in_zone {
+        leaf_triggers.push(Trigger {
+            topic: crate::topic::robot_local(robot_id, "zone").into_string(),
+            pred: Some(Predicate::Comparison {
+                op: Op::Eq,
+                lhs: Operand::Prim(PrimitiveRef::Zone),
+                rhs: Operand::Str(z.clone()),
+            }),
+            mode: EvalMode::Edge,
+        });
     }
-    for (nested_idx, nested) in when.any.iter().enumerate() {
-        validate_when(nested, rule_name, doc, &format!("{path}.any[{nested_idx}]"))?;
+    if let Some(z) = &when.not_in_zone {
+        leaf_triggers.push(Trigger {
+            topic: crate::topic::robot_local(robot_id, "zone").into_string(),
+            pred: Some(Predicate::Not(Box::new(Predicate::Comparison {
+                op: Op::Eq,
+                lhs: Operand::Prim(PrimitiveRef::Zone),
+                rhs: Operand::Str(z.clone()),
+            }))),
+            mode: EvalMode::Edge,
+        });
     }
-    Ok(())
+    if let Some(d) = when.near_human {
+        leaf_triggers.push(Trigger {
+            topic: crate::topic::robot_local(robot_id, "human_present").into_string(),
+            pred: Some(Predicate::Comparison {
+                op: Op::Lt,
+                lhs: Operand::Prim(PrimitiveRef::HumanPresence),
+                rhs: Operand::Float(d),
+            }),
+            mode: EvalMode::Level,
+        });
+    }
+    if let Some(d) = when.not_near_human {
+        leaf_triggers.push(Trigger {
+            topic: crate::topic::robot_local(robot_id, "human_present").into_string(),
+            pred: Some(Predicate::Comparison {
+                op: Op::Ge,
+                lhs: Operand::Prim(PrimitiveRef::HumanPresence),
+                rhs: Operand::Float(d),
+            }),
+            mode: EvalMode::Level,
+        });
+    }
+    if let Some(n) = &when.near {
+        leaf_triggers.push(Trigger {
+            topic: crate::topic::robot_local(robot_id, "proximity").into_string(),
+            pred: Some(Predicate::Comparison {
+                op: Op::Lt,
+                lhs: Operand::Prim(PrimitiveRef::Proximity(n.entity.clone())),
+                rhs: Operand::Float(n.dist),
+            }),
+            mode: EvalMode::Level,
+        });
+    }
+    if let Some(r) = &when.role {
+        leaf_triggers.push(Trigger {
+            topic: crate::topic::robot_local(robot_id, "role").into_string(),
+            pred: Some(Predicate::Comparison {
+                op: Op::Eq,
+                lhs: Operand::Prim(PrimitiveRef::Robot),
+                rhs: Operand::Str(r.clone()),
+            }),
+            mode: EvalMode::Edge,
+        });
+    }
+
+    // Recursively build children
+    let mut all_children = Vec::new();
+    for (idx, nested) in when.all.iter().enumerate() {
+        let child = build_when_expr(
+            nested,
+            robot_id,
+            doc,
+            rule_name,
+            &format!("{path}.all[{idx}]"),
+        )?;
+        all_children.push(child);
+    }
+    let mut any_children = Vec::new();
+    for (idx, nested) in when.any.iter().enumerate() {
+        let child = build_when_expr(
+            nested,
+            robot_id,
+            doc,
+            rule_name,
+            &format!("{path}.any[{idx}]"),
+        )?;
+        any_children.push(child);
+    }
+
+    let mut and_parts: Vec<WhenExpr> = leaf_triggers.into_iter().map(WhenExpr::Leaf).collect();
+    and_parts.extend(all_children);
+    let any_part = if any_children.is_empty() {
+        None
+    } else {
+        Some(WhenExpr::Any(any_children))
+    };
+
+    match (and_parts.is_empty(), any_part) {
+        (true, None) => unreachable!("empty already handled"),
+        (true, Some(any)) => Ok(any),
+        (false, None) => {
+            if and_parts.len() == 1 {
+                Ok(and_parts.into_iter().next().unwrap())
+            } else {
+                Ok(WhenExpr::All(and_parts))
+            }
+        }
+        (false, Some(any)) => {
+            let mut combined = and_parts;
+            combined.push(any);
+            Ok(WhenExpr::All(combined))
+        }
+    }
+}
+
+/// Single `lower(&WhenExpr) -> Result<When>` with diagnostics.
+/// Flattens arbitrary nesting to the two-level runtime `When` model.
+/// Deleting the former `validate`/`expand_when` dual recursion.
+fn lower(expr: &WhenExpr, rule_name: &str, path: &str) -> Result<When, SemanticError> {
+    match expr {
+        WhenExpr::Leaf(t) => Ok(When {
+            all: vec![t.clone()],
+            any: Vec::new(),
+        }),
+        WhenExpr::All(children) => {
+            let mut all = Vec::new();
+            let mut any = Vec::new();
+            for (idx, child) in children.iter().enumerate() {
+                let child_path = format!("{path}.all[{idx}]");
+                let w = lower(child, rule_name, &child_path)?;
+                if !w.any.is_empty() {
+                    if !any.is_empty() {
+                        return Err(SemanticError::new(
+                            ErrorCode::UnrepresentableNesting,
+                            format!(
+                                "rule '{rule_name}': {path}.all[{idx}] introduces a second OR \
+                                 group; the runtime model can hold only one (an AND of two OR groups)"
+                            ),
+                        )
+                        .with_path(child_path));
+                    }
+                    any = w.any;
+                }
+                all.extend(w.all);
+            }
+            Ok(When { all, any })
+        }
+        WhenExpr::Any(children) => {
+            let mut any = Vec::new();
+            for (idx, child) in children.iter().enumerate() {
+                let child_path = format!("{path}.any[{idx}]");
+                let w = lower(child, rule_name, &child_path)?;
+                if !w.all.is_empty() && !w.any.is_empty() {
+                    return Err(SemanticError::new(
+                        ErrorCode::UnrepresentableNesting,
+                        format!(
+                            "rule '{rule_name}': {child_path} is an AND of triggers ANDed \
+                             with an OR group, which cannot be expressed as a single OR element"
+                        ),
+                    )
+                    .with_path(child_path));
+                }
+                if w.any.is_empty() {
+                    if w.all.len() != 1 {
+                        return Err(SemanticError::new(
+                            ErrorCode::UnrepresentableNesting,
+                            format!(
+                                "rule '{rule_name}': {child_path} is an AND of {} triggers; \
+                                 an OR element must be a single trigger or an OR group",
+                                w.all.len()
+                            ),
+                        )
+                        .with_path(child_path));
+                    }
+                    any.push(w.all.into_iter().next().unwrap());
+                } else {
+                    any.extend(w.any);
+                }
+            }
+            Ok(When {
+                all: Vec::new(),
+                any,
+            })
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -354,216 +659,75 @@ pub fn compile(doc: &RulesManifest, robot_id: &str) -> Result<Rules, SemanticErr
     }
 
     let mut out = Vec::new();
-    for rule in &doc.rules {
-        let (all, any) = expand_when(&rule.when, robot_id, &rule.name, "when")?;
+    for (rule_idx, rule) in doc.rules.iter().enumerate() {
+        let when_path = format!("rules[{rule_idx}].when");
+        let expr = build_when_expr(&rule.when, robot_id, doc, &rule.name, &when_path)?;
+        let when = lower(&expr, &rule.name, &when_path)?;
 
         let actions: Vec<Action> = rule
             .actions
             .iter()
-            .map(|a| compile_action(a, robot_id))
-            .collect();
+            .enumerate()
+            .map(|(action_idx, a)| {
+                let spec = ActionSpec::try_from_action(a, &rule.name).map_err(|e| {
+                    let base = format!("rules[{rule_idx}].actions[{action_idx}]");
+                    if e.field_path.is_none() {
+                        e.with_path(&base)
+                    } else if e.field_path.as_deref() == Some("payload") {
+                        e.with_path(format!("{base}.payload"))
+                    } else {
+                        e.with_path(&base)
+                    }
+                })?;
+                compile_action_from_spec(&spec, a, robot_id)
+            })
+            .collect::<Result<Vec<_>, SemanticError>>()?;
 
         out.push(Rule {
             name: rule.name.clone(),
-            when: When { all, any },
+            when,
             actions,
         });
     }
     Ok(Rules { rules: out })
 }
 
-// ---------------------------------------------------------------------------
-// Expand when → triggers
-// ---------------------------------------------------------------------------
-
-/// Recursively expand a `SemanticWhen` into runtime trigger lists.
-///
-/// The runtime `When` model is two-level: `(AND over all) AND (OR over any,
-/// if any is non-empty)`. Nested blocks are flattened into that shape:
-///
-/// - a nested block in `all` (AND context) contributes its `all` triggers to
-///   the parent's `all`, and its `any` group becomes the parent's single `any`
-///   group (only one such group is representable — a second would be two OR
-///   groups ANDed together, which the runtime cannot express);
-/// - a nested block in `any` (OR context) contributes a single trigger, or a
-///   pure OR group whose triggers merge into the parent's `any`. A block that
-///   is itself an AND of two or more triggers inside an OR element is not
-///   representable and is rejected rather than silently mis-flattened.
-///
-/// Fail-closed: anything the two-level model cannot express returns
-/// `ErrorCode::UnrepresentableNesting` instead of silently dropping
-/// conditions.
-fn expand_when(
-    when: &SemanticWhen,
+fn compile_action_from_spec(
+    spec: &ActionSpec,
+    original: &SemanticAction,
     robot_id: &str,
-    rule_name: &str,
-    path: &str,
-) -> Result<(Vec<Trigger>, Vec<Trigger>), SemanticError> {
-    let mut all = Vec::new();
-    let mut any = Vec::new();
-
-    if when_is_empty(when) {
-        return Err(SemanticError::new(
-            ErrorCode::EmptyWhen,
-            format!("rule '{rule_name}': when is empty (no condition key, no all, no any)"),
-        )
-        .with_path(path));
-    }
-
-    if let Some(z) = &when.in_zone {
-        all.push(Trigger {
-            topic: crate::topic::robot_local(robot_id, "zone"),
-            pred: Some(Predicate::Comparison {
-                op: Op::Eq,
-                lhs: Operand::Prim(PrimitiveRef::Zone),
-                rhs: Operand::Str(z.clone()),
-            }),
-            mode: EvalMode::Edge,
-        });
-    }
-    if let Some(z) = &when.not_in_zone {
-        all.push(Trigger {
-            topic: crate::topic::robot_local(robot_id, "zone"),
-            pred: Some(Predicate::Not(Box::new(Predicate::Comparison {
-                op: Op::Eq,
-                lhs: Operand::Prim(PrimitiveRef::Zone),
-                rhs: Operand::Str(z.clone()),
-            }))),
-            mode: EvalMode::Edge,
-        });
-    }
-    if let Some(d) = when.near_human {
-        all.push(Trigger {
-            topic: crate::topic::robot_local(robot_id, "human_present"),
-            pred: Some(Predicate::Comparison {
-                op: Op::Lt,
-                lhs: Operand::Prim(PrimitiveRef::HumanPresence),
-                rhs: Operand::Float(d),
-            }),
-            mode: EvalMode::Level,
-        });
-    }
-    if let Some(d) = when.not_near_human {
-        all.push(Trigger {
-            topic: crate::topic::robot_local(robot_id, "human_present"),
-            pred: Some(Predicate::Comparison {
-                op: Op::Ge,
-                lhs: Operand::Prim(PrimitiveRef::HumanPresence),
-                rhs: Operand::Float(d),
-            }),
-            mode: EvalMode::Level,
-        });
-    }
-    if let Some(n) = &when.near {
-        all.push(Trigger {
-            topic: crate::topic::robot_local(robot_id, "proximity"),
-            pred: Some(Predicate::Comparison {
-                op: Op::Lt,
-                lhs: Operand::Prim(PrimitiveRef::Proximity(n.entity.clone())),
-                rhs: Operand::Float(n.dist),
-            }),
-            mode: EvalMode::Level,
-        });
-    }
-    if let Some(r) = &when.role {
-        all.push(Trigger {
-            topic: crate::topic::robot_local(robot_id, "role"),
-            pred: Some(Predicate::Comparison {
-                op: Op::Eq,
-                lhs: Operand::Prim(PrimitiveRef::Robot),
-                rhs: Operand::Str(r.clone()),
-            }),
-            mode: EvalMode::Edge,
-        });
-    }
-
-    for (nested_idx, nested) in when.all.iter().enumerate() {
-        let (nested_all, nested_any) = expand_when(
-            nested,
-            robot_id,
-            rule_name,
-            &format!("{path}.all[{nested_idx}]"),
-        )?;
-        if !nested_any.is_empty() {
-            if !any.is_empty() {
-                return Err(SemanticError::new(
-                    ErrorCode::UnrepresentableNesting,
-                    format!(
-                        "rule '{rule_name}': {path}.all[{nested_idx}] introduces a second OR \
-                         group; the runtime model can hold only one (an AND of two OR groups)"
-                    ),
-                )
-                .with_path(format!("{path}.all[{nested_idx}]")));
-            }
-            any.extend(nested_any);
-        }
-        all.extend(nested_all);
-    }
-
-    for (nested_idx, nested) in when.any.iter().enumerate() {
-        let (nested_all, nested_any) = expand_when(
-            nested,
-            robot_id,
-            rule_name,
-            &format!("{path}.any[{nested_idx}]"),
-        )?;
-        if !nested_all.is_empty() && !nested_any.is_empty() {
-            return Err(SemanticError::new(
-                ErrorCode::UnrepresentableNesting,
-                format!(
-                    "rule '{rule_name}': {path}.any[{nested_idx}] is an AND of triggers ANDed \
-                     with an OR group, which cannot be expressed as a single OR element"
-                ),
-            )
-            .with_path(format!("{path}.any[{nested_idx}]")));
-        }
-        if nested_any.is_empty() {
-            if nested_all.len() != 1 {
-                return Err(SemanticError::new(
-                    ErrorCode::UnrepresentableNesting,
-                    format!(
-                        "rule '{rule_name}': {path}.any[{nested_idx}] is an AND of {} triggers; \
-                         an OR element must be a single trigger or an OR group",
-                        nested_all.len()
-                    ),
-                )
-                .with_path(format!("{path}.any[{nested_idx}]")));
-            }
-            any.push(nested_all.into_iter().next().unwrap());
-        } else {
-            any.extend(nested_any);
-        }
-    }
-
-    Ok((all, any))
-}
-
-fn compile_action(a: &SemanticAction, robot_id: &str) -> Action {
-    if a.estop {
-        Action {
-            topic: crate::topic::stop_cmd("fleet"),
+) -> Result<Action, SemanticError> {
+    Ok(match spec {
+        ActionSpec::Estop => Action {
+            topic: crate::topic::stop_cmd("fleet").into_string(),
             qos: Qos::Reliable,
             payload: serde_json::json!({ "stop": true }),
-        }
-    } else if a.resume {
-        Action {
-            topic: crate::topic::robot_local(robot_id, "drive"),
+        },
+        ActionSpec::Resume => Action {
+            topic: crate::topic::robot_local(robot_id, "drive").into_string(),
             qos: Qos::Reliable,
             payload: serde_json::json!({ "resume": true }),
+        },
+        ActionSpec::SlowTo(v) => Action {
+            topic: crate::topic::robot_local(robot_id, "drive").into_string(),
+            qos: original.qos,
+            payload: serde_json::json!({ "speed_mps": *v }),
+        },
+        ActionSpec::Raw { topic, payload } => {
+            // Validate raw topic strings at construction — a typo fails here, not at publish (typed mesh).
+            let validated = crate::topic::Topic::try_new(topic).map_err(|e| {
+                SemanticError::new(
+                    ErrorCode::InvalidTopic,
+                    format!("invalid topic '{topic}': {e}"),
+                )
+            })?;
+            Action {
+                topic: validated.into_string(),
+                qos: original.qos,
+                payload: payload.clone(),
+            }
         }
-    } else if let Some(topic) = &a.topic {
-        Action {
-            topic: topic.clone(),
-            qos: a.qos,
-            payload: a.payload.clone().unwrap_or(serde_json::Value::Null),
-        }
-    } else {
-        Action {
-            topic: crate::topic::robot_local(robot_id, "drive"),
-            qos: a.qos,
-            payload: serde_json::json!({ "speed_mps": a.slow_to.unwrap_or(0.0) }),
-        }
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------

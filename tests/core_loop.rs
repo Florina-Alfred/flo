@@ -1,31 +1,25 @@
+mod helpers;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use flo_rs::config::ActiveRules;
 use flo_rs::engine;
+use flo_rs::health::ReadyGate;
 use flo_rs::rules::Qos;
-use flo_rs::transport::Transport;
+use flo_rs::topic::{Pattern, Topic};
+use flo_rs::transport::{Envelope, Transport};
+use helpers::wait_for_counter;
 
-// INFRA-09: flaky-sleep hardening — the engine's subscription readiness is
-// gated via `engine::subscribed` oneshot (like `runtime::await_engine_ready`
-// does) where feasible, and eval_counter polling uses a deadline-based retry
-// with bounded timeout (not infinite sleep) so CI load doesn't flap. The
-// pattern is: wait for readiness via oneshot, then poll counter with
-// deadline (10s) and short 10ms interval — fast when uncontended, robust
-// when loaded. Timeouts for action delivery are also increased to 10s.
-
-async fn wait_for_counter(counter: &AtomicU64, target: u64, timeout: Duration) {
+async fn wait_for_ready(gate: &ReadyGate, timeout: Duration) {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        if counter.load(Ordering::SeqCst) >= target {
+        if gate.is_ready_public() {
             return;
         }
         if tokio::time::Instant::now() >= deadline {
-            panic!(
-                "timeout waiting for eval_counter >= {target} (current {})",
-                counter.load(Ordering::SeqCst)
-            );
+            panic!("timeout waiting for ReadyGate");
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -34,7 +28,7 @@ async fn wait_for_counter(counter: &AtomicU64, target: u64, timeout: Duration) {
 #[tokio::test(flavor = "multi_thread")]
 async fn sensor_sample_triggers_action() {
     let transport = Arc::new(
-        Transport::open_with(Transport::loopback_config())
+        Transport::open_router()
             .await
             .expect("open loopback transport"),
     );
@@ -48,46 +42,42 @@ async fn sensor_sample_triggers_action() {
     ))
     .expect("bootstrap rules");
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-    transport
-        .subscribe("actuator/bar", move |s: zenoh::sample::Sample| {
-            let _ = tx.send(s.payload().to_bytes().to_vec());
-        })
+    let pattern = Pattern::try_new("actuator/bar").unwrap();
+    let sub = transport
+        .subscribe(pattern)
         .await
         .expect("subscribe action topic");
-
-    let eval_counter = Arc::new(AtomicU64::new(0));
-    let eval_counter_for_engine = eval_counter.clone();
-    let engine_transport = transport.clone();
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-    let engine = tokio::spawn(async move {
-        engine::run_engine(
-            engine_transport,
-            store,
-            eval_counter_for_engine,
-            Some(ready_tx),
-        )
-        .await
-        .expect("engine run");
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    tokio::spawn(async move {
+        while let Ok(sample) = sub.recv_async().await {
+            let _ = tx.send(sample.payload().to_bytes().to_vec());
+        }
     });
 
-    // Gate on the engine's subscription oneshot — robust under load.
-    tokio::time::timeout(Duration::from_secs(5), ready_rx)
-        .await
-        .expect("engine should confirm subscriptions within 5s")
-        .expect("subscribed signal");
+    let gate = ReadyGate::new();
+    let eval_counter = gate.eval_counter();
+    let engine_transport = transport.clone();
+    let gate_clone = gate.clone();
+    let engine = tokio::spawn(async move {
+        engine::run_engine(engine_transport, store, gate_clone)
+            .await
+            .expect("engine run");
+    });
 
+    wait_for_ready(&gate, Duration::from_secs(5)).await;
+
+    let topic = Topic::try_new("sensor/foo").unwrap();
     transport
         .publish(
-            "sensor/foo",
-            Qos::BestEffort,
-            &serde_json::json!({"value": 42}),
+            topic,
+            Envelope::Action {
+                qos: Qos::BestEffort,
+                payload: serde_json::json!({"value": 42}),
+            },
         )
         .await
         .expect("publish sensor sample");
 
-    // Allow at least two ticks for the sample to be processed and action
-    // to be published — deadline-based, not flaky 20ms loop.
     let after_pub = eval_counter.load(Ordering::SeqCst);
     wait_for_counter(&eval_counter, after_pub + 2, Duration::from_secs(10)).await;
 
@@ -106,7 +96,7 @@ async fn sensor_sample_triggers_action() {
 #[tokio::test(flavor = "multi_thread")]
 async fn no_data_no_action() {
     let transport = Arc::new(
-        Transport::open_with(Transport::loopback_config())
+        Transport::open_router()
             .await
             .expect("open loopback transport"),
     );
@@ -120,33 +110,29 @@ async fn no_data_no_action() {
     ))
     .expect("bootstrap rules");
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-    transport
-        .subscribe("actuator/silent", move |s: zenoh::sample::Sample| {
-            let _ = tx.send(s.payload().to_bytes().to_vec());
-        })
+    let pattern = Pattern::try_new("actuator/silent").unwrap();
+    let sub = transport
+        .subscribe(pattern)
         .await
         .expect("subscribe action topic");
-
-    let eval_counter = Arc::new(AtomicU64::new(0));
-    let eval_counter_for_engine = eval_counter.clone();
-    let engine_transport = transport.clone();
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-    let engine = tokio::spawn(async move {
-        engine::run_engine(
-            engine_transport,
-            store,
-            eval_counter_for_engine,
-            Some(ready_tx),
-        )
-        .await
-        .expect("engine run");
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    tokio::spawn(async move {
+        while let Ok(sample) = sub.recv_async().await {
+            let _ = tx.send(sample.payload().to_bytes().to_vec());
+        }
     });
 
-    tokio::time::timeout(Duration::from_secs(5), ready_rx)
-        .await
-        .expect("engine ready")
-        .expect("subscribed");
+    let gate = ReadyGate::new();
+    let eval_counter = gate.eval_counter();
+    let engine_transport = transport.clone();
+    let gate_clone = gate.clone();
+    let engine = tokio::spawn(async move {
+        engine::run_engine(engine_transport, store, gate_clone)
+            .await
+            .expect("engine run");
+    });
+
+    wait_for_ready(&gate, Duration::from_secs(5)).await;
 
     wait_for_counter(&eval_counter, 5, Duration::from_secs(10)).await;
 
@@ -159,12 +145,8 @@ async fn no_data_no_action() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn zone_path_uses_managed_subscription_lifecycle() {
-    // The zone `entered`/`cleared` subscriptions go through `Transport`'s
-    // managed subscription lifecycle. This proves the zone tracker is fed by a
-    // live managed subscription: a `SameZoneAs` rule fires only once both robots
-    // have entered the same zone over that path.
     let transport = Arc::new(
-        Transport::open_with(Transport::loopback_config())
+        Transport::open_router()
             .await
             .expect("open loopback transport"),
     );
@@ -178,43 +160,49 @@ async fn zone_path_uses_managed_subscription_lifecycle() {
     ))
     .expect("bootstrap rules");
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-    transport
-        .subscribe("actuator/warn", move |s: zenoh::sample::Sample| {
-            let _ = tx.send(s.payload().to_bytes().to_vec());
-        })
+    let pattern = Pattern::try_new("actuator/warn").unwrap();
+    let sub = transport
+        .subscribe(pattern)
         .await
         .expect("subscribe action topic");
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    tokio::spawn(async move {
+        while let Ok(sample) = sub.recv_async().await {
+            let _ = tx.send(sample.payload().to_bytes().to_vec());
+        }
+    });
 
-    let eval_counter = Arc::new(AtomicU64::new(0));
-    let engine_counter = eval_counter.clone();
+    let gate = ReadyGate::new();
     let engine_transport = transport.clone();
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let gate_clone = gate.clone();
     let engine = tokio::spawn(async move {
-        engine::run_engine(engine_transport, store, engine_counter, Some(ready_tx))
+        engine::run_engine(engine_transport, store, gate_clone)
             .await
             .expect("engine run");
     });
 
-    tokio::time::timeout(Duration::from_secs(5), ready_rx)
-        .await
-        .expect("engine ready")
-        .expect("subscribed");
+    wait_for_ready(&gate, Duration::from_secs(5)).await;
 
     // Only one robot in the zone: no collision yet.
+    let t = Topic::try_new("zone/cell-3/entered").unwrap();
     transport
         .publish(
-            "zone/cell-3/entered",
-            Qos::BestEffort,
-            &serde_json::json!({"robot_id": "robot-a"}),
+            t,
+            Envelope::Action {
+                qos: Qos::BestEffort,
+                payload: serde_json::json!({"robot_id": "robot-a"}),
+            },
         )
         .await
         .expect("publish zone entered");
+    let t2 = Topic::try_new("sensor/probe").unwrap();
     transport
         .publish(
-            "sensor/probe",
-            Qos::BestEffort,
-            &serde_json::json!({"value": 1}),
+            t2,
+            Envelope::Action {
+                qos: Qos::BestEffort,
+                payload: serde_json::json!({"value": 1}),
+            },
         )
         .await
         .expect("publish probe");
@@ -222,19 +210,25 @@ async fn zone_path_uses_managed_subscription_lifecycle() {
     assert!(no_action.is_err(), "single-zone robot must not collide");
 
     // Second robot enters the same zone -> SameZoneAs now holds.
+    let t3 = Topic::try_new("zone/cell-3/entered").unwrap();
     transport
         .publish(
-            "zone/cell-3/entered",
-            Qos::BestEffort,
-            &serde_json::json!({"robot_id": "robot-b"}),
+            t3,
+            Envelope::Action {
+                qos: Qos::BestEffort,
+                payload: serde_json::json!({"robot_id": "robot-b"}),
+            },
         )
         .await
         .expect("publish second zone entered");
+    let t4 = Topic::try_new("sensor/probe").unwrap();
     transport
         .publish(
-            "sensor/probe",
-            Qos::BestEffort,
-            &serde_json::json!({"value": 1}),
+            t4,
+            Envelope::Action {
+                qos: Qos::BestEffort,
+                payload: serde_json::json!({"value": 1}),
+            },
         )
         .await
         .expect("publish probe again");

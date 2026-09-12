@@ -7,6 +7,7 @@ use serde_json::Value;
 use tracing::{debug, info, warn};
 
 use crate::config::ActiveRules;
+use crate::health::ReadyGate;
 use crate::rules::{Action, EvalMode, Op, Operand, Predicate, PrimitiveRef, Rules, Trigger, When};
 use crate::transport::{Subscription, Transport};
 
@@ -252,11 +253,11 @@ impl EvalState {
 
         // Zone subscriptions are now a derived stream like sensor topics: they send
         // (key_expr, payload) into the same `sample_tx`, and `ingest` updates zones.
-        let (_zone_entered, _zone_cleared) =
+        let _zone_handles =
             zone_subscriptions(transport.as_ref(), sample_tx.clone()).await?;
 
         // Initial sensor subscriptions.
-        let mut subscribers: Vec<Subscription> = Vec::new();
+        let mut subscribers: Vec<tokio::task::JoinHandle<()>> = Vec::new();
         let mut current_topics: Vec<String> = Vec::new();
         let initial_rules = store.current().await;
         subscribe_to_topics(
@@ -278,8 +279,8 @@ impl EvalState {
         self.last_rules = Some(initial_rules);
 
         let mut tick = tokio::time::interval(Duration::from_millis(50));
-        // Hold zone handles for lifetime (drop-to-unsubscribe).
-        let _keep_zones = (_zone_entered, _zone_cleared);
+        // Hold zone handles for lifetime (abort on drop).
+        let _keep_zones = _zone_handles;
 
         loop {
             tokio::select! {
@@ -551,17 +552,23 @@ fn when_satisfied_with_prev(
 /// Run the rule engine: subscribe to sensor topics, maintain latest samples, and
 /// fire actions for satisfied rules. One subscription per distinct trigger topic.
 ///
-/// Thin wrapper around `EvalState` for one release (use `EvalState::new` + `run` for new code).
-/// `subscribed`, when provided, is signalled once the initial sensor subscriptions
-/// are live so the caller can gate readiness on actual subscription, not spawn.
+/// `ready_gate` is consumed as the readiness token: the engine flips it once its
+/// initial sensor subscriptions are live, so the caller can gate `/readyz` on
+/// actual subscription, not spawn.
 pub async fn run_engine(
     transport: Arc<Transport>,
     store: ActiveRules,
-    eval_counter: Arc<AtomicU64>,
-    subscribed: Option<tokio::sync::oneshot::Sender<()>>,
+    ready_gate: ReadyGate,
 ) -> zenoh::Result<()> {
+    let eval_counter = ready_gate.eval_counter();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let gate_clone = ready_gate.clone();
+    tokio::spawn(async move {
+        let _ = rx.await;
+        gate_clone.set_ready();
+    });
     EvalState::new(transport, store)
-        .run(eval_counter, subscribed)
+        .run(eval_counter, Some(tx))
         .await
 }
 
@@ -574,34 +581,34 @@ pub async fn run_engine(
 async fn zone_subscriptions(
     transport: &Transport,
     tx: tokio::sync::mpsc::Sender<(String, Value)>,
-) -> zenoh::Result<(Subscription, Subscription)> {
+) -> zenoh::Result<Vec<tokio::task::JoinHandle<()>>> {
+    let entered_pattern =
+        crate::topic::Pattern::try_new(crate::topic::ZONE_ENTERED_PATTERN).unwrap();
+    let entered_sub = transport.subscribe(entered_pattern).await?;
     let entered_tx = tx.clone();
-    let entered_sub = transport
-        .subscribe_managed(
-            crate::topic::ZONE_ENTERED_PATTERN,
-            move |sample: zenoh::sample::Sample| {
-                let key = sample.key_expr().to_string();
-                let payload: Value =
-                    serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
-                let _ = entered_tx.try_send((key, payload));
-            },
-        )
-        .await?;
+    let entered_handle = tokio::spawn(async move {
+        while let Ok(sample) = entered_sub.recv_async().await {
+            let key = sample.key_expr().to_string();
+            let payload: Value =
+                serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
+            let _ = entered_tx.try_send((key, payload));
+        }
+    });
 
+    let cleared_pattern =
+        crate::topic::Pattern::try_new(crate::topic::ZONE_CLEARED_PATTERN).unwrap();
+    let cleared_sub = transport.subscribe(cleared_pattern).await?;
     let cleared_tx = tx;
-    let cleared_sub = transport
-        .subscribe_managed(
-            crate::topic::ZONE_CLEARED_PATTERN,
-            move |sample: zenoh::sample::Sample| {
-                let key = sample.key_expr().to_string();
-                let payload: Value =
-                    serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
-                let _ = cleared_tx.try_send((key, payload));
-            },
-        )
-        .await?;
+    let cleared_handle = tokio::spawn(async move {
+        while let Ok(sample) = cleared_sub.recv_async().await {
+            let key = sample.key_expr().to_string();
+            let payload: Value =
+                serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
+            let _ = cleared_tx.try_send((key, payload));
+        }
+    });
 
-    Ok((entered_sub, cleared_sub))
+    Ok(vec![entered_handle, cleared_handle])
 }
 
 /// Subscribe to all distinct topics from the ruleset using managed subscribers.
@@ -611,7 +618,7 @@ async fn subscribe_to_topics(
     transport: &Transport,
     rules: &Rules,
     tx: &tokio::sync::mpsc::Sender<(String, Value)>,
-    subscribers: &mut Vec<Subscription>,
+    subscribers: &mut Vec<tokio::task::JoinHandle<()>>,
     topics: &mut Vec<String>,
 ) -> zenoh::Result<()> {
     let mut new_topics: Vec<String> = Vec::new();
@@ -621,19 +628,20 @@ async fn subscribe_to_topics(
     new_topics.sort();
     new_topics.dedup();
     for topic in &new_topics {
-        let tx = tx.clone();
-        let key_expr = topic.clone();
-        let sub = transport
-            .subscribe_managed(&key_expr, {
-                let key = key_expr.clone();
-                move |sample: zenoh::sample::Sample| {
-                    let payload: Value =
-                        serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
-                    let _ = tx.try_send((key.clone(), payload));
-                }
-            })
-            .await?;
-        subscribers.push(sub);
+        let pattern = crate::topic::Pattern::try_new(topic).map_err(|e| {
+            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidInput, e)) as zenoh::Error
+        })?;
+        let sub = transport.subscribe(pattern).await?;
+        let tx2 = tx.clone();
+        let key = topic.clone();
+        let handle = tokio::spawn(async move {
+            while let Ok(sample) = sub.recv_async().await {
+                let payload: Value =
+                    serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
+                let _ = tx2.try_send((key.clone(), payload));
+            }
+        });
+        subscribers.push(handle);
     }
     *topics = new_topics;
     Ok(())
@@ -649,10 +657,18 @@ fn collect_topics(when: &When, out: &mut Vec<String>) {
 }
 
 async fn fire_action(transport: &Transport, action: &Action) {
-    if let Err(e) = transport
-        .publish(&action.topic, action.qos, &action.payload)
-        .await
-    {
+    let topic = match crate::topic::Topic::try_new(&action.topic) {
+        Ok(t) => t,
+        Err(e) => {
+            warn!(action = %action.topic, error = %e, "action topic invalid — not published");
+            return;
+        }
+    };
+    let envelope = crate::transport::Envelope::Action {
+        qos: action.qos,
+        payload: action.payload.clone(),
+    };
+    if let Err(e) = transport.publish(topic, envelope).await {
         warn!(action = %action.topic, error = %e, "action publish failed");
     } else {
         debug!(action = %action.topic, qos = ?action.qos, "fired action");
