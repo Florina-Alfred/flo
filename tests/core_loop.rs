@@ -1,7 +1,7 @@
 mod helpers;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use flo_rs::config::ActiveRules;

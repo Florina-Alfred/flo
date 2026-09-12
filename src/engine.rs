@@ -9,7 +9,7 @@ use tracing::{debug, info, warn};
 use crate::config::ActiveRules;
 use crate::health::ReadyGate;
 use crate::rules::{Action, EvalMode, Op, Operand, Predicate, PrimitiveRef, Rules, Trigger, When};
-use crate::transport::{Subscription, Transport};
+use crate::transport::Transport;
 
 /// Epsilon for float equality so `==`/`!=` do not fail on IEEE rounding dust.
 const EPSILON: f64 = 1e-9;
@@ -253,8 +253,7 @@ impl EvalState {
 
         // Zone subscriptions are now a derived stream like sensor topics: they send
         // (key_expr, payload) into the same `sample_tx`, and `ingest` updates zones.
-        let _zone_handles =
-            zone_subscriptions(transport.as_ref(), sample_tx.clone()).await?;
+        let _zone_handles = zone_subscriptions(transport.as_ref(), sample_tx.clone()).await?;
 
         // Initial sensor subscriptions.
         let mut subscribers: Vec<tokio::task::JoinHandle<()>> = Vec::new();
