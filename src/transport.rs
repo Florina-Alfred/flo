@@ -66,6 +66,21 @@ impl Transport {
         }
     }
 
+    /// Wrap an already-shared `Arc<Session>` in a `Transport`. Used by hot-reload
+    /// to create an owned `Arc<Transport>` from a borrowed `&Transport` without
+    /// cloning the liveliness tokens (they stay on the original handle).
+    pub fn from_arc_session(session: Arc<Session>) -> Self {
+        Self {
+            session,
+            _tokens: Vec::new(),
+        }
+    }
+
+    /// Clone the inner session handle for hot-reload ownership transfer.
+    pub fn session_arc(&self) -> Arc<Session> {
+        self.session.clone()
+    }
+
     /// Open a Zenoh session with an explicit config. Used by the local demo to pin
     /// loopback peer discovery (zero-config `cargo run`, no router needed), and by
     /// production with an auth-derived config. `zenoh::Config` is the documented
