@@ -11,9 +11,14 @@ use crate::transport::Transport;
 
 /// Shared, atomically-swappable ruleset. Readers hold an `Arc` clone; a hot-reload
 /// replaces the inner `Arc` without disturbing in-flight evaluations.
+///
+/// A `watch` channel notifies subscribers (e.g. `EvalState`) when the ruleset
+/// changes, replacing arrival-rate-dependent `sample_count % 16` polling with
+/// an explicit push notification. The `watch` always holds the latest value.
 #[derive(Clone)]
 pub struct ActiveRules {
     inner: Arc<RwLock<Arc<Rules>>>,
+    watch_tx: tokio::sync::watch::Sender<Arc<Rules>>,
 }
 
 /// Alias for one release — use [`ActiveRules`] for new code.
@@ -22,8 +27,10 @@ pub type RuleStore = ActiveRules;
 impl ActiveRules {
     /// Create a store from an already-compiled ruleset.
     pub fn new(rules: Arc<Rules>) -> Self {
+        let (watch_tx, _) = tokio::sync::watch::channel(rules.clone());
         Self {
             inner: Arc::new(RwLock::new(rules)),
+            watch_tx,
         }
     }
 
@@ -31,8 +38,11 @@ impl ActiveRules {
     /// startup so misconfiguration fails fast rather than silently running stale rules.
     pub fn bootstrap(toml_text: &str) -> Result<Self, toml::de::Error> {
         let rules = Rules::from_toml(toml_text)?;
+        let arc = Arc::new(rules);
+        let (watch_tx, _) = tokio::sync::watch::channel(arc.clone());
         Ok(Self {
-            inner: Arc::new(RwLock::new(Arc::new(rules))),
+            inner: Arc::new(RwLock::new(arc)),
+            watch_tx,
         })
     }
 
@@ -43,8 +53,11 @@ impl ActiveRules {
         const DEMO: &str = include_str!("../examples/rules/hrc-demo.toml");
         let toml = DEMO.replace("{id}", robot_id);
         let rules = Rules::from_toml(&toml).expect("built-in demo rules must parse");
+        let arc = Arc::new(rules);
+        let (watch_tx, _) = tokio::sync::watch::channel(arc.clone());
         Self {
-            inner: Arc::new(RwLock::new(Arc::new(rules))),
+            inner: Arc::new(RwLock::new(arc)),
+            watch_tx,
         }
     }
 
@@ -54,8 +67,18 @@ impl ActiveRules {
     }
 
     /// Atomically swap in a new ruleset. In-flight holders keep their old `Arc`.
+    /// Also notifies `watch` subscribers so `EvalState` can rebuild without polling.
     pub async fn swap(&self, rules: Arc<Rules>) {
-        *self.inner.write().await = rules;
+        *self.inner.write().await = rules.clone();
+        let _ = self.watch_tx.send(rules);
+    }
+
+    /// Subscribe to ruleset changes. The returned `watch::Receiver` always holds
+    /// the latest `Arc<Rules>` and wakes on `swap`. This replaces the old
+    /// `sample_count % 16` arrival-rate-dependent polling with an explicit
+    /// push channel.
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<Arc<Rules>> {
+        self.watch_tx.subscribe()
     }
 }
 
