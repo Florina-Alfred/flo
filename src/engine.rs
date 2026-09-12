@@ -7,7 +7,7 @@ use tracing::{debug, info, warn};
 
 use crate::config::ActiveRules;
 use crate::rules::{Action, EvalMode, Op, Operand, Predicate, PrimitiveRef, Rules, Trigger, When};
-use crate::transport::{Subscription, Transport};
+use crate::transport::Transport;
 
 /// Epsilon for float equality so `==`/`!=` do not fail on IEEE rounding dust.
 const EPSILON: f64 = 1e-9;
@@ -243,14 +243,12 @@ pub async fn run_engine(
     let (sample_tx, mut sample_rx) = tokio::sync::mpsc::channel::<(String, Value)>(256);
 
     // Zone-tracking: observe zone entered/cleared to support SameZoneAs. The
-    // managed subscription handles are held for the engine's lifetime so the
-    // zone subscriptions stay live (drop-to-unsubscribe lifecycle).
+    // subscription tasks are held for the engine's lifetime.
     let zone_tracker = Arc::new(std::sync::Mutex::new(ZoneTracker::new()));
-    let (_zone_entered, _zone_cleared) =
-        zone_subscriptions(transport.as_ref(), &zone_tracker).await?;
+    let _zone_handles = zone_subscriptions(transport.as_ref(), &zone_tracker).await?;
 
     // Collect initial topics and create subscribers.
-    let mut subscribers: Vec<Subscription> = Vec::new();
+    let mut subscribers: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     let mut current_topics: Vec<String> = Vec::new();
     let initial_rules = store.current().await;
     subscribe_to_topics(
@@ -334,8 +332,9 @@ pub async fn run_engine(
             if new_topics != current_topics {
                 info!("sensor topics changed — rebuilding subscribers");
                 let old = std::mem::take(&mut subscribers);
-                // Dropping the old Vec drops all subscriber handles, unsubscribing.
-                drop(old);
+                for handle in old {
+                    handle.abort();
+                }
                 subscribe_to_topics(
                     &transport,
                     &rules,
@@ -351,58 +350,59 @@ pub async fn run_engine(
     Ok(())
 }
 
-/// Subscribe to `zone/*/entered` and `zone/*/cleared` with the managed
-/// subscription lifecycle and return the handles so the caller keeps them
-/// alive. The callbacks feed the `ZoneTracker` used by `SameZoneAs`.
+/// Subscribe to `zone/*/entered` and `zone/*/cleared` and feed the `ZoneTracker`.
+/// Returns JoinHandles that keep the subscriptions alive (aborting drops the subscription).
 async fn zone_subscriptions(
     transport: &Transport,
     zone_tracker: &Arc<std::sync::Mutex<ZoneTracker>>,
-) -> zenoh::Result<(Subscription, Subscription)> {
-    let entered_sub = transport
-        .subscribe_managed(crate::topic::ZONE_ENTERED_PATTERN, {
-            let zt = zone_tracker.clone();
-            move |sample: zenoh::sample::Sample| {
-                let key = sample.key_expr().to_string();
-                let parts: Vec<&str> = key.split('/').collect();
-                if parts.len() >= 3 {
-                    let zone_id = parts[1];
-                    let payload: Value =
-                        serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
-                    if let Some(robot_id) = payload.get("robot_id").and_then(|v| v.as_str()) {
-                        zt.lock().unwrap().enter_zone(robot_id, zone_id);
-                    }
+) -> zenoh::Result<Vec<tokio::task::JoinHandle<()>>> {
+    let entered_pattern =
+        crate::topic::Pattern::try_new(crate::topic::ZONE_ENTERED_PATTERN).unwrap();
+    let entered_sub = transport.subscribe(entered_pattern).await?;
+    let zt = zone_tracker.clone();
+    let entered_handle = tokio::spawn(async move {
+        while let Ok(sample) = entered_sub.recv_async().await {
+            let key = sample.key_expr().to_string();
+            let parts: Vec<&str> = key.split('/').collect();
+            if parts.len() >= 3 {
+                let zone_id = parts[1];
+                let payload: Value =
+                    serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
+                if let Some(robot_id) = payload.get("robot_id").and_then(|v| v.as_str()) {
+                    zt.lock().unwrap().enter_zone(robot_id, zone_id);
                 }
             }
-        })
-        .await?;
+        }
+    });
 
-    let cleared_sub = transport
-        .subscribe_managed(crate::topic::ZONE_CLEARED_PATTERN, {
-            let zt = zone_tracker.clone();
-            move |sample: zenoh::sample::Sample| {
-                let key = sample.key_expr().to_string();
-                let parts: Vec<&str> = key.split('/').collect();
-                if parts.len() >= 3 {
-                    let zone_id = parts[1];
-                    let payload: Value =
-                        serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
-                    if let Some(robot_id) = payload.get("robot_id").and_then(|v| v.as_str()) {
-                        zt.lock().unwrap().clear_zone(robot_id, zone_id);
-                    }
+    let cleared_pattern =
+        crate::topic::Pattern::try_new(crate::topic::ZONE_CLEARED_PATTERN).unwrap();
+    let cleared_sub = transport.subscribe(cleared_pattern).await?;
+    let zt2 = zone_tracker.clone();
+    let cleared_handle = tokio::spawn(async move {
+        while let Ok(sample) = cleared_sub.recv_async().await {
+            let key = sample.key_expr().to_string();
+            let parts: Vec<&str> = key.split('/').collect();
+            if parts.len() >= 3 {
+                let zone_id = parts[1];
+                let payload: Value =
+                    serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
+                if let Some(robot_id) = payload.get("robot_id").and_then(|v| v.as_str()) {
+                    zt2.lock().unwrap().clear_zone(robot_id, zone_id);
                 }
             }
-        })
-        .await?;
+        }
+    });
 
-    Ok((entered_sub, cleared_sub))
+    Ok(vec![entered_handle, cleared_handle])
 }
 
-/// Subscribe to all distinct topics from the ruleset using managed subscribers.
+/// Subscribe to all distinct topics from the ruleset.
 async fn subscribe_to_topics(
     transport: &Transport,
     rules: &Rules,
     tx: &tokio::sync::mpsc::Sender<(String, Value)>,
-    subscribers: &mut Vec<Subscription>,
+    subscribers: &mut Vec<tokio::task::JoinHandle<()>>,
     topics: &mut Vec<String>,
 ) -> zenoh::Result<()> {
     let mut new_topics: Vec<String> = Vec::new();
@@ -412,19 +412,20 @@ async fn subscribe_to_topics(
     new_topics.sort();
     new_topics.dedup();
     for topic in &new_topics {
-        let tx = tx.clone();
-        let key_expr = topic.clone();
-        let sub = transport
-            .subscribe_managed(&key_expr, {
-                let key = key_expr.clone();
-                move |sample: zenoh::sample::Sample| {
-                    let payload: Value =
-                        serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
-                    let _ = tx.try_send((key.clone(), payload));
-                }
-            })
-            .await?;
-        subscribers.push(sub);
+        let pattern = crate::topic::Pattern::try_new(topic).map_err(|e| {
+            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidInput, e)) as zenoh::Error
+        })?;
+        let sub = transport.subscribe(pattern).await?;
+        let tx2 = tx.clone();
+        let key = topic.clone();
+        let handle = tokio::spawn(async move {
+            while let Ok(sample) = sub.recv_async().await {
+                let payload: Value =
+                    serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or(Value::Null);
+                let _ = tx2.try_send((key.clone(), payload));
+            }
+        });
+        subscribers.push(handle);
     }
     *topics = new_topics;
     Ok(())
@@ -440,10 +441,18 @@ fn collect_topics(when: &When, out: &mut Vec<String>) {
 }
 
 async fn fire_action(transport: &Transport, action: &Action) {
-    if let Err(e) = transport
-        .publish(&action.topic, action.qos, &action.payload)
-        .await
-    {
+    let topic = match crate::topic::Topic::try_new(&action.topic) {
+        Ok(t) => t,
+        Err(e) => {
+            warn!(action = %action.topic, error = %e, "action topic invalid — not published");
+            return;
+        }
+    };
+    let envelope = crate::transport::Envelope::Action {
+        qos: action.qos,
+        payload: action.payload.clone(),
+    };
+    if let Err(e) = transport.publish(topic, envelope).await {
         warn!(action = %action.topic, error = %e, "action publish failed");
     } else {
         debug!(action = %action.topic, qos = ?action.qos, "fired action");

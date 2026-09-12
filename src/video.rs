@@ -462,7 +462,7 @@ mod tests {
         use std::sync::Arc;
 
         let transport = Arc::new(
-            crate::transport::Transport::open_with(crate::transport::Transport::loopback_config())
+            crate::transport::Transport::open_router()
                 .await
                 .expect("open loopback transport"),
         );
