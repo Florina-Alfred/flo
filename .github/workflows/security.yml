@@ -24,6 +24,28 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  advisory-sync:
+    name: advisory sync check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check deny/audit ignore lists are in sync
+        run: |
+          set -euo pipefail
+          audit_ids=$(grep -oE 'RUSTSEC-[0-9]+-[0-9]+' audit.toml | sort -u)
+          deny_ids=$(grep -oE 'RUSTSEC-[0-9]+-[0-9]+' deny.toml | sort -u)
+          echo "audit.toml IDs:"
+          echo "$audit_ids"
+          echo "deny.toml IDs:"
+          echo "$deny_ids"
+          if [ "$audit_ids" != "$deny_ids" ]; then
+            echo "::error::audit.toml and deny.toml advisory ignore lists have drifted — single source is audit.toml, keep deny.toml in sync"
+            diff -u <(echo "$audit_ids") <(echo "$deny_ids") || true
+            exit 1
+          fi
+          echo "Advisory ignore lists in sync."
+
   audit:
     name: cargo-audit
     runs-on: ubuntu-latest

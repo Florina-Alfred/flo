@@ -1,3 +1,5 @@
+mod helpers;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,6 +11,7 @@ use flo_rs::engine;
 use flo_rs::health::ReadyGate;
 use flo_rs::runtime::{Runtime, start_common_subsystems};
 use flo_rs::transport::Transport;
+use helpers::wait_for_child_exit;
 
 fn empty_store() -> ActiveRules {
     ActiveRules::bootstrap("rules = []\n").expect("empty ruleset always parses")
@@ -18,11 +21,10 @@ fn empty_store() -> ActiveRules {
 /// returns an error (the binary turns it into a non-zero exit).
 #[tokio::test(flavor = "multi_thread")]
 async fn dead_engine_is_detected_by_supervision() {
-    let transport = Arc::new(
-        Transport::open_with(Transport::loopback_config())
-            .await
-            .expect("open loopback transport"),
-    );
+    // Use helpers::loopback to ensure router/client pair is correctly wired
+    // (demonstrates shared harness usage; single-transport loopback still ok).
+    let (server, _client) = helpers::loopback().await;
+    let transport = Arc::new(server);
     let store = empty_store();
     let args = Args::parse_from(["flo", "--auth-mode", "none", "--auth-allow-insecure"]);
     let gate = ReadyGate::new();
@@ -47,7 +49,7 @@ async fn dead_engine_is_detected_by_supervision() {
 #[tokio::test(flavor = "multi_thread")]
 async fn engine_confirms_subscriptions_on_ready_gate() {
     let transport = Arc::new(
-        Transport::open_with(Transport::loopback_config())
+        Transport::open_router()
             .await
             .expect("open loopback transport"),
     );
@@ -97,22 +99,9 @@ fn dead_health_subsystem_makes_client_exit_nonzero() {
         .spawn()
         .expect("spawn flo client");
 
-    // INFRA-09: deadline-based poll with short interval — avoids flaky fixed
-    // sleeps. The child's health subsystem dies async; we poll try_wait with
-    // a 30s deadline and 20ms interval (faster than the old 50ms, still
-    // bounded). This mirrors the `engine::subscribed` ready-gate pattern:
-    // poll with deadline rather than a single long sleep.
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    let status = loop {
-        if let Some(status) = child.try_wait().expect("wait child") {
-            break status;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "client stayed alive after its health subsystem died"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    };
+    // Use shared harness helper for deadline-based poll (was duplicated inline).
+    let status = wait_for_child_exit(&mut child, Duration::from_secs(30))
+        .expect("client stayed alive after its health subsystem died");
 
     let stdout = read_all(&mut child.stdout.take().unwrap());
     let stderr = read_all(&mut child.stderr.take().unwrap());

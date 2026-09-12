@@ -85,16 +85,16 @@ pub async fn run_hot_reload(
     store: ActiveRules,
 ) -> zenoh::Result<()> {
     let key = crate::topic::rules_key(robot_id);
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<zenoh::sample::Sample>();
-    transport
-        .subscribe(&key, move |sample: zenoh::sample::Sample| {
-            let _ = tx.send(sample);
-        })
-        .await?;
+    let pattern = crate::topic::Pattern::try_new(key.as_str()).expect("rules_key is valid pattern");
+    let sub = transport.subscribe(pattern).await?;
     info!(topic = %key, "hot-reload subscriber active");
 
     // Stream updates; swap the store atomically on each valid TOML payload.
-    while let Some(sample) = rx.recv().await {
+    loop {
+        let sample = match sub.recv_async().await {
+            Ok(s) => s,
+            Err(_) => break,
+        };
         let bytes = sample.payload().to_bytes();
         let text = String::from_utf8_lossy(&bytes);
         match Rules::from_toml(&text) {
@@ -120,15 +120,15 @@ pub async fn run_hot_reload_with_registry(
     registry: Arc<Registry>,
 ) -> zenoh::Result<()> {
     let wildcard_key = crate::topic::RULESET_PUB_PATTERN;
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<zenoh::sample::Sample>();
-    transport
-        .subscribe(wildcard_key, move |sample: zenoh::sample::Sample| {
-            let _ = tx.send(sample);
-        })
-        .await?;
+    let pattern = crate::topic::Pattern::try_new(wildcard_key).expect("RULESET_PUB_PATTERN valid");
+    let sub = transport.subscribe(pattern).await?;
     info!(topic = %wildcard_key, "hot-reload subscriber active (registry)"); // cspell:disable-line
 
-    while let Some(sample) = rx.recv().await {
+    loop {
+        let sample = match sub.recv_async().await {
+            Ok(s) => s,
+            Err(_) => break,
+        };
         let bytes = sample.payload().to_bytes();
         let text = String::from_utf8_lossy(&bytes);
         match Ruleset::from_toml(&text) {
