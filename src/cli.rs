@@ -62,6 +62,12 @@ pub struct Args {
     #[arg(long)]
     pub healthcheck: bool,
 
+    /// Print the Zenoh router locator (e.g. `tcp/127.0.0.1:7447`) and exit.
+    /// Exposes `transport.locators()` so `verify-readme-demo.sh` can discover
+    /// the Zenoh port without `ss`/`lsof` fallback.
+    #[arg(long)]
+    pub print_zenoh_port: bool,
+
     #[command(flatten)]
     pub video: VideoArgs,
 
@@ -115,6 +121,10 @@ pub struct ServerArgs {
     /// 200 from `/healthz`, 1 otherwise.
     #[arg(long)]
     pub healthcheck: bool,
+
+    /// Print the Zenoh router locator and exit (exposes `transport.locators()`).
+    #[arg(long)]
+    pub print_zenoh_port: bool,
 
     #[command(subcommand)]
     pub command: Option<Command>,

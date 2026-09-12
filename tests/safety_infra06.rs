@@ -1,10 +1,12 @@
+mod helpers;
+
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
 use std::time::Duration;
 
-use flo_rs::config::{ActiveRules, ClientConfig, run_hot_reload_with_registry};
+use flo_rs::config::{ActiveRules, run_hot_reload_with_registry};
 use flo_rs::engine;
 use flo_rs::registration::{
     ClientState, RegistrationError, RegistrationStatus, register_with_client,
@@ -14,62 +16,7 @@ use flo_rs::registry::Registry;
 use flo_rs::rules::{Action, EvalMode, Qos, Rule, Rules, Ruleset, Trigger, When};
 use flo_rs::topic::{Pattern, Topic};
 use flo_rs::transport::{Envelope, Transport};
-
-// ---------------------------------------------------------------------------
-// helpers
-// ---------------------------------------------------------------------------
-
-fn get_free_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let p = l.local_addr().unwrap().port();
-    drop(l);
-    std::thread::sleep(Duration::from_millis(10));
-    p
-}
-
-fn test_client_config() -> ClientConfig {
-    ClientConfig::from_toml(
-        r#"
-[client]
-heartbeat_interval_ms = 1000
-
-[default_subscriptions.location]
-x = "robot-7/location/x"
-y = "robot-7/location/y"
-z = "robot-7/location/z"
-
-[default_subscriptions.zone]
-site_id = "robot-7/site"
-zone_enter = "zone/cell-3/entered"
-zone_exit = "zone/cell-3/cleared"
-
-[default_publishers.location]
-topic = "robot-7/location"
-period_ms = 100
-
-[default_publishers.zone]
-topic = "robot-7/zone"
-period_ms = 1000
-"#,
-    )
-    .expect("test client config must parse")
-}
-
-/// Poll `cond` until it returns true or timeout hits; return true if succeeded.
-async fn poll_until<F, Fut>(mut cond: F, timeout_dur: Duration) -> bool
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    let start = std::time::Instant::now();
-    while start.elapsed() < timeout_dur {
-        if cond().await {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    false
-}
+use helpers::{poll_until, test_client_config};
 
 // ---------------------------------------------------------------------------
 // 1. Heartbeat / liveliness
@@ -77,13 +24,8 @@ where
 
 #[tokio::test(flavor = "multi_thread")]
 async fn heartbeat_poison_on_delete_after_registered() {
-    let port = get_free_port();
-    let server = Arc::new(
-        Transport::open_test_router(port)
-            .await
-            .expect("open router"),
-    );
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let server = Arc::new(helpers::router_on_free_port().await);
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     let reg = flo_rs::registration::RegistrationServer::new(Default::default());
     reg.register("robot-hb-1", test_client_config())
@@ -113,10 +55,8 @@ async fn heartbeat_poison_on_delete_after_registered() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // client declares liveliness
-    let mut client = Transport::open_test_client(port)
-        .await
-        .expect("open client");
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    let mut client = helpers::client_for(&server).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
     client
         .declare_liveliness("robot-hb-1")
         .await
@@ -160,13 +100,8 @@ async fn heartbeat_poison_on_delete_after_registered() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn heartbeat_no_poison_when_token_dropped_before_register() {
-    let port = get_free_port();
-    let server = Arc::new(
-        Transport::open_test_router(port)
-            .await
-            .expect("open router"),
-    );
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let server = Arc::new(helpers::router_on_free_port().await);
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     let reg = flo_rs::registration::RegistrationServer::new(Default::default());
     let srv_clone = server.clone();
@@ -190,10 +125,8 @@ async fn heartbeat_no_poison_when_token_dropped_before_register() {
     });
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let mut client = Transport::open_test_client(port)
-        .await
-        .expect("open client");
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    let mut client = helpers::client_for(&server).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
     client
         .declare_liveliness("robot-hb-pre")
         .await
@@ -225,13 +158,8 @@ async fn heartbeat_no_poison_when_token_dropped_before_register() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn registration_envelope_loopback() {
-    let port = get_free_port();
-    let server = Arc::new(
-        Transport::open_test_router(port)
-            .await
-            .expect("open router"),
-    );
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let server = Arc::new(helpers::router_on_free_port().await);
+    tokio::time::sleep(Duration::from_millis(100)).await;
     let reg = flo_rs::registration::RegistrationServer::new(Default::default());
     let srv_clone = server.clone();
     let reg_clone = reg.clone();
@@ -240,12 +168,8 @@ async fn registration_envelope_loopback() {
     });
     tokio::time::sleep(Duration::from_millis(600)).await;
 
-    let client = Arc::new(
-        Transport::open_test_client(port)
-            .await
-            .expect("open client"),
-    );
-    tokio::time::sleep(Duration::from_millis(700)).await;
+    let client = Arc::new(helpers::client_for(&server).await);
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     let cfg = test_client_config();
 
@@ -288,25 +212,17 @@ async fn registration_envelope_loopback() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn registration_bad_json_does_not_crash_handler() {
-    let port = get_free_port();
-    let server = Arc::new(
-        Transport::open_test_router(port)
-            .await
-            .expect("open router"),
-    );
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // explicit second test for bad JSON isolation
+    let server = Arc::new(helpers::router_on_free_port().await);
+    tokio::time::sleep(Duration::from_millis(100)).await;
     let reg = flo_rs::registration::RegistrationServer::new(Default::default());
     let srv_clone = server.clone();
     let handler = tokio::spawn(async move {
         let _ = run_registration_handler(srv_clone, reg).await;
     });
     tokio::time::sleep(Duration::from_millis(600)).await;
-    let client = Arc::new(
-        Transport::open_test_client(port)
-            .await
-            .expect("open client"),
-    );
-    tokio::time::sleep(Duration::from_millis(700)).await;
+    let client = Arc::new(helpers::client_for(&server).await);
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     // flood a few bad payloads
     for _ in 0..3 {
@@ -333,19 +249,10 @@ async fn registration_bad_json_does_not_crash_handler() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn hot_reload_with_registry_conflict_and_bad_toml() {
-    let port = get_free_port();
-    let server = Arc::new(
-        Transport::open_test_router(port)
-            .await
-            .expect("open router"),
-    );
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let client = Arc::new(
-        Transport::open_test_client(port)
-            .await
-            .expect("open client"),
-    );
-    tokio::time::sleep(Duration::from_millis(700)).await;
+    let server = Arc::new(helpers::router_on_free_port().await);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let client = Arc::new(helpers::client_for(&server).await);
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(

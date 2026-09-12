@@ -1,9 +1,11 @@
+mod helpers;
+
 use std::sync::Arc;
 
 use flo_rs::auth::{AuthConfig, AuthMode};
-use flo_rs::config::ClientConfig;
 use flo_rs::registration::{RegistrationServer, run_registration_handler};
 use flo_rs::transport::Transport;
+use helpers::test_client_config;
 
 /// Regression for #286: the README demo must work with explicit `--connect`
 /// when multicast is blocked. This test exercises the exact CLI path:
@@ -48,8 +50,8 @@ async fn cli_demo_registration_with_connect() {
             .await
             .expect("registration handler");
     });
-    // Give the handler time to subscribe
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    // Give the handler time to subscribe (use helpers::poll_until for hardened wait)
+    helpers::poll_until(|| async { false }, std::time::Duration::from_millis(200)).await;
 
     // Client: auth none → router, but with explicit connect to server's locator
     let client_auth = AuthConfig {
@@ -69,31 +71,7 @@ async fn cli_demo_registration_with_connect() {
             .expect("open client transport"),
     );
 
-    let client_cfg = ClientConfig::from_toml(
-        r#"
-[client]
-heartbeat_interval_ms = 1000
-
-[default_subscriptions.location]
-x = "robot-7/location/x"
-y = "robot-7/location/y"
-z = "robot-7/location/z"
-
-[default_subscriptions.zone]
-site_id = "robot-7/site"
-zone_enter = "zone/cell-3/entered"
-zone_exit = "zone/cell-3/cleared"
-
-[default_publishers.location]
-topic = "robot-7/location"
-period_ms = 100
-
-[default_publishers.zone]
-topic = "robot-7/zone"
-period_ms = 1000
-"#,
-    )
-    .expect("client config parse");
+    let client_cfg = test_client_config();
 
     // This is the exact call that timed out for the user without --connect.
     // With --connect it must succeed within 5s (the registration timeout).

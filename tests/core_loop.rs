@@ -1,3 +1,5 @@
+mod helpers;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -7,22 +9,7 @@ use flo_rs::engine;
 use flo_rs::rules::Qos;
 use flo_rs::topic::{Pattern, Topic};
 use flo_rs::transport::{Envelope, Transport};
-
-async fn wait_for_counter(counter: &AtomicU64, target: u64, timeout: Duration) {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        if counter.load(Ordering::SeqCst) >= target {
-            return;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            panic!(
-                "timeout waiting for eval_counter >= {target} (current {})",
-                counter.load(Ordering::SeqCst)
-            );
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-}
+use helpers::wait_for_counter;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sensor_sample_triggers_action() {

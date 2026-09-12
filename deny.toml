@@ -1,13 +1,14 @@
 # cargo-deny configuration for flo
 # Denies deps with unlisted licenses; allows permissive + weak-copyleft MPL-2.0.
-# Advisories allowlist is synced with audit.toml (INFRA-10): single source of
-# truth for reviewed exceptions; cargo deny check advisories enforces it.
+# Advisories allowlist — single source is audit.toml (INFRA-10). CI enforces
+# deny.toml stays in sync (see .github/workflows/security.yml drift check);
+# do not edit ignore lists manually in both places.
 
 [advisories]
 version = 2
 yanked = "warn"
 unmaintained = "none"
-# Keep in sync with audit.toml [advisories].ignore — reviewed exceptions:
+# Reviewed exceptions (mirrors audit.toml [advisories].ignore):
 # - RUSTSEC-2023-0071 (rsa): no fixed upgrade, transitive via zenoh
 # - RUSTSEC-2026-0041 (lz4_flex): fix exists but zenoh 1.9.0 pins 0.10
 # - RUSTSEC-2024-0436 (paste 1.0.15, unmaintained): transitive via zenoh 1.10.0
