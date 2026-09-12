@@ -1,5 +1,6 @@
+mod helpers;
+
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use clap::Parser;
@@ -7,9 +8,10 @@ use clap::Parser;
 use flo_rs::cli::Args;
 use flo_rs::config::ActiveRules;
 use flo_rs::engine;
-use flo_rs::runtime::ClientRuntime;
-use flo_rs::runtime::start_common_subsystems;
+use flo_rs::health::ReadyGate;
+use flo_rs::runtime::{Runtime, start_common_subsystems};
 use flo_rs::transport::Transport;
+use helpers::wait_for_child_exit;
 
 fn empty_store() -> ActiveRules {
     ActiveRules::bootstrap("rules = []\n").expect("empty ruleset always parses")
@@ -19,20 +21,20 @@ fn empty_store() -> ActiveRules {
 /// returns an error (the binary turns it into a non-zero exit).
 #[tokio::test(flavor = "multi_thread")]
 async fn dead_engine_is_detected_by_supervision() {
-    let transport = Arc::new(
-        Transport::open_with(Transport::loopback_config())
-            .await
-            .expect("open loopback transport"),
-    );
+    // Use helpers::loopback to ensure router/client pair is correctly wired
+    // (demonstrates shared harness usage; single-transport loopback still ok).
+    let (server, _client) = helpers::loopback().await;
+    let transport = Arc::new(server);
     let store = empty_store();
     let args = Args::parse_from(["flo", "--auth-mode", "none", "--auth-allow-insecure"]);
+    let gate = ReadyGate::new();
 
-    let handles = start_common_subsystems(&transport, &store, "robot-7", &args).await;
+    let handles = start_common_subsystems(&transport, &store, "robot-7", &args, gate).await;
 
     // Kill the rule engine subsystem; supervision must take the client down.
     handles.engine.abort();
 
-    let err = ClientRuntime::supervise(handles)
+    let err = Runtime::supervise(handles)
         .await
         .expect_err("supervision must fail when a subsystem dies");
     let msg = err.to_string().to_lowercase();
@@ -42,32 +44,39 @@ async fn dead_engine_is_detected_by_supervision() {
     );
 }
 
-/// The engine reports through the ready-gate channel only once its sensor
+/// The engine consumes the ReadyGate token and flips it once its sensor
 /// subscriptions are live, so `/readyz` can never flip before subscription.
 #[tokio::test(flavor = "multi_thread")]
 async fn engine_confirms_subscriptions_on_ready_gate() {
     let transport = Arc::new(
-        Transport::open_with(Transport::loopback_config())
+        Transport::open_router()
             .await
             .expect("open loopback transport"),
     );
     let store = empty_store();
 
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let counter = Arc::new(AtomicU64::new(0));
+    let gate = ReadyGate::new();
+    let gate_clone = gate.clone();
     let t = transport.clone();
     let s = store.clone();
-    let c = counter.clone();
     let task = tokio::spawn(async move {
-        engine::run_engine(t, s, c, Some(tx))
+        engine::run_engine(t, s, gate_clone)
             .await
             .expect("engine run");
     });
 
-    tokio::time::timeout(Duration::from_secs(5), rx)
-        .await
-        .expect("engine must confirm subscriptions within 5s")
-        .expect("subscribed signal must fire");
+    // Poll gate.is_ready_public until engine flips it, bounded by 5s deadline.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if gate.is_ready_public() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "engine must confirm subscriptions within 5s"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
 
     task.abort();
 }
@@ -90,22 +99,9 @@ fn dead_health_subsystem_makes_client_exit_nonzero() {
         .spawn()
         .expect("spawn flo client");
 
-    // INFRA-09: deadline-based poll with short interval — avoids flaky fixed
-    // sleeps. The child's health subsystem dies async; we poll try_wait with
-    // a 30s deadline and 20ms interval (faster than the old 50ms, still
-    // bounded). This mirrors the `engine::subscribed` ready-gate pattern:
-    // poll with deadline rather than a single long sleep.
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    let status = loop {
-        if let Some(status) = child.try_wait().expect("wait child") {
-            break status;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "client stayed alive after its health subsystem died"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    };
+    // Use shared harness helper for deadline-based poll (was duplicated inline).
+    let status = wait_for_child_exit(&mut child, Duration::from_secs(30))
+        .expect("client stayed alive after its health subsystem died");
 
     let stdout = read_all(&mut child.stdout.take().unwrap());
     let stderr = read_all(&mut child.stderr.take().unwrap());

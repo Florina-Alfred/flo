@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use flo_rs::config::ActiveRules;
 use flo_rs::engine;
+use flo_rs::health::ReadyGate;
 use flo_rs::semantic::{compile, parse_semantic};
 use flo_rs::transport::Transport;
 
@@ -37,13 +38,8 @@ async fn main() -> anyhow::Result<()> {
     let store =
         ActiveRules::bootstrap(&rules.to_toml()).map_err(|e| anyhow::anyhow!("bootstrap: {e}"))?;
 
-    engine::run_engine(
-        transport,
-        store,
-        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        None,
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("run_engine: {e}"))?;
+    engine::run_engine(transport, store, ReadyGate::new())
+        .await
+        .map_err(|e| anyhow::anyhow!("run_engine: {e}"))?;
     Ok(())
 }

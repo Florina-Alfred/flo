@@ -4,6 +4,7 @@ use zenoh::Session;
 use zenoh::qos::{CongestionControl, Priority, Reliability};
 
 use crate::rules::Qos;
+use crate::topic::{Pattern, Topic};
 
 /// Handle to the Zenoh session. A single `Session` multiplexes both QoS classes —
 /// QoS is per-put, per the locked decision. The class 1/2 publisher builders below
@@ -14,7 +15,7 @@ use crate::rules::Qos;
 /// the managed-subscription lifecycle, and topic-key ownership stay in one
 /// place. `session` is private — callers cannot reach around the seam.
 /// `zenoh::Config` and `zenoh::Session` appear only at construction time
-/// (`open_with`, `from_session`, `connect_config`) as the documented residual;
+/// (`open_with`, `from_session`, `open_router`, `connect_to`) as the documented residual;
 /// every other zenoh type is hidden behind the verbs.
 pub struct Transport {
     session: Arc<Session>,
@@ -23,42 +24,43 @@ pub struct Transport {
     _tokens: Vec<zenoh::liveliness::LivelinessToken>,
 }
 
-/// Handle to a managed callback subscription. Dropping it unsubscribes — the
-/// managed-subscription lifecycle used for engine sensor topics and the zone
-/// tracker. The underlying zenoh subscriber type is hidden behind the seam.
-pub struct Subscription {
-    // RAII handle: the field is only read by its Drop (unsubscribes on drop).
-    #[allow(dead_code)]
-    inner: zenoh::pubsub::Subscriber<()>,
+/// Unified envelope for the single `publish` verb. `Action` carries a QoS class
+/// (reliable vs best-effort), `Signal` is the best-effort control plane, and
+/// `RawBytes` is for registration payloads that are already serialized.
+#[derive(Debug, Clone)]
+pub enum Envelope {
+    /// Class 1/2 actuator action with explicit QoS.
+    Action {
+        qos: Qos,
+        payload: serde_json::Value,
+    },
+    /// WebRTC signaling control plane (best-effort JSON).
+    Signal(serde_json::Value),
+    /// Raw bytes (registration request/response, already serialized).
+    RawBytes(Vec<u8>),
 }
 
 /// Handle to a managed stream subscription. Dropping it unsubscribes;
-/// `recv_async` awaits individual samples (request/response style). The
-/// underlying zenoh subscriber type is hidden behind the seam.
-pub struct SubscriptionStream {
+/// `recv_async` awaits individual samples. This is the single `subscribe`
+/// verb — it replaces `subscribe`, `subscribe_managed`, `subscribe_stream`,
+/// and `subscribe_liveliness_managed`. Callers that previously used a callback
+/// now spawn a task that loops on `recv_async`.
+pub struct Subscription {
     inner: zenoh::pubsub::Subscriber<zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>>,
 }
 
-impl SubscriptionStream {
+impl Subscription {
     /// Await the next sample delivered to this subscription.
     pub async fn recv_async(&self) -> zenoh::Result<zenoh::sample::Sample> {
         self.inner.recv_async().await
     }
 }
 
-/// Handle to a managed liveliness subscription. Dropping it unsubscribes.
-/// Samples arrive as `Put` when a token is declared and `Delete` when it drops,
-/// which the heartbeat monitor uses to detect dead clients.
-pub struct LivelinessSubscription {
-    // RAII handle: the field is only read by its Drop (unsubscribes on drop).
-    #[allow(dead_code)]
-    inner: zenoh::pubsub::Subscriber<()>,
-}
+/// Legacy alias — `Subscription` is the single subscription handle.
+pub type SubscriptionStream = Subscription;
 
 impl Transport {
-    /// Wrap an already-open `zenoh::Session` in a `Transport`. Used by the server
-    /// mode which opens the session as a router via `zenoh::open` with an auth
-    /// config, then wraps the result here.
+    /// Wrap an already-open `zenoh::Session` in a `Transport`.
     pub fn from_session(session: zenoh::Session) -> Self {
         Self {
             session: Arc::new(session),
@@ -81,20 +83,27 @@ impl Transport {
         self.session.clone()
     }
 
-    /// Open a Zenoh session with an explicit config. Used by the local demo to pin
-    /// loopback peer discovery (zero-config `cargo run`, no router needed), and by
-    /// production with an auth-derived config. `zenoh::Config` is the documented
-    /// construction-time residual (see the type docs).
+    /// Open a Zenoh session with an explicit config. This is the construction-time
+    /// residual where `zenoh::Config` is allowed. Prefer `open_router` / `connect_to`
+    /// for new code.
     pub async fn open_with(config: zenoh::Config) -> zenoh::Result<Self> {
         let session = zenoh::open(config).await?;
         Ok(Self::from_session(session))
     }
 
-    /// Build the zero-config loopback config for the local demo: peer mode with
-    /// multicast scouting on loopback (auto-meshes multiple `cargo run` on one host)
-    /// plus a localhost listen endpoint for robustness on hosts that drop multicast.
-    /// `Config::default()` is already a peer; these mutations only harden discovery.
-    pub fn loopback_config() -> zenoh::Config {
+    /// Open a loopback router for the local demo / tests. Hides `zenoh::Config`
+    /// and `insert_json5` behind the seam — callers never touch them.
+    pub async fn open_router() -> zenoh::Result<Self> {
+        Self::open_with(Self::router_config()).await
+    }
+
+    /// Connect as a client to the given explicit endpoints. Hides `zenoh::Config`.
+    pub async fn connect_to(endpoints: &[String]) -> zenoh::Result<Self> {
+        Self::open_with(Self::client_config(endpoints)).await
+    }
+
+    /// Internal: build the zero-config loopback router config.
+    fn router_config() -> zenoh::Config {
         let mut c = zenoh::Config::default();
         let _ = c.insert_json5("mode", "\"router\"");
         let _ = c.insert_json5("scouting/multicast/enabled", "true");
@@ -102,31 +111,88 @@ impl Transport {
         c
     }
 
-    /// Build a client-mode config that connects only to the given explicit
-    /// endpoints (no multicast scouting, no listen). Used by `flo --connect`.
-    pub fn connect_config(endpoints: &[String]) -> zenoh::Config {
+    /// Internal: build a client-mode config that connects only to the given endpoints.
+    fn client_config(endpoints: &[String]) -> zenoh::Config {
         let mut c = zenoh::Config::default();
         let _ = c.insert_json5("mode", "\"client\"");
+        let _ = c.insert_json5("scouting/multicast/enabled", "false");
         if !endpoints.is_empty() {
-            let endpoints: Vec<String> = endpoints.iter().map(|e| format!("\"{e}\"")).collect();
-            let _ = c.insert_json5("connect/endpoints", &format!("[{}]", endpoints.join(",")));
+            // Use serde_json to properly escape endpoints, not string interpolation.
+            let endpoints_json =
+                serde_json::to_string(endpoints).unwrap_or_else(|_| "[]".to_string());
+            let _ = c.insert_json5("connect/endpoints", &endpoints_json);
         }
         c
     }
 
+    /// Apply connect endpoints to an existing config (e.g. an auth-derived config)
+    /// without the caller touching `insert_json5`. Used by `runtime` and `flo-client`
+    /// to merge `--connect` into the auth config.
+    pub fn with_endpoints(mut config: zenoh::Config, endpoints: &[String]) -> zenoh::Config {
+        let _ = config.insert_json5("mode", "\"client\"");
+        if !endpoints.is_empty() {
+            let endpoints_json =
+                serde_json::to_string(endpoints).unwrap_or_else(|_| "[]".to_string());
+            let _ = config.insert_json5("connect/endpoints", &endpoints_json);
+        }
+        let _ = config.insert_json5("scouting/multicast/enabled", "false");
+        config
+    }
+
+    /// Legacy helper for tests that still call `loopback_config` directly.
+    /// Prefer `open_router` for new code.
+    pub fn loopback_config() -> zenoh::Config {
+        Self::router_config()
+    }
+
+    /// Legacy helper for tests that still call `connect_config` directly.
+    pub fn connect_config(endpoints: &[String]) -> zenoh::Config {
+        Self::client_config(endpoints)
+    }
+
+    /// Test helper: router config that listens on a specific port with multicast disabled.
+    /// Used by `safety_infra06` to isolate router/client pairs. Hides `insert_json5`.
+    pub fn test_router_config(port: u16) -> zenoh::Config {
+        let mut c = zenoh::Config::default();
+        let _ = c.insert_json5("mode", "\"router\"");
+        let _ = c.insert_json5("scouting/multicast/enabled", "false");
+        let _ = c.insert_json5("scouting/gossip/enabled", "false");
+        let _ = c.insert_json5("listen/endpoints", &format!("[\"tcp/127.0.0.1:{port}\"]"));
+        c
+    }
+
+    /// Test helper: client config that connects to a specific port.
+    pub fn test_client_config(port: u16) -> zenoh::Config {
+        let mut c = zenoh::Config::default();
+        let _ = c.insert_json5("mode", "\"client\"");
+        let _ = c.insert_json5("scouting/multicast/enabled", "false");
+        let _ = c.insert_json5("connect/endpoints", &format!("[\"tcp/127.0.0.1:{port}\"]"));
+        c
+    }
+
+    /// Open a test router on a specific port.
+    pub async fn open_test_router(port: u16) -> zenoh::Result<Self> {
+        Self::open_with(Self::test_router_config(port)).await
+    }
+
+    /// Open a test client connected to a specific port.
+    pub async fn open_test_client(port: u16) -> zenoh::Result<Self> {
+        Self::open_with(Self::test_client_config(port)).await
+    }
+
     /// Declare the per-pod liveliness token so the mesh can detect dead clients.
-    /// The token is held inside `Transport` for the session's lifetime.
     pub async fn declare_liveliness(&mut self, robot_id: &str) -> zenoh::Result<()> {
         let key = crate::topic::liveliness_key(robot_id);
-        let token = self.session.liveliness().declare_token(&key).await?;
+        let token = self
+            .session
+            .liveliness()
+            .declare_token(key.as_str())
+            .await?;
         self._tokens.push(token);
         Ok(())
     }
 
-    /// Return the locators this transport is listening on (e.g. `tcp/127.0.0.1:7447`).
-    /// Used by `flo-server` to log the Zenoh endpoint so `flo --connect` can be
-    /// discovered without `ss`/`lsof` — the health port (`FLO_HEALTH_ADDR`) is a
-    /// different listener and must not be confused with the Zenoh port.
+    /// Return the locators this transport is listening on.
     pub async fn locators(&self) -> Vec<String> {
         self.session
             .info()
@@ -137,107 +203,49 @@ impl Transport {
             .collect()
     }
 
-    /// Publish `payload` to `topic` with the QoS class from the locked decision:
-    /// Reliable => class 1 (STOP: Reliable + Block + InteractiveHigh);
-    /// BestEffort => class 2 (lidar: BestEffort + Drop + DataLow).
-    pub async fn publish(
-        &self,
-        topic: &str,
-        qos: Qos,
-        payload: &serde_json::Value,
-    ) -> zenoh::Result<()> {
-        let bytes = serde_json::to_vec(payload).map_err(|e| Box::new(e) as zenoh::Error)?;
-        let put = self.session.put(topic, bytes);
-        let put = match qos {
-            Qos::Reliable => put
-                .reliability(Reliability::Reliable)
-                .congestion_control(CongestionControl::Block)
-                .priority(Priority::InteractiveHigh),
-            Qos::BestEffort => put
-                .reliability(Reliability::BestEffort)
-                .congestion_control(CongestionControl::Drop)
-                .priority(Priority::DataLow),
+    /// The single `publish` verb. Callers construct a `Topic` via `topic::` builders
+    /// or `Topic::try_new` — a typo fails at construction, not at publish.
+    /// The `Envelope` collapses the former `publish` / `publish_signal` / `put_bytes`
+    /// variants: `Action` maps to class 1/2 QoS, `Signal` and `RawBytes` are best-effort.
+    pub async fn publish(&self, topic: Topic, envelope: Envelope) -> zenoh::Result<()> {
+        match envelope {
+            Envelope::Action { qos, payload } => {
+                let bytes =
+                    serde_json::to_vec(&payload).map_err(|e| Box::new(e) as zenoh::Error)?;
+                let put = self.session.put(topic.as_str(), bytes);
+                let put = match qos {
+                    Qos::Reliable => put
+                        .reliability(Reliability::Reliable)
+                        .congestion_control(CongestionControl::Block)
+                        .priority(Priority::InteractiveHigh),
+                    Qos::BestEffort => put
+                        .reliability(Reliability::BestEffort)
+                        .congestion_control(CongestionControl::Drop)
+                        .priority(Priority::DataLow),
+                };
+                put.await.map(|_| ())
+            }
+            Envelope::Signal(payload) => {
+                let bytes =
+                    serde_json::to_vec(&payload).map_err(|e| Box::new(e) as zenoh::Error)?;
+                self.session.put(topic.as_str(), bytes).await.map(|_| ())
+            }
+            Envelope::RawBytes(bytes) => self.session.put(topic.as_str(), bytes).await.map(|_| ()),
+        }
+    }
+
+    /// The single `subscribe` verb. Returns a managed handle that unsubscribes on drop;
+    /// `recv_async` awaits samples. This collapses `subscribe`, `subscribe_managed`,
+    /// `subscribe_stream`, and `subscribe_liveliness_managed`. Liveliness patterns
+    /// (containing `liveliness`) are automatically routed to the liveliness API.
+    pub async fn subscribe(&self, pattern: Pattern) -> zenoh::Result<Subscription> {
+        let key = pattern.as_str();
+        let sub = if key.contains("liveliness") {
+            self.session.liveliness().declare_subscriber(key).await?
+        } else {
+            self.session.declare_subscriber(key).await?
         };
-        put.await.map(|_| ())
-    }
-
-    /// Publish arbitrary JSON to a key-expression at best-effort QoS (used for the
-    /// WebRTC signaling control plane; not a class 1/2 actuator action).
-    /// Named `publish_signal` to distinguish it from the QoS-aware `publish`.
-    pub async fn publish_signal(
-        &self,
-        key_expr: &str,
-        payload: &serde_json::Value,
-    ) -> zenoh::Result<()> {
-        let bytes = serde_json::to_vec(payload).map_err(|e| Box::new(e) as zenoh::Error)?;
-        self.session.put(key_expr, bytes).await.map(|_| ())
-    }
-
-    /// Publish raw bytes to a key-expression (best-effort, no QoS class). Used by
-    /// the registration control plane for request/ack payloads that carry no
-    /// actuator class (registration requests, acks, heartbeat alerts).
-    pub async fn put_bytes(&self, key_expr: &str, payload: Vec<u8>) -> zenoh::Result<()> {
-        self.session.put(key_expr, payload).await.map(|_| ())
-    }
-
-    /// Subscribe to a key-expression. The `on_sample` callback runs on Zenoh's
-    /// runtime for each received `Sample`; the subscription is kept alive in the
-    /// background until the session closes (zenoh owns it after `background()`).
-    pub async fn subscribe<F>(&self, key_expr: &str, on_sample: F) -> zenoh::Result<()>
-    where
-        F: Fn(zenoh::sample::Sample) + Send + Sync + 'static,
-    {
-        self.session
-            .declare_subscriber(key_expr)
-            .callback(on_sample)
-            .background()
-            .await
-    }
-
-    /// Subscribe to a key-expression and return a handle that, when dropped,
-    /// unsubscribes (the managed-subscription lifecycle). Useful for subscribers
-    /// whose lifecycle must be managed (engine sensor topics, zone tracking).
-    pub async fn subscribe_managed<F>(
-        &self,
-        key_expr: &str,
-        on_sample: F,
-    ) -> zenoh::Result<Subscription>
-    where
-        F: Fn(zenoh::sample::Sample) + Send + Sync + 'static,
-    {
-        let sub = self
-            .session
-            .declare_subscriber(key_expr)
-            .callback(on_sample)
-            .await?;
         Ok(Subscription { inner: sub })
-    }
-
-    /// Subscribe to a key-expression and return a handle that can be awaited for
-    /// individual samples (request/response style). Dropping it unsubscribes.
-    pub async fn subscribe_stream(&self, key_expr: &str) -> zenoh::Result<SubscriptionStream> {
-        let sub = self.session.declare_subscriber(key_expr).await?;
-        Ok(SubscriptionStream { inner: sub })
-    }
-
-    /// Subscribe to a liveliness pattern and return a handle that, when dropped,
-    /// unsubscribes (the managed-subscription lifecycle). Used by the heartbeat
-    /// monitor to observe client liveliness tokens.
-    pub async fn subscribe_liveliness_managed<F>(
-        &self,
-        pattern: &str,
-        on_sample: F,
-    ) -> zenoh::Result<LivelinessSubscription>
-    where
-        F: Fn(zenoh::sample::Sample) + Send + Sync + 'static,
-    {
-        let sub = self
-            .session
-            .liveliness()
-            .declare_subscriber(pattern)
-            .callback(on_sample)
-            .await?;
-        Ok(LivelinessSubscription { inner: sub })
     }
 }
 
@@ -246,11 +254,12 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::topic;
 
     #[test]
     fn ruleset_pub_key_has_site_and_name() {
         assert_eq!(
-            crate::topic::ruleset_pub_key("cell-7", "acme"),
+            topic::ruleset_pub_key("cell-7", "acme").as_str(),
             "fleet/cell-7/ruleset/acme"
         );
     }
@@ -258,7 +267,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn loopback_transport_round_trips_best_effort() {
         assert_round_trip(
-            &crate::topic::robot_local("7", "probe"),
+            topic::robot_local("7", "probe"),
             Qos::BestEffort,
             serde_json::json!({"probe": 42}),
         )
@@ -268,29 +277,38 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn loopback_transport_round_trips_reliable() {
         assert_round_trip(
-            &crate::topic::robot_local("7", "stop"),
+            topic::robot_local("7", "stop"),
             Qos::Reliable,
             serde_json::json!({"stop": true}),
         )
         .await;
     }
 
-    async fn assert_round_trip(topic: &str, qos: Qos, payload: serde_json::Value) {
-        let transport = Transport::open_with(Transport::loopback_config())
+    async fn assert_round_trip(topic: Topic, qos: Qos, payload: serde_json::Value) {
+        let transport = Transport::open_router()
             .await
             .expect("open loopback transport");
 
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-        let key = String::from(topic);
-        let _sub = transport
-            .subscribe_managed(&key, move |s: zenoh::sample::Sample| {
-                let _ = tx.send(s.payload().to_bytes().to_vec());
-            })
+        let pattern = Pattern::try_new(topic.as_str()).expect("topic as pattern");
+        let sub = transport
+            .subscribe(pattern)
             .await
             .expect("declare subscriber");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        tokio::spawn(async move {
+            while let Ok(sample) = sub.recv_async().await {
+                let _ = tx.send(sample.payload().to_bytes().to_vec());
+            }
+        });
 
         transport
-            .publish(topic, qos, &payload)
+            .publish(
+                topic.clone(),
+                Envelope::Action {
+                    qos,
+                    payload: payload.clone(),
+                },
+            )
             .await
             .expect("publish");
 
@@ -304,9 +322,6 @@ mod tests {
 
     #[test]
     fn loopback_config_sets_router_mode_and_localhost_listener() {
-        // The demo config hardens default peer discovery: router mode + multicast
-        // scouting on loopback + an ephemeral localhost listener. Assert the
-        // mutations landed in the config tree (so distinct sessions mesh).
         let cfg = Transport::loopback_config();
         assert_eq!(
             cfg.get_json("mode").unwrap(),
@@ -345,41 +360,38 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn dropping_managed_subscription_unsubscribes() {
-        // The managed-subscription lifecycle: a dropped `Subscription` handle
-        // unsubscribes, so later samples never reach the callback. This is the
-        // same lifecycle the zone path uses via `subscribe_managed`.
-        let transport = Transport::open_with(Transport::loopback_config())
+        let transport = Transport::open_router()
             .await
             .expect("open loopback transport");
 
+        let key = topic::robot_local("9", "managed-lifecycle2");
+        let pattern = Pattern::try_new(key.as_str()).unwrap();
+        let sub = transport
+            .subscribe(pattern)
+            .await
+            .expect("declare subscriber");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-        let key = crate::topic::robot_local("9", "managed-lifecycle");
-        {
-            let _sub = transport
-                .subscribe_managed(&key, move |s: zenoh::sample::Sample| {
-                    let _ = tx.send(s.payload().to_bytes().to_vec());
-                })
-                .await
-                .expect("declare subscriber");
-        }
-
-        // Zenoh undeclares asynchronously; wait with a deadline-based budget
-        // (INFRA-09) so the drop has time to propagate before publishing.
-        // The previous 200ms fixed sleep flaked under CI load; we use 500ms
-        // propagation wait and a 2s delivery timeout — still fast when
-        // uncontended, but robust when the host is loaded. This mirrors the
-        // `engine::subscribed` oneshot pattern where feasible (here we can't
-        // signal undeclare completion, so we use a generous deadline).
+        // Spawn forwarder that holds sub; we will abort it to simulate drop-unsubscribe
+        let handle = tokio::spawn(async move {
+            while let Ok(sample) = sub.recv_async().await {
+                let _ = tx.send(sample.payload().to_bytes().to_vec());
+            }
+        });
+        // Abort the forwarder which drops the subscription handle inside it
+        handle.abort();
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         transport
-            .publish(&key, Qos::BestEffort, &serde_json::json!({"x": 1}))
+            .publish(
+                key,
+                Envelope::Action {
+                    qos: Qos::BestEffort,
+                    payload: serde_json::json!({"x": 1}),
+                },
+            )
             .await
             .expect("publish");
 
-        // Dropping the handle releases the callback (owning `tx`), closing the
-        // channel with no samples: `Ok(None)` or a timeout both prove nothing
-        // was delivered after the unsubscribe. Timeout increased to 2s for CI.
         let got = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await;
         assert!(
             !matches!(got, Ok(Some(_))),

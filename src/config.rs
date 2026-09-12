@@ -89,20 +89,19 @@ impl HotReload {
 
     /// Run the hot-reload loop. A malformed update is rejected (old rules stay active) and logged.
     pub async fn run(&self) -> zenoh::Result<()> {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<zenoh::sample::Sample>();
-        let key = self.topic.clone();
-        self.transport
-            .subscribe(key.as_str(), move |sample: zenoh::sample::Sample| {
-                let _ = tx.send(sample);
-            })
-            .await?;
+        let pattern = crate::topic::Pattern::try_new(self.topic.as_str()).expect("hot-reload topic is valid pattern");
+        let sub = self.transport.subscribe(pattern).await?;
         if self.policy.is_some() {
             info!(topic = %self.topic, "hot-reload subscriber active (registry)");
         } else {
             info!(topic = %self.topic, "hot-reload subscriber active");
         }
 
-        while let Some(sample) = rx.recv().await {
+        loop {
+            let sample = match sub.recv_async().await {
+                Ok(s) => s,
+                Err(_) => break,
+            };
             let bytes = sample.payload().to_bytes();
             let text = String::from_utf8_lossy(&bytes);
             if let Some(registry) = &self.policy {
@@ -159,7 +158,7 @@ pub async fn run_hot_reload(
         owned,
         store,
         None,
-        KeyExpr::new(key).unwrap(),
+        KeyExpr::new(key.into_string()).unwrap(),
         robot_id.to_string(),
     )
     .run()
@@ -453,7 +452,7 @@ period_ms = 1000
     async fn hot_reload_swaps_via_transport() {
         // Verify ActiveRules::swap/current via the HotReload path (not just unit RwLock).
         let transport = Arc::new(
-            crate::transport::Transport::open_with(crate::transport::Transport::loopback_config())
+            crate::transport::Transport::open_router()
                 .await
                 .expect("open loopback"),
         );
@@ -462,7 +461,7 @@ period_ms = 1000
             transport.clone(),
             store.clone(),
             None,
-            KeyExpr::new(crate::topic::rules_key("7")).unwrap(),
+            KeyExpr::new(crate::topic::rules_key("7").into_string()).unwrap(),
             "7".to_string(),
         );
         let h = tokio::spawn(async move {
@@ -475,8 +474,9 @@ name = "hr-test"
 when.all = [{ topic = "robot/7/local/bumper", mode = "Level" }]
 actions = [{ topic = "stop/fleet/cmd", qos = "reliable", payload = { stop = true } }]
 "#;
+        let topic = crate::topic::Topic::try_new(crate::topic::rules_key("7").as_str()).unwrap();
         transport
-            .put_bytes(&crate::topic::rules_key("7"), new_toml.as_bytes().to_vec())
+            .publish(topic, crate::transport::Envelope::RawBytes(new_toml.as_bytes().to_vec()))
             .await
             .expect("put toml");
         let mut ok = false;

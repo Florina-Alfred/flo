@@ -14,7 +14,7 @@ use clap::{Args as ClapArgs, Parser, Subcommand};
 ///
 /// Connects to a flo-server over Zenoh, registers, and runs the rule engine.
 /// Missing or invalid config starts flo in a fail-safe state (see README).
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(name = "flo", version, about, long_about = None)]
 pub struct Args {
     /// Robot/node id (also via FLO_ROBOT_ID env).
@@ -62,6 +62,12 @@ pub struct Args {
     #[arg(long)]
     pub healthcheck: bool,
 
+    /// Print the Zenoh router locator (e.g. `tcp/127.0.0.1:7447`) and exit.
+    /// Exposes `transport.locators()` so `verify-readme-demo.sh` can discover
+    /// the Zenoh port without `ss`/`lsof` fallback.
+    #[arg(long)]
+    pub print_zenoh_port: bool,
+
     #[command(flatten)]
     pub video: VideoArgs,
 
@@ -72,7 +78,7 @@ pub struct Args {
 /// flo-server - fleet coordinator.
 ///
 /// Opens a Zenoh router, handles registration and heartbeats.
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(name = "flo-server", version, about, long_about = None)]
 pub struct ServerArgs {
     /// Robot/node id (also via FLO_ROBOT_ID env).
@@ -116,12 +122,16 @@ pub struct ServerArgs {
     #[arg(long)]
     pub healthcheck: bool,
 
+    /// Print the Zenoh router locator and exit (exposes `transport.locators()`).
+    #[arg(long)]
+    pub print_zenoh_port: bool,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }
 
 /// Subcommands. Only `rule` exists today.
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
 pub enum Command {
     /// Validate / inspect a semantic ruleset (extended TOML) before deploy.
     Rule {
@@ -131,7 +141,7 @@ pub enum Command {
 }
 
 /// Rule subcommands.
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
 pub enum RuleSubcommand {
     /// Validate the ruleset at PATH (TOML or JSON).
     Check {
@@ -165,7 +175,7 @@ impl RuleSubcommand {
 }
 
 /// Video / WebRTC options, flattened into [`Args`].
-#[derive(ClapArgs, Debug, Default)]
+#[derive(ClapArgs, Debug, Default, Clone)]
 pub struct VideoArgs {
     /// Peer robot id to stream WebRTC video to (needs --features media + GStreamer).
     #[arg(long = "video-peer", value_name = "ID")]
@@ -269,7 +279,7 @@ pub fn run_rule_command(
                             .rules
                             .iter()
                             .flat_map(|r| r.when.all.iter().chain(r.when.any.iter()))
-                            .find(|t| crate::topic::check_topic_pattern(&t.topic).is_err());
+                            .find(|t| crate::topic::Topic::try_new(&t.topic).is_err());
                         if bad_topic.is_none() {
                             if *json {
                                 println!(

@@ -458,7 +458,7 @@ fn build_when_expr(
     let mut leaf_triggers = Vec::new();
     if let Some(z) = &when.in_zone {
         leaf_triggers.push(Trigger {
-            topic: crate::topic::robot_local(robot_id, "zone"),
+            topic: crate::topic::robot_local(robot_id, "zone").into_string(),
             pred: Some(Predicate::Comparison {
                 op: Op::Eq,
                 lhs: Operand::Prim(PrimitiveRef::Zone),
@@ -469,7 +469,7 @@ fn build_when_expr(
     }
     if let Some(z) = &when.not_in_zone {
         leaf_triggers.push(Trigger {
-            topic: crate::topic::robot_local(robot_id, "zone"),
+            topic: crate::topic::robot_local(robot_id, "zone").into_string(),
             pred: Some(Predicate::Not(Box::new(Predicate::Comparison {
                 op: Op::Eq,
                 lhs: Operand::Prim(PrimitiveRef::Zone),
@@ -480,7 +480,7 @@ fn build_when_expr(
     }
     if let Some(d) = when.near_human {
         leaf_triggers.push(Trigger {
-            topic: crate::topic::robot_local(robot_id, "human_present"),
+            topic: crate::topic::robot_local(robot_id, "human_present").into_string(),
             pred: Some(Predicate::Comparison {
                 op: Op::Lt,
                 lhs: Operand::Prim(PrimitiveRef::HumanPresence),
@@ -491,7 +491,7 @@ fn build_when_expr(
     }
     if let Some(d) = when.not_near_human {
         leaf_triggers.push(Trigger {
-            topic: crate::topic::robot_local(robot_id, "human_present"),
+            topic: crate::topic::robot_local(robot_id, "human_present").into_string(),
             pred: Some(Predicate::Comparison {
                 op: Op::Ge,
                 lhs: Operand::Prim(PrimitiveRef::HumanPresence),
@@ -502,7 +502,7 @@ fn build_when_expr(
     }
     if let Some(n) = &when.near {
         leaf_triggers.push(Trigger {
-            topic: crate::topic::robot_local(robot_id, "proximity"),
+            topic: crate::topic::robot_local(robot_id, "proximity").into_string(),
             pred: Some(Predicate::Comparison {
                 op: Op::Lt,
                 lhs: Operand::Prim(PrimitiveRef::Proximity(n.entity.clone())),
@@ -513,7 +513,7 @@ fn build_when_expr(
     }
     if let Some(r) = &when.role {
         leaf_triggers.push(Trigger {
-            topic: crate::topic::robot_local(robot_id, "role"),
+            topic: crate::topic::robot_local(robot_id, "role").into_string(),
             pred: Some(Predicate::Comparison {
                 op: Op::Eq,
                 lhs: Operand::Prim(PrimitiveRef::Robot),
@@ -679,7 +679,7 @@ pub fn compile(doc: &RulesManifest, robot_id: &str) -> Result<Rules, SemanticErr
                         e.with_path(&base)
                     }
                 })?;
-                Ok(compile_action_from_spec(&spec, a, robot_id))
+                compile_action_from_spec(&spec, a, robot_id)
             })
             .collect::<Result<Vec<_>, SemanticError>>()?;
 
@@ -696,29 +696,38 @@ fn compile_action_from_spec(
     spec: &ActionSpec,
     original: &SemanticAction,
     robot_id: &str,
-) -> Action {
-    match spec {
+) -> Result<Action, SemanticError> {
+    Ok(match spec {
         ActionSpec::Estop => Action {
-            topic: crate::topic::stop_cmd("fleet"),
+            topic: crate::topic::stop_cmd("fleet").into_string(),
             qos: Qos::Reliable,
             payload: serde_json::json!({ "stop": true }),
         },
         ActionSpec::Resume => Action {
-            topic: crate::topic::robot_local(robot_id, "drive"),
+            topic: crate::topic::robot_local(robot_id, "drive").into_string(),
             qos: Qos::Reliable,
             payload: serde_json::json!({ "resume": true }),
         },
         ActionSpec::SlowTo(v) => Action {
-            topic: crate::topic::robot_local(robot_id, "drive"),
+            topic: crate::topic::robot_local(robot_id, "drive").into_string(),
             qos: original.qos,
             payload: serde_json::json!({ "speed_mps": *v }),
         },
-        ActionSpec::Raw { topic, payload } => Action {
-            topic: topic.clone(),
-            qos: original.qos,
-            payload: payload.clone(),
-        },
-    }
+        ActionSpec::Raw { topic, payload } => {
+            // Validate raw topic strings at construction — a typo fails here, not at publish (typed mesh).
+            let validated = crate::topic::Topic::try_new(topic).map_err(|e| {
+                SemanticError::new(
+                    ErrorCode::InvalidTopic,
+                    format!("invalid topic '{topic}': {e}"),
+                )
+            })?;
+            Action {
+                topic: validated.into_string(),
+                qos: original.qos,
+                payload: payload.clone(),
+            }
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------

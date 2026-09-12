@@ -17,7 +17,7 @@ use zenoh::sample::SampleKind;
 
 use crate::config::ClientConfig;
 use crate::registration::lease::{RegistrationError, RegistrationLease, RegistrationServer};
-use crate::transport::Transport;
+use crate::transport::{Envelope, Transport};
 
 const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -52,19 +52,17 @@ pub enum RegistrationStatus {
     Poisoned,
 }
 
-/// Serialize a typed response and publish it to `topic` (the registration,
-/// deregistration, and heartbeat-alert topics all carry the same envelope).
-/// Single helper behind the transport seam — not duplicated at call sites.
+/// Serialize a typed response and publish it to `topic`.
 async fn publish_response(
     transport: &Transport,
-    topic: &str,
+    topic: crate::topic::Topic,
     status: RegistrationStatus,
 ) -> Result<(), RegistrationError> {
-    let payload = serde_json::to_vec(&RegistrationResponse { status }).map_err(|e| {
+    let payload = serde_json::to_value(&RegistrationResponse { status }).map_err(|e| {
         RegistrationError::ServerError(format!("failed to serialize response: {e}"))
     })?;
     transport
-        .put_bytes(topic, payload)
+        .publish(topic, Envelope::Signal(payload))
         .await
         .map_err(|e| RegistrationError::ServerError(e.to_string()))
 }
@@ -75,18 +73,19 @@ pub async fn run_registration_handler(
 ) -> zenoh::Result<()> {
     let reg = reg_server.clone();
     let transport_for_reg = transport.clone();
-
-    let _reg_sub = transport
-        .subscribe_managed(crate::topic::REGISTRATION_KEY, move |sample| {
-            let reg = reg.clone();
-            let transport = transport_for_reg.clone();
-            tokio::spawn(async move {
+    let pattern = crate::topic::Pattern::try_new(crate::topic::REGISTRATION_KEY).unwrap();
+    let sub = transport.subscribe(pattern).await?;
+    let reg_task = {
+        let reg = reg.clone();
+        let transport = transport_for_reg.clone();
+        tokio::spawn(async move {
+            while let Ok(sample) = sub.recv_async().await {
                 let bytes = sample.payload().to_bytes();
                 let request: RegistrationRequest = match serde_json::from_slice(&bytes) {
                     Ok(req) => req,
                     Err(e) => {
                         warn!("registration: bad request: {e}");
-                        return;
+                        continue;
                     }
                 };
                 let RegistrationRequest::Register { robot_id, config } = request else {
@@ -94,7 +93,7 @@ pub async fn run_registration_handler(
                         "registration: non-register request on {}",
                         crate::topic::REGISTRATION_KEY
                     );
-                    return;
+                    continue;
                 };
                 let status = if robot_id.is_empty() {
                     RegistrationStatus::MissingRobotId
@@ -109,29 +108,29 @@ pub async fn run_registration_handler(
                     }
                 };
                 let response_key = crate::topic::registration_response(&robot_id);
-                let _ = publish_response(&transport, &response_key, status).await;
-            });
+                let _ = publish_response(&transport, response_key, status).await;
+            }
         })
-        .await?;
+    };
 
     info!(
         "registration subscriber active on {}",
         crate::topic::REGISTRATION_KEY
     );
 
-    let dereg_reg = reg_server.clone();
-    let transport_for_dereg = transport.clone();
-    let _dereg_sub = transport
-        .subscribe_managed(crate::topic::DEREGISTRATION_KEY, move |sample| {
-            let reg = dereg_reg.clone();
-            let transport = transport_for_dereg.clone();
-            tokio::spawn(async move {
+    let dereg_pattern = crate::topic::Pattern::try_new(crate::topic::DEREGISTRATION_KEY).unwrap();
+    let dereg_sub = transport.subscribe(dereg_pattern).await?;
+    let dereg_task = {
+        let reg = reg_server.clone();
+        let transport = transport.clone();
+        tokio::spawn(async move {
+            while let Ok(sample) = dereg_sub.recv_async().await {
                 let bytes = sample.payload().to_bytes();
                 let request: RegistrationRequest = match serde_json::from_slice(&bytes) {
                     Ok(req) => req,
                     Err(e) => {
                         warn!("deregistration: bad request: {e}");
-                        return;
+                        continue;
                     }
                 };
                 let RegistrationRequest::Deregister { robot_id } = request else {
@@ -139,7 +138,7 @@ pub async fn run_registration_handler(
                         "deregistration: non-deregister request on {}",
                         crate::topic::DEREGISTRATION_KEY
                     );
-                    return;
+                    continue;
                 };
                 let response_key = crate::topic::deregistration_response(&robot_id);
                 let status = if robot_id.is_empty() {
@@ -150,11 +149,13 @@ pub async fn run_registration_handler(
                         Err(_) => RegistrationStatus::Ignore,
                     }
                 };
-                let _ = publish_response(&transport, &response_key, status).await;
-            });
+                let _ = publish_response(&transport, response_key, status).await;
+            }
         })
-        .await?;
+    };
 
+    // Keep tasks alive until pending (never returns)
+    let _ = tokio::join!(reg_task, dereg_task);
     std::future::pending::<()>().await;
     Ok(())
 }
@@ -164,22 +165,17 @@ pub async fn run_heartbeat_monitor(
     reg_server: RegistrationServer,
 ) -> zenoh::Result<()> {
     let transport_for_alert = transport.clone();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, SampleKind)>();
-
-    let _sub = transport
-        .subscribe_liveliness_managed(crate::topic::LIVELINESS_PATTERN, move |sample| {
-            let key = sample.key_expr().to_string();
-            let kind = sample.kind();
-            let _ = tx.send((key, kind));
-        })
-        .await?;
+    let pattern = crate::topic::Pattern::try_new(crate::topic::LIVELINESS_PATTERN).unwrap();
+    let sub = transport.subscribe(pattern).await?;
 
     // Keep a clone for the spawned task. `RegistrationLease` is `Clone` via
     // `Arc<RwLock<...>>`, so this shares the same state as the registration
     // handler — poison decisions are globally visible.
     let lease_for_task: RegistrationLease = reg_server;
     tokio::spawn(async move {
-        while let Some((key, kind)) = rx.recv().await {
+        while let Ok(sample) = sub.recv_async().await {
+            let key = sample.key_expr().to_string();
+            let kind = sample.kind();
             let parts: Vec<&str> = key.split('/').collect();
             if parts.len() < 2 {
                 continue;
@@ -190,15 +186,11 @@ pub async fn run_heartbeat_monitor(
                     info!(%robot_id, "heartbeat: client alive");
                 }
                 SampleKind::Delete => {
-                    // Fixed poison race: `on_liveliness_delete` holds a single
-                    // write lock across `if state==Registered { poison }`, so a
-                    // Delete arriving before registration cannot incorrectly
-                    // poison, and concurrent register/poison is serialized.
                     if lease_for_task.on_liveliness_delete(&robot_id).await {
                         let alert_topic = crate::topic::heartbeat_alert(&robot_id);
                         let _ = publish_response(
                             &transport_for_alert,
-                            &alert_topic,
+                            alert_topic,
                             RegistrationStatus::Poisoned,
                         )
                         .await;
@@ -226,20 +218,24 @@ pub async fn register_with_client(
         robot_id: robot_id.to_string(),
         config: Box::new(config.clone()),
     };
-    let request_json = serde_json::to_vec(&request)
+    let request_value = serde_json::to_value(&request)
         .map_err(|e| RegistrationError::ServerError(format!("failed to serialize request: {e}")))?;
 
-    let response_key = crate::topic::registration_response(robot_id);
+    let response_topic = crate::topic::registration_response(robot_id);
+    let response_pattern = crate::topic::Pattern::try_new(response_topic.as_str())
+        .expect("response topic is valid pattern");
 
     // Subscribe to response topic before sending request.
     let response_sub = transport
-        .subscribe_stream(&response_key)
+        .subscribe(response_pattern)
         .await
         .map_err(|e| RegistrationError::ServerError(e.to_string()))?;
 
     // Send registration request.
+    let reg_topic = crate::topic::Topic::try_new(crate::topic::REGISTRATION_KEY)
+        .map_err(|e| RegistrationError::ServerError(e.to_string()))?;
     transport
-        .put_bytes(crate::topic::REGISTRATION_KEY, request_json)
+        .publish(reg_topic, Envelope::Signal(request_value))
         .await
         .map_err(|e| RegistrationError::ServerError(e.to_string()))?;
 
@@ -252,8 +248,6 @@ pub async fn register_with_client(
             .map(|sample| sample.payload().to_bytes().to_vec())
     })
     .await;
-
-    drop(response_sub);
 
     let bytes = match response {
         Ok(Some(bytes)) => bytes,
@@ -287,18 +281,22 @@ pub async fn deregister_with_server(
     let request = RegistrationRequest::Deregister {
         robot_id: robot_id.to_string(),
     };
-    let request_json = serde_json::to_vec(&request)
+    let request_value = serde_json::to_value(&request)
         .map_err(|e| RegistrationError::ServerError(format!("failed to serialize request: {e}")))?;
 
-    let response_key = crate::topic::deregistration_response(robot_id);
+    let response_topic = crate::topic::deregistration_response(robot_id);
+    let response_pattern =
+        crate::topic::Pattern::try_new(response_topic.as_str()).expect("response topic valid");
 
     let response_sub = transport
-        .subscribe_stream(&response_key)
+        .subscribe(response_pattern)
         .await
         .map_err(|e| RegistrationError::ServerError(e.to_string()))?;
 
+    let dereg_topic = crate::topic::Topic::try_new(crate::topic::DEREGISTRATION_KEY)
+        .map_err(|e| RegistrationError::ServerError(e.to_string()))?;
     transport
-        .put_bytes(crate::topic::DEREGISTRATION_KEY, request_json)
+        .publish(dereg_topic, Envelope::Signal(request_value))
         .await
         .map_err(|e| RegistrationError::ServerError(e.to_string()))?;
 
