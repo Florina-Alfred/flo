@@ -83,9 +83,8 @@ pub async fn start_common_subsystems(
         let store = store.clone();
         let eval_counter = health.eval_counter();
         tokio::spawn(async move {
-            if let Err(e) =
-                engine::run_engine(transport, store, eval_counter, Some(subscribed_tx)).await
-            {
+            let state = engine::EvalState::new(transport, store);
+            if let Err(e) = state.run(eval_counter, Some(subscribed_tx)).await {
                 error!(error = %e, "rule engine exited");
             }
         })

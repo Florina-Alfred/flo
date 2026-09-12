@@ -67,8 +67,9 @@ pub async fn run_server(
     };
     health.set_ready();
 
+    let engine_state = engine::EvalState::new(transport.clone(), store.clone());
     tokio::try_join!(
-        engine::run_engine(transport.clone(), store.clone(), counter, None),
+        engine_state.run(counter, None),
         run_hot_reload_with_registry(&transport, &robot_id, store.clone(), registry),
         run_registration_handler(transport.clone(), reg_server.clone()),
         run_heartbeat_monitor(transport.clone(), reg_server),
