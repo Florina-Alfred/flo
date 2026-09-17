@@ -1,6 +1,6 @@
 [package]
 name = "flo-rs"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 # MSRV 1.97.1 — pinned to match CI matrix (ci.yml tests stable, beta, 1.97.1).
 # Stable as of 2026-08 is 1.93; 1.97.1 is the MSRV flo actually builds on
