@@ -10,7 +10,7 @@
 # Base images pinned by digest (see .github/dependabot.yml `docker` ecosystem).
 # Update via Dependabot; verify with `docker buildx imagetools inspect <image>`.
 # === Shared builder with cargo-chef ===
-FROM rust:1.97-slim-bookworm@sha256:2775a09d208ff0d7c1f50490c45b62db929e87ba1dcbc3f2132ac71a704bcdd3 AS chef
+FROM rust:1.99-slim-bookworm@sha256:2c3a22f0a5533ea2dd5a16627bc841228151faa2d4de2644ac9987e4a2f1f2fa AS chef
 WORKDIR /app
 RUN cargo install cargo-chef --version 0.1.71 --locked
 
