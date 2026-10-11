@@ -122,7 +122,7 @@ jobs:
             exit 1
           fi
           echo "Version check passed"
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # pinned action commit
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # pinned action commit
         if: github.event_name == 'push'
         with:
           toolchain: "1.97.1"
@@ -214,7 +214,7 @@ jobs:
             echo "::error::Cargo.toml $CARGO_VER != $TAG"
             exit 1
           fi
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # pinned action commit
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # pinned action commit
         with:
           toolchain: "1.97.1"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -265,7 +265,7 @@ jobs:
             exit 1
           fi
           echo "Version check passed"
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # pinned action commit
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # pinned action commit
         with:
           # Pinned to the MSRV (1.97.1, same as ci.yml) so the 'Check lockfile
           # is in sync with the index' step below reproduces the committed
@@ -416,7 +416,7 @@ jobs:
             exit 1
           fi
           echo "Version check passed"
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # pinned action commit
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # pinned action commit
         with:
           # Pinned to the MSRV (1.97.1, same as the publish job / ci.yml) for a
           # deterministic release binary and lockfile — a rolling `stable` would
